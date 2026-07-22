@@ -1,0 +1,384 @@
+#!/usr/bin/env bash
+# pinned -- review-and-pin a git rev behind a human gate.
+#
+#   sudo pinned bless <repo> [--pin-file <path>] [--trust-current]
+#                                review diff since last pin -> approve -> write pin
+#   pinned sign   <repo>         sign the currently pinned rev's tag (user keys; NO sudo)
+#   pinned status <repo>         pinned SHA vs HEAD; dirty-tree warning
+#   pinned history               blessing log (unified logging + tags)
+#   sudo pinned setup            provision sudoers digest pin; self-install
+#
+# bless runs root-owned code end to end: it resolves HEAD to a SHA, shows the
+# diff from the OBJECT STORE (scrubbed env, no user git config, no pager, no
+# hooks), and writes the approved SHA to a root-owned pin file. Deploy tooling
+# builds git+file://<repo>?rev=<sha> and nothing else. The SHA never crosses a
+# trust boundary in human hands.
+
+# Pin PATH so bare command names can't be hijacked even if sudoers env_keep
+# ever leaks PATH from the invoker.
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+set -euo pipefail
+
+# Override-friendly defaults (handy for testing).
+: "${INSTALL_TARGET:=/usr/local/sbin/pinned}"
+: "${PIN_ROOT:=/etc/pinned}"
+
+usage() {
+  cat >&2 <<EOF
+usage: pinned <action> [args]
+
+  bless <repo> [--pin-file <path>] [--trust-current]
+                     (sudo) review diff since last pin, approve, write pin
+  sign <repo>        sign the pinned rev's blessed tag -- run WITHOUT sudo
+                     (needs your SSH agent, e.g. 1Password)
+  status <repo>      pinned SHA vs HEAD; warns on dirty tree
+  history            blessing log (unified logging + blessed/* tags)
+  setup              (sudo) provision sudoers digest pin; self-install
+EOF
+  exit 1
+}
+
+[ $# -ge 1 ] || usage
+action="$1"
+shift
+
+log_action() {
+  # visible via: log show --predicate 'eventMessage CONTAINS "pinned:"' --last 1d
+  logger -t pinned "user=${inv:-$(id -un)} action=$1 repo=${2:-} rev=${3:-} result=${4:-ok}"
+}
+
+# ---- shared verification (locked-family pattern) ---------------------------
+
+# Verify a path is root:wheel owned with no group/other write. Refuses to
+# trust binaries or pin files reachable through a user-writable ancestor.
+verify_root_owned_path() {
+  local path="$1" owner mode
+  owner="$(stat -f '%Su:%Sg' "$path")"
+  mode="$(stat -f '%OLp' "$path")"
+  if [ "$owner" != "root:wheel" ]; then
+    echo "ERROR: $path is owned $owner, expected root:wheel" >&2
+    echo "       fix manually: sudo chown root:wheel $path && sudo chmod 755 $path" >&2
+    return 1
+  fi
+  case "$mode" in
+    755|750|700|555|550|500|644) ;;
+    *)
+      echo "ERROR: $path has mode $mode, expected 755 or stricter" >&2
+      return 1
+      ;;
+  esac
+}
+
+verify_ancestry() {
+  # Walk ancestry of a path (itself excluded) up to /, verify each dir.
+  local p
+  p="$(dirname "$1")"
+  while [ "$p" != "/" ]; do
+    verify_root_owned_path "$p" || return 1
+    p="$(dirname "$p")"
+  done
+}
+
+# ---- scrubbed git ----------------------------------------------------------
+
+# Absolute git; nix system profile first, Apple's as fallback.
+GIT=/run/current-system/sw/bin/git
+[ -x "$GIT" ] || GIT=/usr/bin/git
+
+# Run git against $repo with NOTHING attacker-influencable in play:
+# env -i (no GIT_* smuggling), no global/system config, repo-local config
+# neutralized where it matters (-c overrides, no pager, no fsmonitor daemon).
+# show/diff/rev-parse/log run no hooks; aliases can't shadow builtins.
+sgit() {
+  env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/empty \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    "$GIT" -C "$repo" --no-pager -c core.fsmonitor=false -c core.pager=cat "$@"
+}
+
+# Same scrub, but as the invoking user (tag creation must not leave
+# root-owned objects/refs in the user's repo).
+ugit() {
+  sudo -u "$inv" env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/empty \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    "$GIT" -C "$repo" --no-pager -c core.fsmonitor=false "$@"
+}
+
+# URL-encode % and / so a repo path becomes an unambiguous flat filename.
+encode() {
+  printf '%s' "$1" | sed -e 's|%|%25|g' -e 's|/|%2F|g'
+}
+
+resolve_repo() {
+  [ $# -ge 1 ] || usage
+  repo="$(readlink -f "$1")"
+  [ -n "$repo" ] && [ -d "$repo" ] || { echo "not a directory: ${1}" >&2; exit 1; }
+  sgit rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || { echo "not a git work tree: $repo" >&2; exit 1; }
+  default_pin_file="$PIN_ROOT/$(encode "$repo")"
+}
+
+read_pin() {
+  # Echoes pinned sha or nothing. Validates format so a tampered pin file
+  # can't smuggle arbitrary text into git argv.
+  local f="$1" sha
+  [ -f "$f" ] || return 0
+  sha="$(head -n1 "$f")"
+  case "$sha" in
+    *[!0-9a-f]*|'')
+      echo "ERROR: pin file $f is corrupt: '$sha'" >&2
+      return 1
+      ;;
+  esac
+  [ "${#sha}" -eq 40 ] || [ "${#sha}" -eq 64 ] \
+    || { echo "ERROR: pin file $f has bad sha length" >&2; return 1; }
+  printf '%s\n' "$sha"
+}
+
+# ---- setup -----------------------------------------------------------------
+
+do_setup() {
+  [ "$EUID" -eq 0 ] || { echo "setup must run as root (sudo $0 setup)" >&2; exit 1; }
+  inv="${SUDO_USER:-}"
+  [ -n "$inv" ] || { echo "setup must be invoked via sudo" >&2; exit 1; }
+
+  # 1. Self-install; verify every ancestor of INSTALL_TARGET first.
+  local self target target_dir
+  self="$(readlink -f "$0")"
+  target="$INSTALL_TARGET"
+  target_dir="$(dirname "$target")"
+  install -d -m 755 -o root -g wheel "$target_dir"
+  verify_ancestry "$target" || exit 1
+  verify_root_owned_path "$target_dir" || exit 1
+  if [ "$self" != "$target" ]; then
+    install -m 755 -o root -g wheel "$self" "$target"
+    echo "installed: $target"
+  else
+    echo "binary already at $target"
+  fi
+
+  # 2. Pin root
+  install -d -m 755 -o root -g wheel "$PIN_ROOT"
+  echo "pin root: $PIN_ROOT"
+
+  # 3. Sudoers entry with binary-digest pin (validated before installing).
+  #    sudo recomputes the binary's SHA-256 at every invocation and refuses
+  #    silently on mismatch -- integrity check lives in sudo, not in us.
+  local sudoers_target sudoers_line digest tmp
+  sudoers_target=/etc/sudoers.d/pinned
+  digest="$(shasum -a 256 "$target" | awk '{print $1}')"
+  sudoers_line="$inv ALL=(root) sha256:$digest ${target}"
+  if [ -f "$sudoers_target" ] && grep -qF "$sudoers_line" "$sudoers_target"; then
+    echo "sudoers digest current: $sudoers_target"
+  else
+    tmp="$(mktemp)"
+    printf '%s\n' "$sudoers_line" >"$tmp"
+    if visudo -c -f "$tmp" >/dev/null 2>&1; then
+      install -m 440 -o root -g wheel "$tmp" "$sudoers_target"
+      echo "wrote sudoers entry with digest: $sudoers_target"
+      echo "  digest: sha256:$digest"
+    else
+      echo "sudoers validation failed; not installing" >&2
+      rm -f "$tmp"
+      exit 1
+    fi
+    rm -f "$tmp"
+  fi
+
+  log_action setup
+  echo
+  echo "setup complete."
+  echo "  next: sudo pinned bless <repo>"
+}
+
+if [ "$action" = "setup" ]; then
+  do_setup
+  exit 0
+fi
+
+# Re-verify INSTALL_TARGET ancestry on every invocation (catches a later
+# "chown -R \$USER /usr/local" undoing the install-path guarantees).
+if [ -f "$INSTALL_TARGET" ]; then
+  verify_ancestry "$INSTALL_TARGET" || exit 1
+fi
+
+# ---- bless -----------------------------------------------------------------
+
+do_bless() {
+  [ "$EUID" -eq 0 ] || { echo "bless must run as root (sudo pinned bless <repo>)" >&2; exit 1; }
+  inv="${SUDO_USER:-}"
+  [ -n "$inv" ] || { echo "bless must be invoked via sudo" >&2; exit 1; }
+
+  local pin_file="" trust_current=0 repo_arg=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pin-file)      pin_file="$2"; shift 2 ;;
+      --trust-current) trust_current=1; shift ;;
+      -*)              usage ;;
+      *)               repo_arg="$1"; shift ;;
+    esac
+  done
+  [ -n "$repo_arg" ] || usage
+  resolve_repo "$repo_arg"
+  [ -n "$pin_file" ] || pin_file="$default_pin_file"
+  case "$pin_file" in
+    /*) ;;
+    *) echo "--pin-file must be absolute: $pin_file" >&2; exit 1 ;;
+  esac
+
+  # The pin file must live under a root-owned ancestry or the machine gate
+  # is only as strong as the weakest writable dir on the way there.
+  verify_ancestry "$pin_file" || exit 1
+
+  local sha old_sha
+  sha="$(sgit rev-parse 'HEAD^{commit}')"
+  old_sha="$(read_pin "$pin_file")" || exit 1
+
+  if ! sgit diff --quiet 2>/dev/null || ! sgit diff --cached --quiet 2>/dev/null; then
+    echo "note: work tree is dirty; only COMMITTED content at $sha is being blessed" >&2
+  fi
+
+  if [ -n "$old_sha" ] && [ "$old_sha" = "$sha" ]; then
+    echo "already pinned: $sha"
+    exit 0
+  fi
+
+  echo "repo:    $repo"
+  echo "HEAD:    $sha  ($(sgit log -1 --format=%s "$sha"))"
+  if [ -n "$old_sha" ]; then
+    echo "pinned:  $old_sha"
+    echo
+    echo "--- commits since last blessing ---"
+    sgit log --format='%h %s' "${old_sha}..${sha}" || true
+    echo
+    echo "--- diff ${old_sha}..${sha} (from object store) ---"
+    sgit diff "$old_sha" "$sha"
+  elif [ "$trust_current" -eq 1 ]; then
+    echo "pinned:  (none)"
+    echo
+    echo "!!! FIRST BLESSING WITH --trust-current !!!"
+    echo "!!! The full tree at $sha is being blessed WITHOUT review. !!!"
+    echo "!!! Everything already in this repo becomes trusted as-is. !!!"
+  else
+    echo "pinned:  (none -- first blessing: full tree review)"
+    echo
+    echo "--- full tree at ${sha} (diff from empty) ---"
+    # 4b825d... is git's well-known empty tree; this shows every blessed byte.
+    sgit diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$sha"
+  fi
+  echo
+
+  local answer
+  printf 'bless %s? [y/N] ' "$sha"
+  read -r answer </dev/tty
+  case "$answer" in
+    y|Y|yes) ;;
+    *)
+      echo "aborted; pin unchanged."
+      log_action bless "$repo" "$sha" abort
+      exit 2
+      ;;
+  esac
+
+  # Atomic pin write: stage in the (root-owned) pin dir, single rename.
+  local tmp
+  tmp="$(mktemp "$(dirname "$pin_file")/.pin.XXXXXX")"
+  printf '%s\n' "$sha" >"$tmp"
+  chown root:wheel "$tmp"
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$pin_file"
+  echo "pinned: $sha -> $pin_file"
+  log_action bless "$repo" "$sha"
+
+  # Record mapping when a custom pin file is used, so status/sign find it.
+  if [ "$pin_file" != "$default_pin_file" ]; then
+    tmp="$(mktemp "$PIN_ROOT/.link.XXXXXX")"
+    printf '%s\n' "$pin_file" >"$tmp"
+    chown root:wheel "$tmp"
+    chmod 644 "$tmp"
+    mv -f "$tmp" "${default_pin_file}.link"
+  fi
+
+  # Unsigned annotated tag as the invoking user (no root-owned objects in
+  # the user's repo). Failure here is non-fatal: the pin is the gate.
+  local tag
+  tag="blessed/$(date -u +%Y%m%dT%H%M%SZ)"
+  if ugit -c user.name=pinned -c user.email=pinned@localhost \
+      tag -a -m "blessed by $inv via pinned" "$tag" "$sha" 2>/dev/null; then
+    echo "tagged: $tag (unsigned; run 'pinned sign $repo' to sign)"
+  else
+    echo "warning: could not create tag $tag (pin written regardless)" >&2
+  fi
+}
+
+# ---- sign ------------------------------------------------------------------
+
+do_sign() {
+  # Runs as the plain user: signing needs the user's SSH agent (1Password),
+  # which sudo strips. The pin file is world-readable; nothing here needs root.
+  [ "$EUID" -ne 0 ] || { echo "run sign WITHOUT sudo (it needs your SSH agent)" >&2; exit 1; }
+  inv="$(id -un)"
+  resolve_repo "$@"
+  local pin_file="$default_pin_file" sha tag
+  [ -f "${default_pin_file}.link" ] && pin_file="$(head -n1 "${default_pin_file}.link")"
+  sha="$(read_pin "$pin_file")" || exit 1
+  [ -n "$sha" ] || { echo "no pin for $repo -- bless first" >&2; exit 1; }
+
+  # Newest blessed/* tag pointing at the pinned sha.
+  tag="$(sgit tag -l 'blessed/*' --points-at "$sha" | sort | tail -n1)"
+  [ -n "$tag" ] || { echo "no blessed/* tag at pinned $sha -- re-bless to create one" >&2; exit 1; }
+
+  # User's own git config supplies user.signingkey + gpg.format=ssh; the
+  # signature is verified against allowed_signers, so user config is fine here.
+  # SSH_AUTH_SOCK passes through (we are NOT under sudo).
+  "$GIT" -C "$repo" --no-pager tag -s -f -m "signed by $inv via pinned" "${tag}.sig" "$sha"
+  echo "signed: ${tag}.sig at $sha"
+  echo "verify: git -c gpg.ssh.allowedSignersFile=<allowed_signers> verify-tag ${tag}.sig"
+  log_action sign "$repo" "$sha"
+}
+
+# ---- status ----------------------------------------------------------------
+
+do_status() {
+  inv="$(id -un)"
+  resolve_repo "$@"
+  local pin_file="$default_pin_file" sha head_sha
+  [ -f "${default_pin_file}.link" ] && pin_file="$(head -n1 "${default_pin_file}.link")"
+  sha="$(read_pin "$pin_file")" || exit 1
+  head_sha="$(sgit rev-parse 'HEAD^{commit}')"
+
+  echo "repo:    $repo"
+  echo "pin:     ${pin_file}"
+  if [ -z "$sha" ]; then
+    echo "pinned:  (none)"
+  else
+    echo "pinned:  $sha  ($(sgit log -1 --format=%s "$sha" 2>/dev/null || echo 'commit not in repo!'))"
+  fi
+  echo "HEAD:    $head_sha  ($(sgit log -1 --format=%s "$head_sha"))"
+  if [ -n "$sha" ] && [ "$sha" = "$head_sha" ]; then
+    echo "state:   ✓ HEAD is blessed"
+  elif [ -n "$sha" ]; then
+    echo "state:   ✗ HEAD is NOT blessed ($(sgit rev-list --count "${sha}..${head_sha}" 2>/dev/null || echo '?') commits ahead of pin)"
+  else
+    echo "state:   ✗ never blessed"
+  fi
+  if ! sgit diff --quiet 2>/dev/null || ! sgit diff --cached --quiet 2>/dev/null; then
+    echo "warning: work tree is dirty (uncommitted changes are never blessed)"
+  fi
+}
+
+# ---- history ---------------------------------------------------------------
+
+do_history() {
+  echo "--- unified log (last 30 days) ---"
+  log show --predicate 'eventMessage CONTAINS "pinned:"' --last 30d --style compact 2>/dev/null \
+    || echo "(log show unavailable)"
+}
+
+case "$action" in
+  bless)   do_bless "$@" ;;
+  sign)    do_sign "$@" ;;
+  status)  do_status "$@" ;;
+  history) do_history ;;
+  *)       usage ;;
+esac
