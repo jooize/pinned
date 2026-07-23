@@ -359,12 +359,13 @@ do_sign() {
   tag="$(sgit tag -l 'blessed/*' --points-at "$sha" | sort | tail -n1)"
   [ -n "$tag" ] || { echo "no blessed/* tag at pinned $sha -- re-bless to create one" >&2; exit 1; }
 
+  # Re-sign the blessed tag in place: same name, now carrying a signature.
   # User's own git config supplies user.signingkey + gpg.format=ssh; the
   # signature is verified against allowed_signers, so user config is fine here.
   # SSH_AUTH_SOCK passes through (we are NOT under sudo).
-  "$GIT" -C "$repo" --no-pager tag -s -f -m "signed by $inv via pinned" "${tag}.sig" "$sha"
-  echo "signed: ${tag}.sig at $sha"
-  echo "verify: git -c gpg.ssh.allowedSignersFile=<allowed_signers> verify-tag ${tag}.sig"
+  "$GIT" -C "$repo" --no-pager tag -s -f -m "signed by $inv via pinned" "$tag" "$sha"
+  echo "signed: $tag at $sha"
+  echo "verify: git -c gpg.ssh.allowedSignersFile=<allowed_signers> verify-tag $tag"
   log_action sign "$repo" "$sha"
 }
 
