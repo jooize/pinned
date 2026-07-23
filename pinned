@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # pinned -- review-and-pin a git rev behind a human gate.
 #
-#   sudo pinned bless <repo> [--trust-current]   review diff since last pin -> approve -> pin
-#   sudo pinned bless <repo> --tag <tag>         verify signed tag -> approve -> pin
-#   pinned status <repo>                         pinned SHA vs HEAD; dirty-tree warning
-#   sudo pinned setup [--yes]                    provision sudoers digest pin; self-install
+#   pinned bless <repo> [--trust-current]   review diff since last pin -> approve -> pin
+#   pinned bless <repo> --tag <tag>         verify signed tag -> approve -> pin
+#   pinned sign  <repo> <tag>               signed release tag at the PINNED sha
+#   pinned status <repo>                    pinned SHA vs HEAD; dirty-tree warning
+#   pinned setup [--yes]                    provision sudoers digest pin; self-install
+#
+# bless/setup self-elevate via sudo (re-exec of the installed root-owned
+# binary); sign runs as the user because it needs the SSH agent.
 #
 # bless runs root-owned code end to end: it resolves the rev to a SHA, shows
 # the diff from the OBJECT STORE (scrubbed env, no user git config, no pager,
@@ -12,11 +16,14 @@
 # tooling builds git+file://<repo>?rev=<sha> and nothing else. The SHA never
 # crosses a trust boundary in human hands.
 #
-# Signing is NOT pinned's job: sign releases the normal way (git tag -s).
-# bless --tag verifies such a tag against root-owned allowed signers
+# Signing exports the pin: sign creates a perfectly normal signed release
+# tag (git tag -s, nothing pinned-specific in the repo), but the sha it
+# signs comes from the root-owned pin file -- you read once at bless;
+# nothing is re-read at sign time, so there is nothing to MITM. bless
+# --tag verifies such a tag against root-owned allowed signers
 # (/etc/pinned/allowed_signers, git's native format) -- that is the
 # second-machine bootstrap: clone anywhere, install the signer key once,
-# bless the release. No pinned-specific conventions in the repo.
+# bless the release.
 #
 # Consumers read the pin from /etc/pinned/<encoded-repo-path>; for a
 # friendlier path, point a root-owned symlink at the slot, e.g.
@@ -41,6 +48,8 @@ usage: pinned <action> [args]
   bless <repo> --tag <tag>
                      (sudo) verify signed tag against
                      /etc/pinned/allowed_signers, approve, write pin
+  sign <repo> <tag>  create signed tag <tag> at the PINNED sha -- no sudo
+                     (needs your SSH agent, e.g. 1Password)
   status <repo>      pinned SHA vs HEAD; warns on dirty tree
   slot <repo>        print the repo's pin-file path (for consumer symlinks)
   setup [--yes]      (sudo) provision sudoers digest pin; self-install
@@ -53,6 +62,20 @@ EOF
 [ $# -ge 1 ] || usage
 action="$1"
 shift
+
+# Root-requiring actions self-elevate: re-exec the INSTALLED (root-owned,
+# digest-pinned) binary under sudo so the elevated code is never a copy the
+# invoker could have modified. Pre-install (setup from a checkout) falls
+# back to this script's own path.
+case "$action" in
+  bless|setup)
+    if [ "$EUID" -ne 0 ]; then
+      elev="$INSTALL_TARGET"
+      [ -x "$elev" ] || elev="$(readlink -f "$0")"
+      exec /usr/bin/sudo -- "$elev" "$action" "$@"
+    fi
+    ;;
+esac
 
 log_action() {
   # visible via: log show --predicate 'eventMessage CONTAINS "pinned:"' --last 1d
@@ -392,6 +415,43 @@ do_status() {
   fi
 }
 
+# ---- sign ------------------------------------------------------------------
+
+do_sign() {
+  # Export the pin as a normal signed release tag -- NO re-read anywhere in
+  # the path. The sha comes from the root-owned pin file and is passed to
+  # git explicitly, so "what gets signed" is exactly "what was blessed";
+  # a compromised environment can neither alter the sha nor this binary.
+  # Runs as the plain user: signing needs the user's SSH agent (1Password),
+  # which sudo strips. The agent popup is blind (shows key use, not
+  # content) -- the binding to content is this code path, plus the rule
+  # that an unprompted popup is always denied.
+  [ "$EUID" -ne 0 ] || { echo "run sign WITHOUT sudo (it needs your SSH agent)" >&2; exit 1; }
+  inv="$(id -un)"
+  [ $# -eq 2 ] || usage
+  local tag_name="$2"
+  case "$tag_name" in
+    -*) echo "invalid tag name: $tag_name" >&2; exit 1 ;;
+  esac
+  resolve_repo "$1"
+  sgit check-ref-format "refs/tags/$tag_name" \
+    || { echo "invalid tag name: $tag_name" >&2; exit 1; }
+
+  local sha
+  sha="$(read_pin "$default_pin_file")" || exit 1
+  [ -n "$sha" ] || { echo "no pin for $repo -- bless first" >&2; exit 1; }
+
+  # User git config deliberately in play here: it supplies user.signingkey
+  # and gpg.format=ssh. An attacker rewriting those can only produce a
+  # signature by the WRONG key, which allowed_signers verification rejects
+  # -- fail closed. The absolute git binary and the explicit sha are what
+  # matter; `git tag` runs no hooks and builtins can't be alias-shadowed.
+  "$GIT" -C "$repo" --no-pager tag -s -m "signed by $inv via pinned" "$tag_name" "$sha"
+  echo "signed: $tag_name at $sha (the pinned rev)"
+  echo "  consumers verify with bless --tag $tag_name against their allowed_signers"
+  log_action sign "$repo" "$sha"
+}
+
 # ---- slot ------------------------------------------------------------------
 
 do_slot() {
@@ -404,6 +464,7 @@ do_slot() {
 
 case "$action" in
   bless)  do_bless "$@" ;;
+  sign)   do_sign "$@" ;;
   status) do_status "$@" ;;
   slot)   do_slot "$@" ;;
   *)      usage ;;
