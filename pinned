@@ -130,8 +130,10 @@ read_pin() {
       return 1
       ;;
   esac
-  [ "${#sha}" -eq 40 ] || [ "${#sha}" -eq 64 ] \
-    || { echo "ERROR: pin file $f has bad sha length" >&2; return 1; }
+  # 40 (SHA-1) through 128 (SHA-512) hex chars: covers current git/hg
+  # hashes and leaves room for future backends (blake3, post-quantum).
+  [ "${#sha}" -ge 40 ] && [ "${#sha}" -le 128 ] \
+    || { echo "ERROR: pin file $f has bad hash length" >&2; return 1; }
   printf '%s\n' "$sha"
 }
 
@@ -359,13 +361,19 @@ do_sign() {
   tag="$(sgit tag -l 'blessed/*' --points-at "$sha" | sort | tail -n1)"
   [ -n "$tag" ] || { echo "no blessed/* tag at pinned $sha -- re-bless to create one" >&2; exit 1; }
 
-  # Re-sign the blessed tag in place: same name, now carrying a signature.
+  # Per-signer signature ref alongside the immutable blessing tag: the
+  # blessed/<ts> tag is never rewritten (rewriting published tags breaks
+  # fetch and trips tag-protection rules), and each signer gets their own
+  # signed/<user>/<ts>, so multiple signers coexist. -f only ever replaces
+  # this signer's OWN previous signature for the same blessing.
   # User's own git config supplies user.signingkey + gpg.format=ssh; the
   # signature is verified against allowed_signers, so user config is fine here.
   # SSH_AUTH_SOCK passes through (we are NOT under sudo).
-  "$GIT" -C "$repo" --no-pager tag -s -f -m "signed by $inv via pinned" "$tag" "$sha"
-  echo "signed: $tag at $sha"
-  echo "verify: git -c gpg.ssh.allowedSignersFile=<allowed_signers> verify-tag $tag"
+  local sig_tag
+  sig_tag="signed/$inv/${tag#blessed/}"
+  "$GIT" -C "$repo" --no-pager tag -s -f -m "signed by $inv via pinned" "$sig_tag" "$sha"
+  echo "signed: $sig_tag at $sha"
+  echo "verify: git -c gpg.ssh.allowedSignersFile=<allowed_signers> verify-tag $sig_tag"
   log_action sign "$repo" "$sha"
 }
 
