@@ -441,12 +441,33 @@ do_sign() {
   sha="$(read_pin "$default_pin_file")" || exit 1
   [ -n "$sha" ] || { echo "no pin for $repo -- bless first" >&2; exit 1; }
 
+  # An existing tag may be signed IF it already points at the pinned rev
+  # (e.g. an unsigned release tag being promoted). Pointing anywhere else
+  # is refused: sign never moves what a tag means. Note -f replaces any
+  # previous signature on the tag; co-signers use distinct tag names.
+  local force=""
+  if sgit rev-parse -q --verify "refs/tags/${tag_name}" >/dev/null 2>&1; then
+    local existing
+    existing="$(sgit rev-parse "refs/tags/${tag_name}"'^{commit}')"
+    if [ "$existing" != "$sha" ]; then
+      echo "ERROR: tag $tag_name exists at $existing, not the pinned $sha" >&2
+      echo "       refusing to move it -- pick another name, or bless that rev first" >&2
+      exit 1
+    fi
+    echo "note: $tag_name already points at the pinned rev; re-signing in place"
+    force="-f"
+  fi
+
   # User git config deliberately in play here: it supplies user.signingkey
   # and gpg.format=ssh. An attacker rewriting those can only produce a
   # signature by the WRONG key, which allowed_signers verification rejects
   # -- fail closed. The absolute git binary and the explicit sha are what
   # matter; `git tag` runs no hooks and builtins can't be alias-shadowed.
-  "$GIT" -C "$repo" --no-pager tag -s -m "signed by $inv via pinned" "$tag_name" "$sha"
+  if [ -n "$force" ]; then
+    "$GIT" -C "$repo" --no-pager tag -s -f -m "signed by $inv via pinned" "$tag_name" "$sha"
+  else
+    "$GIT" -C "$repo" --no-pager tag -s -m "signed by $inv via pinned" "$tag_name" "$sha"
+  fi
   echo "signed: $tag_name at $sha (the pinned rev)"
   echo "  consumers verify with bless --tag $tag_name against their allowed_signers"
   log_action sign "$repo" "$sha"
