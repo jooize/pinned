@@ -39,6 +39,11 @@ Blessing history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   pinned-specific conventions. Second-machine bootstrap: clone
   anywhere, install the signer key once (obtained out of band), bless
   the tag.
+- One tag holds one signature. Sign an existing tag only if it already
+  points at the pinned rev (promoting an unsigned release); moving a
+  tag is refused. Co-signers use distinct tag names by convention
+  (v1.2.3-alice, v1.2.3-bob) -- consumers bless whichever name they
+  trust; allowed_signers is any-of.
 - Deploy consumers are separate scripts: pinned states trust, never
   acts on it.
 
