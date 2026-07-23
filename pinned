@@ -34,7 +34,7 @@ usage: pinned <action> [args]
                      (needs your SSH agent, e.g. 1Password)
   status <repo>      pinned SHA vs HEAD; warns on dirty tree
   history            blessing log (unified logging + blessed/* tags)
-  setup              (sudo) provision sudoers digest pin; self-install
+  setup [--yes]      (sudo) provision sudoers digest pin; self-install
 EOF
   exit 1
 }
@@ -142,6 +142,37 @@ do_setup() {
   inv="${SUDO_USER:-}"
   [ -n "$inv" ] || { echo "setup must be invoked via sudo" >&2; exit 1; }
 
+  local assume_yes=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --yes) assume_yes=1; shift ;;
+      *)     usage ;;
+    esac
+  done
+
+  if [ "$assume_yes" -ne 1 ]; then
+    cat <<EOF
+pinned setup will:
+  1. install this script to $INSTALL_TARGET (root:wheel 755)
+  2. create $PIN_ROOT for root-owned pin files
+  3. write /etc/sudoers.d/pinned granting $inv sudo for the binary,
+     digest-pinned to its sha256 (a swapped binary makes sudo refuse)
+
+If this machine is managed declaratively (nix-darwin, NixOS, ...), you
+may prefer to declare the binary and sudoers entry in your system
+config instead of running setup -- EXCEPT on the first machine, where
+pinned gates that very deploy path: manual setup after a hand-read of
+this script is the intended bootstrap there.
+EOF
+    local answer
+    printf 'proceed? [y/N] '
+    read -r answer </dev/tty
+    case "$answer" in
+      y|Y|yes) ;;
+      *) echo "aborted; nothing installed."; exit 2 ;;
+    esac
+  fi
+
   # 1. Self-install; verify every ancestor of INSTALL_TARGET first.
   local self target target_dir
   self="$(readlink -f "$0")"
@@ -192,7 +223,7 @@ do_setup() {
 }
 
 if [ "$action" = "setup" ]; then
-  do_setup
+  do_setup "$@"
   exit 0
 fi
 
