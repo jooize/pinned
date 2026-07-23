@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # pinned -- review-and-pin a git rev behind a human gate.
 #
-#   pinned bless <repo> [--trust-current]   review diff since last pin -> approve -> pin
-#   pinned bless <repo> --tag <tag>         verify signed tag -> approve -> pin
-#   pinned sign  <repo> <tag>               signed release tag at the PINNED sha
-#   pinned status <repo>                    pinned SHA vs HEAD; dirty-tree warning
-#   pinned setup [--yes]                    provision sudoers digest pin; self-install
+#   pinned approve <repo> [--trust-current]   review diff since last pin -> approve -> pin
+#   pinned approve <repo> --tag <tag>         verify signed tag -> approve -> pin
+#   pinned sign <repo> <tag>                  signed release tag at the PINNED sha
+#   pinned status <repo>                      pinned SHA vs HEAD; dirty-tree warning
+#   pinned setup [--yes]                      provision sudoers digest pin; self-install
 #
-# bless/setup self-elevate via sudo (re-exec of the installed root-owned
+# approve/setup self-elevate via sudo (re-exec of the installed root-owned
 # binary); sign runs as the user because it needs the SSH agent.
 #
-# bless runs root-owned code end to end: it resolves the rev to a SHA, shows
+# approve runs root-owned code end to end: it resolves the rev to a SHA, shows
 # the diff from the OBJECT STORE (scrubbed env, no user git config, no pager,
 # no hooks), and writes the approved SHA to a root-owned pin file. Deploy
 # tooling builds git+file://<repo>?rev=<sha> and nothing else. The SHA never
@@ -18,12 +18,12 @@
 #
 # Signing exports the pin: sign creates a perfectly normal signed release
 # tag (git tag -s, nothing pinned-specific in the repo), but the sha it
-# signs comes from the root-owned pin file -- you read once at bless;
-# nothing is re-read at sign time, so there is nothing to MITM. bless
+# signs comes from the root-owned pin file -- you read once at approve;
+# nothing is re-read at sign time, so there is nothing to MITM. approve
 # --tag verifies such a tag against root-owned allowed signers
 # (/etc/pinned/allowed_signers, git's native format) -- that is the
 # second-machine bootstrap: clone anywhere, install the signer key once,
-# bless the release.
+# approve the release.
 #
 # Consumers read the pin from /etc/pinned/<encoded-repo-path>; for a
 # friendlier path, point a root-owned symlink at the slot, e.g.
@@ -43,9 +43,9 @@ usage() {
   cat >&2 <<EOF
 usage: pinned <action> [args]
 
-  bless <repo> [--trust-current]
+  approve <repo> [--trust-current]
                      (sudo) review diff since last pin, approve, write pin
-  bless <repo> --tag <tag>
+  approve <repo> --tag <tag>
                      (sudo) verify signed tag against
                      /etc/pinned/allowed_signers, approve, write pin
   sign <repo> <tag>  create signed tag <tag> at the PINNED sha -- no sudo
@@ -54,7 +54,7 @@ usage: pinned <action> [args]
   slot <repo>        print the repo's pin-file path (for consumer symlinks)
   setup [--yes]      (sudo) provision sudoers digest pin; self-install
 
-blessing history: log show --predicate 'eventMessage CONTAINS "pinned:"'
+approval history: log show --predicate 'eventMessage CONTAINS "pinned:"'
 EOF
   exit 1
 }
@@ -68,7 +68,7 @@ shift
 # invoker could have modified. Pre-install (setup from a checkout) falls
 # back to this script's own path.
 case "$action" in
-  bless|setup)
+  approve|setup)
     if [ "$EUID" -ne 0 ]; then
       elev="$INSTALL_TARGET"
       [ -x "$elev" ] || elev="$(readlink -f "$0")"
@@ -247,7 +247,7 @@ EOF
   log_action setup
   echo
   echo "setup complete."
-  echo "  next: sudo pinned bless <repo>"
+  echo "  next: sudo pinned approve <repo>"
 }
 
 if [ "$action" = "setup" ]; then
@@ -261,12 +261,12 @@ if [ -f "$INSTALL_TARGET" ]; then
   verify_ancestry "$INSTALL_TARGET" || exit 1
 fi
 
-# ---- bless -----------------------------------------------------------------
+# ---- approve -----------------------------------------------------------------
 
-do_bless() {
-  [ "$EUID" -eq 0 ] || { echo "bless must run as root (sudo pinned bless <repo>)" >&2; exit 1; }
+do_approve() {
+  [ "$EUID" -eq 0 ] || { echo "approve must run as root (sudo pinned approve <repo>)" >&2; exit 1; }
   inv="${SUDO_USER:-}"
-  [ -n "$inv" ] || { echo "bless must be invoked via sudo" >&2; exit 1; }
+  [ -n "$inv" ] || { echo "approve must be invoked via sudo" >&2; exit 1; }
 
   local trust_current=0 tag_arg="" repo_arg=""
   while [ $# -gt 0 ]; do
@@ -292,7 +292,7 @@ do_bless() {
     # Signature gate: verify a normally-signed release tag (git tag -s;
     # nothing pinned-specific in the repo) against ROOT-OWNED allowed
     # signers, then pin the commit it names. This is the second-machine
-    # bootstrap: clone anywhere, install the signer key once, bless the tag.
+    # bootstrap: clone anywhere, install the signer key once, approve the tag.
     case "$tag_arg" in
       -*) echo "invalid tag name: $tag_arg" >&2; exit 1 ;;
     esac
@@ -312,7 +312,7 @@ do_bless() {
     fi
     if ! sgit -c gpg.ssh.allowedSignersFile="$signers" verify-tag "$tag_arg"; then
       echo "ERROR: signature verification FAILED for tag $tag_arg; pin unchanged" >&2
-      log_action bless "$repo" "$tag_arg" verify-failed
+      log_action approve "$repo" "$tag_arg" verify-failed
       exit 1
     fi
     sha="$(sgit rev-parse "refs/tags/${tag_arg}"'^{commit}')"
@@ -329,7 +329,7 @@ do_bless() {
     sha="$(sgit rev-parse 'HEAD^{commit}')"
 
     if ! sgit diff --quiet 2>/dev/null || ! sgit diff --cached --quiet 2>/dev/null; then
-      echo "note: work tree is dirty; only COMMITTED content at $sha is being blessed" >&2
+      echo "note: work tree is dirty; only COMMITTED content at $sha is being approved" >&2
     fi
 
     if [ -n "$old_sha" ] && [ "$old_sha" = "$sha" ]; then
@@ -342,7 +342,7 @@ do_bless() {
     if [ -n "$old_sha" ]; then
       echo "pinned:  $old_sha"
       echo
-      echo "--- commits since last blessing ---"
+      echo "--- commits since last approval ---"
       sgit log --format='%h %s' "${old_sha}..${sha}" || true
       echo
       echo "--- diff ${old_sha}..${sha} (from object store) ---"
@@ -350,27 +350,27 @@ do_bless() {
     elif [ "$trust_current" -eq 1 ]; then
       echo "pinned:  (none)"
       echo
-      echo "!!! FIRST BLESSING WITH --trust-current !!!"
-      echo "!!! The full tree at $sha is being blessed WITHOUT review. !!!"
+      echo "!!! FIRST APPROVAL WITH --trust-current !!!"
+      echo "!!! The full tree at $sha is being approved WITHOUT review. !!!"
       echo "!!! Everything already in this repo becomes trusted as-is. !!!"
     else
-      echo "pinned:  (none -- first blessing: full tree review)"
+      echo "pinned:  (none -- first approval: full tree review)"
       echo
       echo "--- full tree at ${sha} (diff from empty) ---"
-      # 4b825d... is git's well-known empty tree; this shows every blessed byte.
+      # 4b825d... is git's well-known empty tree; this shows every approved byte.
       sgit diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$sha"
     fi
   fi
   echo
 
   local answer
-  printf 'bless %s? [y/N] ' "$sha"
+  printf 'approve %s? [y/N] ' "$sha"
   read -r answer </dev/tty
   case "$answer" in
     y|Y|yes) ;;
     *)
       echo "aborted; pin unchanged."
-      log_action bless "$repo" "$sha" abort
+      log_action approve "$repo" "$sha" abort
       exit 2
       ;;
   esac
@@ -383,7 +383,7 @@ do_bless() {
   chmod 644 "$tmp"
   mv -f "$tmp" "$pin_file"
   echo "pinned: $sha -> $pin_file"
-  log_action bless "$repo" "$sha"
+  log_action approve "$repo" "$sha"
 }
 
 # ---- status ----------------------------------------------------------------
@@ -404,14 +404,14 @@ do_status() {
   fi
   echo "HEAD:    $head_sha  ($(sgit log -1 --format=%s "$head_sha"))"
   if [ -n "$sha" ] && [ "$sha" = "$head_sha" ]; then
-    echo "state:   ✓ HEAD is blessed"
+    echo "state:   ✓ HEAD is approved"
   elif [ -n "$sha" ]; then
-    echo "state:   ✗ HEAD is NOT blessed ($(sgit rev-list --count "${sha}..${head_sha}" 2>/dev/null || echo '?') commits ahead of pin)"
+    echo "state:   ✗ HEAD is NOT approved ($(sgit rev-list --count "${sha}..${head_sha}" 2>/dev/null || echo '?') commits ahead of pin)"
   else
-    echo "state:   ✗ never blessed"
+    echo "state:   ✗ never approved"
   fi
   if ! sgit diff --quiet 2>/dev/null || ! sgit diff --cached --quiet 2>/dev/null; then
-    echo "warning: work tree is dirty (uncommitted changes are never blessed)"
+    echo "warning: work tree is dirty (uncommitted changes are never approved)"
   fi
 }
 
@@ -420,7 +420,7 @@ do_status() {
 do_sign() {
   # Export the pin as a normal signed release tag -- NO re-read anywhere in
   # the path. The sha comes from the root-owned pin file and is passed to
-  # git explicitly, so "what gets signed" is exactly "what was blessed";
+  # git explicitly, so "what gets signed" is exactly "what was approved";
   # a compromised environment can neither alter the sha nor this binary.
   # Runs as the plain user: signing needs the user's SSH agent (1Password),
   # which sudo strips. The agent popup is blind (shows key use, not
@@ -439,7 +439,7 @@ do_sign() {
 
   local sha
   sha="$(read_pin "$default_pin_file")" || exit 1
-  [ -n "$sha" ] || { echo "no pin for $repo -- bless first" >&2; exit 1; }
+  [ -n "$sha" ] || { echo "no pin for $repo -- approve first" >&2; exit 1; }
 
   # An existing tag may be signed IF it already points at the pinned rev
   # (e.g. an unsigned release tag being promoted). Pointing anywhere else
@@ -451,7 +451,7 @@ do_sign() {
     existing="$(sgit rev-parse "refs/tags/${tag_name}"'^{commit}')"
     if [ "$existing" != "$sha" ]; then
       echo "ERROR: tag $tag_name exists at $existing, not the pinned $sha" >&2
-      echo "       refusing to move it -- pick another name, or bless that rev first" >&2
+      echo "       refusing to move it -- pick another name, or approve that rev first" >&2
       exit 1
     fi
     echo "note: $tag_name already points at the pinned rev; re-signing in place"
@@ -469,7 +469,7 @@ do_sign() {
     "$GIT" -C "$repo" --no-pager tag -s -m "signed by $inv via pinned" "$tag_name" "$sha"
   fi
   echo "signed: $tag_name at $sha (the pinned rev)"
-  echo "  consumers verify with bless --tag $tag_name against their allowed_signers"
+  echo "  consumers verify with approve --tag $tag_name against their allowed_signers"
   log_action sign "$repo" "$sha"
 }
 
@@ -484,7 +484,7 @@ do_slot() {
 }
 
 case "$action" in
-  bless)  do_bless "$@" ;;
+  approve)  do_approve "$@" ;;
   sign)   do_sign "$@" ;;
   status) do_status "$@" ;;
   slot)   do_slot "$@" ;;
