@@ -48,5 +48,24 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
 - Deploy consumers are separate scripts: pinned states trust, never
   acts on it.
 
+## Declarative install (nix-darwin / NixOS)
+
+Machines whose system config pinned will gate can skip `setup`
+entirely and install pinned from an approved rev instead:
+
+1. Hand-read the script, then approve the config repo with the
+   checkout copy: `pinned approve <repo> --trust-current`.
+   Self-elevation falls back to the checkout pre-install -- loudly,
+   with a confirm, since that copy is user-writable.
+2. Declare in the config: the script installed root-owned from the
+   store, plus the sudoers entry with a build-time digest so it tracks
+   every update automatically:
+
+       environment.etc."sudoers.d/pinned".text =
+         "USER ALL=(root) sha256:${builtins.hashFile "sha256" ./pinned} <installed-path>\n";
+
+3. Deploy (gated, builds the approved rev). The store-installed binary
+   takes over; the fallback never fires again.
+
 Full design: ../claude-code-hardening/design/PLAN-pinned.md
 Family: ../locked (setup/verify patterns reused), ../sudowhat.

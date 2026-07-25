@@ -66,7 +66,9 @@ declaring the binary and sudoers entry there instead of running setup.
 The exception: when pinned will gate that configuration's own deploys,
 its first install cannot arrive through a deploy it hasn't gated yet --
 reading this script once and running setup by hand is the intended
-bootstrap in that case.
+bootstrap in that case. (Declarative alternative: see README,
+"Declarative install" -- approve works pre-install, so setup can be
+skipped entirely on such machines.)
 EOF
 }
 
@@ -119,7 +121,25 @@ case "$action" in
         fi
       fi
       elev="$INSTALL_TARGET"
-      [ -x "$elev" ] || elev="$(readlink -f "$0")"
+      if [ ! -x "$elev" ]; then
+        # Pre-install fallback: the checkout copy is USER-WRITABLE, so
+        # running it as root is only safe in the bootstrap window right
+        # after a hand-read. Never silent: warn and confirm. (setup is
+        # exempt -- installing the just-read checkout is its whole job.)
+        elev="$(readlink -f "$0")"
+        if [ "$action" != "setup" ]; then
+          printf '%swarning: pinned is not installed at %s.%s\n' "$C_YEL$C_B" "$INSTALL_TARGET" "$C_OFF"
+          printf '%s  About to run the UNINSTALLED, user-writable copy at%s\n' "$C_YEL" "$C_OFF"
+          printf '%s  %s as root.%s\n' "$C_YEL" "$elev" "$C_OFF"
+          printf '%s  Only proceed if you have just read this exact file.%s\n' "$C_YEL" "$C_OFF"
+          printf '%scontinue? [y/N]%s ' "$C_B" "$C_OFF"
+          read -r answer </dev/tty
+          case "$answer" in
+            y|Y|yes) ;;
+            *) echo "aborted." ; exit 2 ;;
+          esac
+        fi
+      fi
       exec /usr/bin/sudo -- "$elev" "$action" "$@"
     fi
     ;;
