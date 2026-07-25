@@ -491,9 +491,9 @@ do_list() {
     name="$(basename "$f")"
     path="$(printf '%s' "$name" | sed -e 's|%2F|/|g' -e 's|%25|%|g')"
     if sha="$(read_pin "$f")"; then
-      printf '%.10s  %s\n' "$sha" "$path"
+      printf '%s  %s\n' "$sha" "$path"
     else
-      printf '%-10s  %s\n' "CORRUPT" "$path"
+      printf 'CORRUPT  %s\n' "$path"
     fi
   done
   [ "$found" -eq 1 ] || echo "(no pins)"
