@@ -51,6 +51,7 @@ usage: pinned <action> [args]
   sign <repo> <tag>  create signed tag <tag> at the PINNED sha -- no sudo
                      (needs your SSH agent, e.g. 1Password)
   status <repo>      pinned SHA vs HEAD; warns on dirty tree
+  list               all pins: sha and repo path
   slot <repo>        print the repo's pin-file path (for consumer symlinks)
   setup [--yes]      (sudo) provision sudoers digest pin; self-install
 
@@ -186,11 +187,13 @@ pinned setup will:
   3. write /etc/sudoers.d/pinned granting $inv sudo for the binary,
      digest-pinned to its sha256 (a swapped binary makes sudo refuse)
 
-If this machine is managed declaratively (nix-darwin, NixOS, ...), you
-may prefer to declare the binary and sudoers entry in your system
-config instead of running setup -- EXCEPT on the first machine, where
-pinned gates that very deploy path: manual setup after a hand-read of
-this script is the intended bootstrap there.
+If your system configuration is managed by a tool that could install
+pinned for you (nix-darwin, NixOS, a package manager), you may prefer
+declaring the binary and sudoers entry there instead of running setup.
+The exception: when pinned will gate that configuration's own deploys,
+its first install cannot arrive through a deploy it hasn't gated yet --
+reading this script once and running setup by hand is the intended
+bootstrap in that case.
 EOF
     local answer
     printf 'proceed? [y/N] '
@@ -473,6 +476,29 @@ do_sign() {
   log_action sign "$repo" "$sha"
 }
 
+# ---- list ------------------------------------------------------------------
+
+do_list() {
+  # All pins, one per line: short sha + decoded repo path. Unprivileged
+  # (pin files are world-readable). Decode order reverses encode's:
+  # %2F -> / first, then %25 -> %.
+  inv="$(id -un)"
+  [ -d "$PIN_ROOT" ] || { echo "no pin root ($PIN_ROOT) -- run setup first" >&2; exit 1; }
+  local f name path sha found=0
+  for f in "$PIN_ROOT"/%2F*; do
+    [ -e "$f" ] || continue
+    found=1
+    name="$(basename "$f")"
+    path="$(printf '%s' "$name" | sed -e 's|%2F|/|g' -e 's|%25|%|g')"
+    if sha="$(read_pin "$f")"; then
+      printf '%.10s  %s\n' "$sha" "$path"
+    else
+      printf '%-10s  %s\n' "CORRUPT" "$path"
+    fi
+  done
+  [ "$found" -eq 1 ] || echo "(no pins)"
+}
+
 # ---- slot ------------------------------------------------------------------
 
 do_slot() {
@@ -484,9 +510,10 @@ do_slot() {
 }
 
 case "$action" in
-  approve)  do_approve "$@" ;;
-  sign)   do_sign "$@" ;;
-  status) do_status "$@" ;;
-  slot)   do_slot "$@" ;;
-  *)      usage ;;
+  approve) do_approve "$@" ;;
+  sign)    do_sign "$@" ;;
+  status)  do_status "$@" ;;
+  list)    do_list ;;
+  slot)    do_slot "$@" ;;
+  *)       usage ;;
 esac

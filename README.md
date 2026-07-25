@@ -15,6 +15,7 @@ pin file. Deploy tooling builds only `git+file://...?rev=<pinned sha>`.
     pinned approve <repo> --tag <tag>   signature gate: verify signed tag -> pin
     pinned sign <repo> <tag>          signed release tag at the PINNED sha
     pinned status <repo>
+    pinned list                       all pins: sha and repo path
     pinned slot <repo>                print the repo's pin-file path
 
 approve and setup self-elevate via sudo (re-exec of the installed
