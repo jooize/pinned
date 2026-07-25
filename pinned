@@ -39,6 +39,37 @@ set -euo pipefail
 : "${INSTALL_TARGET:=/usr/local/sbin/pinned}"
 : "${PIN_ROOT:=/etc/pinned}"
 
+# Colour only when stdout is a terminal (piping/redirecting stays clean).
+if [ -t 1 ]; then
+  C_OFF=$'\033[0m' C_B=$'\033[1m' C_DIM=$'\033[2m'
+  C_RED=$'\033[31m' C_GRN=$'\033[32m' C_YEL=$'\033[33m' C_CYN=$'\033[36m'
+  DIFF_COLOR=always
+else
+  C_OFF='' C_B='' C_DIM='' C_RED='' C_GRN='' C_YEL='' C_CYN=''
+  DIFF_COLOR=never
+fi
+
+# What setup would do -- shown BEFORE any sudo prompt, so nobody has to
+# authenticate just to read the plan. $1 = the user the sudoers entry names.
+setup_plan() {
+  cat <<EOF
+${C_B}pinned setup will:${C_OFF}
+  1. install this script to $INSTALL_TARGET (root:wheel 755)
+  2. create $PIN_ROOT for root-owned pin files
+  3. write /etc/sudoers.d/pinned granting ${1} sudo for the binary,
+     digest-pinned to its sha256 (a swapped binary makes sudo refuse);
+     no NOPASSWD -- sudo still authenticates every invocation
+
+If your system configuration is managed by a tool that could install
+pinned for you (nix-darwin, NixOS, a package manager), you may prefer
+declaring the binary and sudoers entry there instead of running setup.
+The exception: when pinned will gate that configuration's own deploys,
+its first install cannot arrive through a deploy it hasn't gated yet --
+reading this script once and running setup by hand is the intended
+bootstrap in that case.
+EOF
+}
+
 usage() {
   cat >&2 <<EOF
 usage: pinned <action> [args]
@@ -71,6 +102,22 @@ shift
 case "$action" in
   approve|setup)
     if [ "$EUID" -ne 0 ]; then
+      # setup: show the plan and confirm BEFORE sudo, so reading what it
+      # will do never costs an authentication.
+      if [ "$action" = "setup" ]; then
+        want_yes=0
+        for a in "$@"; do [ "$a" = "--yes" ] && want_yes=1; done
+        if [ "$want_yes" -eq 0 ]; then
+          setup_plan "$(id -un)"
+          printf '%sproceed? [y/N]%s ' "$C_B" "$C_OFF"
+          read -r answer </dev/tty
+          case "$answer" in
+            y|Y|yes) ;;
+            *) echo "aborted; nothing installed."; exit 2 ;;
+          esac
+          set -- --yes "$@"
+        fi
+      fi
       elev="$INSTALL_TARGET"
       [ -x "$elev" ] || elev="$(readlink -f "$0")"
       exec /usr/bin/sudo -- "$elev" "$action" "$@"
@@ -179,24 +226,12 @@ do_setup() {
     esac
   done
 
+  # Interactive confirm for direct-root invocation (sudo ./pinned setup);
+  # the unprivileged path already confirmed pre-elevation and passed --yes.
   if [ "$assume_yes" -ne 1 ]; then
-    cat <<EOF
-pinned setup will:
-  1. install this script to $INSTALL_TARGET (root:wheel 755)
-  2. create $PIN_ROOT for root-owned pin files
-  3. write /etc/sudoers.d/pinned granting $inv sudo for the binary,
-     digest-pinned to its sha256 (a swapped binary makes sudo refuse)
-
-If your system configuration is managed by a tool that could install
-pinned for you (nix-darwin, NixOS, a package manager), you may prefer
-declaring the binary and sudoers entry there instead of running setup.
-The exception: when pinned will gate that configuration's own deploys,
-its first install cannot arrive through a deploy it hasn't gated yet --
-reading this script once and running setup by hand is the intended
-bootstrap in that case.
-EOF
+    setup_plan "$inv"
     local answer
-    printf 'proceed? [y/N] '
+    printf '%sproceed? [y/N]%s ' "$C_B" "$C_OFF"
     read -r answer </dev/tty
     case "$answer" in
       y|Y|yes) ;;
@@ -314,19 +349,20 @@ do_approve() {
       exit 1
     fi
     if ! sgit -c gpg.ssh.allowedSignersFile="$signers" verify-tag "$tag_arg"; then
-      echo "ERROR: signature verification FAILED for tag $tag_arg; pin unchanged" >&2
+      printf '%sERROR: signature verification FAILED for tag %s; pin unchanged%s\n' "$C_RED$C_B" "$tag_arg" "$C_OFF" >&2
       log_action approve "$repo" "$tag_arg" verify-failed
       exit 1
     fi
     sha="$(sgit rev-parse "refs/tags/${tag_arg}"'^{commit}')"
     if [ -n "$old_sha" ] && [ "$old_sha" = "$sha" ]; then
-      echo "already pinned: $sha"
+      printf '%salready pinned: %s%s\n' "$C_GRN" "$sha" "$C_OFF"
       exit 0
     fi
-    echo "repo:    $repo"
-    echo "tag:     $tag_arg  (signature verified against $signers)"
-    echo "commit:  $sha  ($(sgit log -1 --format=%s "$sha"))"
-    [ -n "$old_sha" ] && echo "pinned:  $old_sha"
+    printf '%srepo:%s    %s\n' "$C_DIM" "$C_OFF" "$repo"
+    printf '%stag:%s     %s  %s✓ signature verified against %s%s\n' "$C_DIM" "$C_OFF" "$tag_arg" "$C_GRN" "$signers" "$C_OFF"
+    printf '%scommit:%s  %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$sha" "$C_OFF" \
+      "$C_DIM" "$(sgit log -1 --format=%s "$sha")" "$C_OFF"
+    [ -n "$old_sha" ] && printf '%spinned:%s  %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_sha" "$C_OFF"
   else
     # Human gate: read the diff since the last pin from the object store.
     sha="$(sgit rev-parse 'HEAD^{commit}')"
@@ -336,43 +372,44 @@ do_approve() {
     fi
 
     if [ -n "$old_sha" ] && [ "$old_sha" = "$sha" ]; then
-      echo "already pinned: $sha"
+      printf '%salready pinned: %s%s\n' "$C_GRN" "$sha" "$C_OFF"
       exit 0
     fi
 
-    echo "repo:    $repo"
-    echo "HEAD:    $sha  ($(sgit log -1 --format=%s "$sha"))"
+    printf '%srepo:%s    %s\n' "$C_DIM" "$C_OFF" "$repo"
+    printf '%sHEAD:%s    %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$sha" "$C_OFF" \
+      "$C_DIM" "$(sgit log -1 --format=%s "$sha")" "$C_OFF"
     if [ -n "$old_sha" ]; then
-      echo "pinned:  $old_sha"
+      printf '%spinned:%s  %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_sha" "$C_OFF"
       echo
-      echo "--- commits since last approval ---"
+      printf '%s--- commits since last approval ---%s\n' "$C_B" "$C_OFF"
       sgit log --format='%h %s' "${old_sha}..${sha}" || true
       echo
-      echo "--- diff ${old_sha}..${sha} (from object store) ---"
-      sgit diff "$old_sha" "$sha"
+      printf '%s--- diff %.10s..%.10s (from object store) ---%s\n' "$C_B" "$old_sha" "$sha" "$C_OFF"
+      sgit -c color.diff="$DIFF_COLOR" diff "$old_sha" "$sha"
     elif [ "$trust_current" -eq 1 ]; then
-      echo "pinned:  (none)"
+      printf '%spinned:%s  (none)\n' "$C_DIM" "$C_OFF"
       echo
-      echo "!!! FIRST APPROVAL WITH --trust-current !!!"
-      echo "!!! The full tree at $sha is being approved WITHOUT review. !!!"
-      echo "!!! Everything already in this repo becomes trusted as-is. !!!"
+      printf '%s!!! FIRST APPROVAL WITH --trust-current !!!%s\n' "$C_RED$C_B" "$C_OFF"
+      printf '%s!!! The full tree at %s is being approved WITHOUT review. !!!%s\n' "$C_RED$C_B" "$sha" "$C_OFF"
+      printf '%s!!! Everything already in this repo becomes trusted as-is. !!!%s\n' "$C_RED$C_B" "$C_OFF"
     else
-      echo "pinned:  (none -- first approval: full tree review)"
+      printf '%spinned:%s  (none -- first approval: full tree review)\n' "$C_DIM" "$C_OFF"
       echo
-      echo "--- full tree at ${sha} (diff from empty) ---"
+      printf '%s--- full tree at %.10s (diff from empty) ---%s\n' "$C_B" "$sha" "$C_OFF"
       # 4b825d... is git's well-known empty tree; this shows every approved byte.
-      sgit diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$sha"
+      sgit -c color.diff="$DIFF_COLOR" diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$sha"
     fi
   fi
   echo
 
   local answer
-  printf 'approve %s? [y/N] ' "$sha"
+  printf '%sapprove %s%s%s? [y/N]%s ' "$C_B" "$C_CYN" "$sha" "$C_OFF$C_B" "$C_OFF"
   read -r answer </dev/tty
   case "$answer" in
     y|Y|yes) ;;
     *)
-      echo "aborted; pin unchanged."
+      printf '%saborted; pin unchanged.%s\n' "$C_YEL" "$C_OFF"
       log_action approve "$repo" "$sha" abort
       exit 2
       ;;
@@ -385,7 +422,7 @@ do_approve() {
   chown root:wheel "$tmp"
   chmod 644 "$tmp"
   mv -f "$tmp" "$pin_file"
-  echo "pinned: $sha -> $pin_file"
+  printf '%s✓ pinned:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$sha" "$C_OFF" "$pin_file"
   log_action approve "$repo" "$sha"
 }
 
@@ -398,23 +435,26 @@ do_status() {
   sha="$(read_pin "$pin_file")" || exit 1
   head_sha="$(sgit rev-parse 'HEAD^{commit}')"
 
-  echo "repo:    $repo"
-  echo "pin:     ${pin_file}"
+  printf '%srepo:%s    %s\n' "$C_DIM" "$C_OFF" "$repo"
+  printf '%spin:%s     %s\n' "$C_DIM" "$C_OFF" "$pin_file"
   if [ -z "$sha" ]; then
-    echo "pinned:  (none)"
+    printf '%spinned:%s  (none)\n' "$C_DIM" "$C_OFF"
   else
-    echo "pinned:  $sha  ($(sgit log -1 --format=%s "$sha" 2>/dev/null || echo 'commit not in repo!'))"
+    printf '%spinned:%s  %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$sha" "$C_OFF" \
+      "$C_DIM" "$(sgit log -1 --format=%s "$sha" 2>/dev/null || echo 'commit not in repo!')" "$C_OFF"
   fi
-  echo "HEAD:    $head_sha  ($(sgit log -1 --format=%s "$head_sha"))"
+  printf '%sHEAD:%s    %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$head_sha" "$C_OFF" \
+    "$C_DIM" "$(sgit log -1 --format=%s "$head_sha")" "$C_OFF"
   if [ -n "$sha" ] && [ "$sha" = "$head_sha" ]; then
-    echo "state:   ✓ HEAD is approved"
+    printf '%sstate:%s   %s✓ HEAD is approved%s\n' "$C_DIM" "$C_OFF" "$C_GRN" "$C_OFF"
   elif [ -n "$sha" ]; then
-    echo "state:   ✗ HEAD is NOT approved ($(sgit rev-list --count "${sha}..${head_sha}" 2>/dev/null || echo '?') commits ahead of pin)"
+    printf '%sstate:%s   %s✗ HEAD is NOT approved (%s commits ahead of pin)%s\n' "$C_DIM" "$C_OFF" \
+      "$C_RED" "$(sgit rev-list --count "${sha}..${head_sha}" 2>/dev/null || echo '?')" "$C_OFF"
   else
-    echo "state:   ✗ never approved"
+    printf '%sstate:%s   %s✗ never approved%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF"
   fi
   if ! sgit diff --quiet 2>/dev/null || ! sgit diff --cached --quiet 2>/dev/null; then
-    echo "warning: work tree is dirty (uncommitted changes are never approved)"
+    printf '%swarning: work tree is dirty (uncommitted changes are never approved)%s\n' "$C_YEL" "$C_OFF"
   fi
 }
 
@@ -471,8 +511,8 @@ do_sign() {
   else
     "$GIT" -C "$repo" --no-pager tag -s -m "signed by $inv via pinned" "$tag_name" "$sha"
   fi
-  echo "signed: $tag_name at $sha (the pinned rev)"
-  echo "  consumers verify with approve --tag $tag_name against their allowed_signers"
+  printf '%s✓ signed:%s %s at %s%s%s (the pinned rev)\n' "$C_GRN$C_B" "$C_OFF" "$tag_name" "$C_CYN" "$sha" "$C_OFF"
+  printf '%s  consumers verify with approve --tag %s against their allowed_signers%s\n' "$C_DIM" "$tag_name" "$C_OFF"
   log_action sign "$repo" "$sha"
 }
 
@@ -491,9 +531,9 @@ do_list() {
     name="$(basename "$f")"
     path="$(printf '%s' "$name" | sed -e 's|%2F|/|g' -e 's|%25|%|g')"
     if sha="$(read_pin "$f")"; then
-      printf '%s  %s\n' "$sha" "$path"
+      printf '%s%s%s  %s\n' "$C_CYN" "$sha" "$C_OFF" "$path"
     else
-      printf 'CORRUPT  %s\n' "$path"
+      printf '%sCORRUPT%s  %s\n' "$C_RED$C_B" "$C_OFF" "$path"
     fi
   done
   [ "$found" -eq 1 ] || echo "(no pins)"
