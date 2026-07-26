@@ -1,0 +1,102 @@
+# Declarative pinned install for nix-darwin and NixOS.
+#
+# Installs the pinned script into the system profile and writes a
+# digest-pinned /etc/sudoers.d/pinned entry. Both derive from ONE string
+# at eval time (scriptText below), so the sudoers digest and the
+# installed binary can never disagree -- the drift window that manual
+# `pinned setup` closes by re-running is structurally absent here.
+#
+# Conventional paths only: the binary lands in the system profile like
+# any other package (environment.systemPackages); the sudoers line names
+# the stable /run/current-system/sw/bin/pinned path, which survives
+# generations and always resolves to the current build's bytes.
+#
+# Live-verify once per platform: sudo's Digest_Spec check must accept
+# the profile path (a symlink chain into the store -- sudo hashes the
+# file it resolves and executes). If a platform's sudo refuses, point
+# installPath at a real file installed by other means; do not weaken
+# the digest.
+{ config, lib, pkgs, ... }:
+
+let
+  cfg = config.security.pinned;
+
+  srcText = builtins.readFile ../pinned;
+
+  # The script self-elevates by re-exec'ing $INSTALL_TARGET under sudo.
+  # Rewrite its default from the manual-install path to ours, and fail
+  # the eval loudly if the anchor line ever changes shape.
+  anchor = '': "''${INSTALL_TARGET:=/usr/local/sbin/pinned}"'';
+  scriptText =
+    assert lib.assertMsg (lib.hasInfix anchor srcText)
+      "pinned/nix: INSTALL_TARGET anchor line not found in ../pinned; update module.nix";
+    builtins.replaceStrings
+      [ anchor ]
+      [ '': "''${INSTALL_TARGET:=${cfg.installPath}}"'' ]
+      srcText;
+
+  package = pkgs.writeScriptBin "pinned" scriptText;
+
+  digest = builtins.hashString "sha256" scriptText;
+
+  sudoersText = lib.concatMapStrings
+    (user: "${user} ALL=(root) sha256:${digest} ${cfg.installPath}\n")
+    cfg.users;
+
+  # Syntax-check with visudo where the sudo package builds (Linux); a
+  # malformed sudoers.d file can lock sudo out entirely. On Darwin the
+  # generated line is the only content and users are shape-asserted
+  # below, so the residual risk is the fixed template itself.
+  sudoersFile =
+    if pkgs.stdenv.hostPlatform.isLinux then
+      pkgs.runCommand "sudoers-pinned"
+        { nativeBuildInputs = [ pkgs.sudo ]; }
+        ''
+          printf '%s' ${lib.escapeShellArg sudoersText} > pinned
+          visudo -c -f pinned
+          install -m 444 pinned $out
+        ''
+    else
+      pkgs.writeText "sudoers-pinned" sudoersText;
+
+  validUser = user: builtins.match "[A-Za-z_][A-Za-z0-9_-]*" user != null;
+in
+{
+  options.security.pinned = {
+    enable = lib.mkEnableOption "pinned, the review-and-pin trust gate";
+
+    users = lib.mkOption {
+      type = with lib.types; listOf str;
+      description = ''
+        Users granted sudo for the pinned binary, digest-pinned to the
+        installed bytes. No NOPASSWD: sudo still authenticates.
+      '';
+    };
+
+    installPath = lib.mkOption {
+      type = lib.types.str;
+      default = "/run/current-system/sw/bin/pinned";
+      description = ''
+        Stable path the sudoers entry names and the script re-execs for
+        self-elevation. Must be the path actually invoked under sudo.
+      '';
+    };
+  };
+
+  config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.users != [ ];
+        message = "security.pinned.users must name at least one user";
+      }
+      {
+        assertion = lib.all validUser cfg.users;
+        message = "security.pinned.users: user names must match [A-Za-z_][A-Za-z0-9_-]* (they are spliced into sudoers)";
+      }
+    ];
+
+    environment.systemPackages = [ package ];
+
+    environment.etc."sudoers.d/pinned".source = sudoersFile;
+  };
+}
