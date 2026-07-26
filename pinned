@@ -54,21 +54,23 @@ fi
 setup_plan() {
   cat <<EOF
 ${C_B}pinned setup will:${C_OFF}
-  1. install this script to $INSTALL_TARGET (root:wheel 755)
-  2. create $PIN_ROOT for root-owned pin files
-  3. write /etc/sudoers.d/pinned granting ${1} sudo for the binary,
-     digest-pinned to its sha256 (a swapped binary makes sudo refuse);
-     no NOPASSWD -- sudo still authenticates every invocation
+
+  ${C_B}1.${C_OFF} install this script to ${C_CYN}$INSTALL_TARGET${C_OFF} ${C_DIM}(root:wheel 755)${C_OFF}
+  ${C_B}2.${C_OFF} create ${C_CYN}$PIN_ROOT${C_OFF} for root-owned pin files
+  ${C_B}3.${C_OFF} write ${C_CYN}/etc/sudoers.d/pinned${C_OFF} granting ${C_B}${1}${C_OFF} sudo for the binary,
+     digest-pinned to its sha256 ${C_DIM}(a swapped binary makes sudo refuse)${C_OFF};
+     ${C_YEL}no NOPASSWD${C_OFF} -- sudo still authenticates every invocation
 
 If your system configuration is managed by a tool that could install
-pinned for you (nix-darwin, NixOS, a package manager), you may prefer
-declaring the binary and sudoers entry there instead of running setup.
-The exception: when pinned will gate that configuration's own deploys,
+pinned for you ${C_DIM}(nix-darwin, NixOS, a package manager)${C_OFF}, you may
+prefer declaring the binary and sudoers entry there instead of running
+setup: see ${C_CYN}README, "Declarative install"${C_OFF} -- approve works
+pre-install, so setup can be skipped entirely on such machines.
+
+${C_DIM}The exception: when pinned will gate that configuration's own deploys,
 its first install cannot arrive through a deploy it hasn't gated yet --
 reading this script once and running setup by hand is the intended
-bootstrap in that case. (Declarative alternative: see README,
-"Declarative install" -- approve works pre-install, so setup can be
-skipped entirely on such machines.)
+bootstrap in that case.${C_OFF}
 EOF
 }
 
