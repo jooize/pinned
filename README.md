@@ -56,15 +56,23 @@ EXECUTE that copy privileged, though. Copy it with the OS's own
 tooling (which moves bytes but runs none of them), then read the copy
 user-space can no longer touch, then run only what you read:
 
-    sudo /usr/bin/install -o root -g wheel -m 755 ./pinned /usr/local/sbin/pinned
-    less /usr/local/sbin/pinned         # THE read that anchors trust
-    sudo /usr/local/sbin/pinned setup   # or: approve <repo> --trust-current
+    sudo /usr/bin/install -o root -g wheel -m 755 ./pinned /usr/local/sbin/pinned-unverified
+    less /usr/local/sbin/pinned-unverified   # THE read that anchors trust
+    sudo mv /usr/local/sbin/pinned-unverified /usr/local/sbin/pinned
+    sudo /usr/local/sbin/pinned setup        # or: approve <repo> --trust-current
+
+The staging name keeps one invariant visible in the filesystem: the
+final name only ever holds bytes a human has read. Promotion is `mv`,
+not pinned code -- trusted tooling, preserves the inode, so the bytes
+you read are exactly the bytes promoted. Never execute anything named
+-unverified.
 
 Reading the checkout beforehand is still sensible, but it can never be
 conclusive -- anything running as you can swap the file between your
 read and any use of it. The root-owned copy cannot change, so the
-second read is the one that counts. Privileged execution then touches
-only system binaries (sudo, install, less) and bytes you have read.
+read after install is the one that counts. Privileged execution then
+touches only system binaries (sudo, install, less, mv) and bytes you
+have read.
 
 The direct route (running the checkout as root via setup or the
 pre-install fallback) still works and warns loudly; prefer this one.
