@@ -135,6 +135,10 @@ case "$action" in
           printf '%s  %s as root.%s\n' "$C_YEL" "$elev" "$C_OFF"
           printf '%s  Only proceed if you have just read this exact file and%s\n' "$C_YEL" "$C_OFF"
           printf '%s  trust your user-space not to have swapped it since.%s\n' "$C_YEL" "$C_OFF"
+          printf '%s  Safer: copy with trusted tooling, read the root-owned copy,%s\n' "$C_DIM" "$C_OFF"
+          printf '%s  then rerun (self-elevation picks up the installed copy):%s\n' "$C_DIM" "$C_OFF"
+          printf '%s    sudo /usr/bin/install -o root -g wheel -m 755 \\%s\n' "$C_DIM" "$C_OFF"
+          printf '%s      %s %s%s\n' "$C_DIM" "$elev" "$INSTALL_TARGET" "$C_OFF"
           printf '%scontinue? [y/N]%s ' "$C_B" "$C_OFF"
           read -r answer </dev/tty
           case "$answer" in
@@ -439,7 +443,12 @@ do_approve() {
   esac
 
   # Atomic pin write: stage in the (root-owned) pin dir, single rename.
+  # Create the pin root here too (not only in setup) so approve works on
+  # machines that never run setup (declarative installs); install -d also
+  # re-asserts root:wheel 755 on an existing dir.
   local tmp
+  install -d -m 755 -o root -g wheel "$PIN_ROOT"
+  verify_root_owned_path "$PIN_ROOT" || exit 1
   tmp="$(mktemp "$PIN_ROOT/.pin.XXXXXX")"
   printf '%s\n' "$sha" >"$tmp"
   chown root:wheel "$tmp"

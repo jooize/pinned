@@ -48,24 +48,53 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
 - Deploy consumers are separate scripts: pinned states trust, never
   acts on it.
 
+## Bootstrap without executing unverified code
+
+Every trust tool has a first-install chicken-and-egg: the only copy
+that exists lives in a user-writable checkout. You never have to
+EXECUTE that copy privileged, though. Copy it with the OS's own
+tooling (which moves bytes but runs none of them), then read the copy
+user-space can no longer touch, then run only what you read:
+
+    sudo /usr/bin/install -o root -g wheel -m 755 ./pinned /usr/local/sbin/pinned
+    less /usr/local/sbin/pinned         # THE read that anchors trust
+    sudo /usr/local/sbin/pinned setup   # or: approve <repo> --trust-current
+
+Reading the checkout beforehand is still sensible, but it can never be
+conclusive -- anything running as you can swap the file between your
+read and any use of it. The root-owned copy cannot change, so the
+second read is the one that counts. Privileged execution then touches
+only system binaries (sudo, install, less) and bytes you have read.
+
+The direct route (running the checkout as root via setup or the
+pre-install fallback) still works and warns loudly; prefer this one.
+
 ## Declarative install (nix-darwin / NixOS)
 
 Machines whose system config pinned will gate can skip `setup`
 entirely and install pinned from an approved rev instead:
 
-1. Hand-read the script, then approve the config repo with the
-   checkout copy: `pinned approve <repo> --trust-current`.
-   Self-elevation falls back to the checkout pre-install -- loudly,
-   with a confirm, since that copy is user-writable.
-2. Declare in the config: the script installed root-owned from the
-   store, plus the sudoers entry with a build-time digest so it tracks
-   every update automatically:
+1. Approve the config repo using the bootstrap above -- approve
+   creates /etc/pinned itself, so setup never runs:
 
-       environment.etc."sudoers.d/pinned".text =
-         "USER ALL=(root) sha256:${builtins.hashFile "sha256" ./pinned} <installed-path>\n";
+       sudo /usr/local/sbin/pinned approve <repo> --trust-current
+
+2. Import the flake module and declare who may run it:
+
+       inputs.pinned.url = "git+file:///path/to/pinned";   # rev-locked in flake.lock
+       # in the system config:
+       imports = [ inputs.pinned.darwinModules.default ];  # or nixosModules.default
+       security.pinned = { enable = true; users = [ "USER" ]; };
+
+   The module installs the script into the system profile and writes
+   /etc/sudoers.d/pinned with an eval-time sha256 of the exact bytes
+   it installs -- digest and binary derive from one source in one
+   build, so they can never disagree. nix/module.nix is short: read it.
 
 3. Deploy (gated, builds the approved rev). The store-installed binary
-   takes over; the fallback never fires again.
+   takes over; the bootstrap copy at /usr/local/sbin/pinned can be
+   removed (`sudo rm`) -- the module's sudoers entry names only the
+   system-profile path.
 
 Full design: ../claude-code-hardening/design/PLAN-pinned.md
 Family: ../locked (setup/verify patterns reused), ../sudowhat.
