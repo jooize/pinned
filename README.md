@@ -56,16 +56,21 @@ EXECUTE that copy privileged, though. Copy it with the OS's own
 tooling (which moves bytes but runs none of them), then read the copy
 user-space can no longer touch, then run only what you read:
 
-    sudo /usr/bin/install -o root -g wheel -m 755 ./pinned /usr/local/sbin/pinned-unverified
+    sudo /usr/bin/install -o root -g wheel -m 444 ./pinned /usr/local/sbin/pinned-unverified
     less /usr/local/sbin/pinned-unverified   # THE read that anchors trust
     sudo mv /usr/local/sbin/pinned-unverified /usr/local/sbin/pinned
+    sudo chmod 755 /usr/local/sbin/pinned
     sudo /usr/local/sbin/pinned setup        # or: approve <repo> --trust-current
 
-The staging name keeps one invariant visible in the filesystem: the
-final name only ever holds bytes a human has read. Promotion is `mv`,
-not pinned code -- trusted tooling, preserves the inode, so the bytes
-you read are exactly the bytes promoted. Never execute anything named
--unverified.
+The staging keeps two invariants visible in the filesystem: the final
+name only ever holds bytes a human has read, and the execute bit only
+ever exists under the final name -- staged bytes cannot be exec'd at
+all (mode 444; the kernel refuses). Promotion is `mv` + `chmod`, not
+pinned code: trusted tooling, inode-preserving, so the bytes you read
+are exactly the bytes promoted. mv before chmod -- a non-executable
+verified file fails closed; an executable -unverified would not.
+Never execute anything named -unverified (the x-bit stops exec, not
+`bash pinned-unverified` -- the name rule still carries).
 
 Reading the checkout beforehand is still sensible, but it can never be
 conclusive -- anything running as you can swap the file between your
