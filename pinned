@@ -131,7 +131,8 @@ case "$action" in
           printf '%swarning: pinned is not installed at %s.%s\n' "$C_YEL$C_B" "$INSTALL_TARGET" "$C_OFF"
           printf '%s  About to run the UNINSTALLED, user-writable copy at%s\n' "$C_YEL" "$C_OFF"
           printf '%s  %s as root.%s\n' "$C_YEL" "$elev" "$C_OFF"
-          printf '%s  Only proceed if you have just read this exact file.%s\n' "$C_YEL" "$C_OFF"
+          printf '%s  Only proceed if you have just read this exact file and%s\n' "$C_YEL" "$C_OFF"
+          printf '%s  trust your user-space not to have swapped it since.%s\n' "$C_YEL" "$C_OFF"
           printf '%scontinue? [y/N]%s ' "$C_B" "$C_OFF"
           read -r answer </dev/tty
           case "$answer" in
