@@ -56,6 +56,7 @@ EXECUTE that copy privileged, though. Copy it with the OS's own
 tooling (which moves bytes but runs none of them), then read the copy
 user-space can no longer touch, then run only what you read:
 
+    sudo /usr/bin/install -d -o root -g wheel -m 755 /usr/local/sbin
     sudo /usr/bin/install -o root -g wheel -m 444 ./pinned /usr/local/sbin/pinned-unverified
     less /usr/local/sbin/pinned-unverified   # THE read that anchors trust
     sudo mv /usr/local/sbin/pinned-unverified /usr/local/sbin/pinned

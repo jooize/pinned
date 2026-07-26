@@ -138,6 +138,7 @@ case "$action" in
           printf '%s  Safer: stage with trusted tooling, read the root-owned copy,%s\n' "$C_DIM" "$C_OFF"
           printf '%s  promote it, rerun (README: "Bootstrap without executing%s\n' "$C_DIM" "$C_OFF"
           printf '%s  unverified code"):%s\n' "$C_DIM" "$C_OFF"
+          printf '%s    sudo /usr/bin/install -d -o root -g wheel -m 755 %s%s\n' "$C_DIM" "$(dirname "$INSTALL_TARGET")" "$C_OFF"
           printf '%s    sudo /usr/bin/install -o root -g wheel -m 444 \\%s\n' "$C_DIM" "$C_OFF"
           printf '%s      %s %s-unverified%s\n' "$C_DIM" "$elev" "$INSTALL_TARGET" "$C_OFF"
           printf '%s    less %s-unverified%s\n' "$C_DIM" "$INSTALL_TARGET" "$C_OFF"
