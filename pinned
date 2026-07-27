@@ -174,6 +174,22 @@ page() {
   fi
 }
 
+# Review diff. NEVER call `sgit diff` directly for anything a human reads:
+# .gitattributes (attacker-writable, and it works UNTRACKED -- no commit, no
+# trace in the reviewed content) can route a path through an external diff
+# driver (diff.<n>.command) or a textconv filter (diff.<n>.textconv) defined in
+# the repo-local .git/config, which is equally attacker-writable. env -i and
+# GIT_CONFIG_{GLOBAL,SYSTEM}=/dev/null do NOT stop this -- the drivers come
+# from repo-local config, not global/system config or the environment. A
+# textconv that maps both sides to one constant renders as an EMPTY diff:
+# "this commit changed nothing", for a commit that changed everything.
+# --no-ext-diff --no-textconv is the only thing that closes it.
+# Measured 2026-07-27 on git 2.54.0; harness + evidence in the hardening repo:
+# proofs/claims/git/git-diff-display-falsifiable-by-repo-drivers.md
+sgit_review_diff() {
+  sgit --no-pager -c color.diff="$DIFF_COLOR" diff --no-ext-diff --no-textconv "$@"
+}
+
 sgit() {
   # safe.directory: running as root on a user-owned repo trips git's
   # ownership check, and env -i strips the SUDO_UID escape hatch git
@@ -532,7 +548,7 @@ do_approve() {
     # Human gate: read the diff since the last pin from the object store.
     hash="$(sgit rev-parse 'HEAD^{commit}')"
 
-    if ! sgit diff --quiet 2>/dev/null || ! sgit diff --cached --quiet 2>/dev/null; then
+    if ! sgit diff --no-ext-diff --no-textconv --quiet 2>/dev/null || ! sgit diff --no-ext-diff --no-textconv --cached --quiet 2>/dev/null; then
       echo "note: work tree is dirty; only COMMITTED content at $hash is being approved" >&2
     fi
 
@@ -554,7 +570,7 @@ do_approve() {
       # Capture first so a git failure aborts (set -e) BEFORE anything is
       # shown as reviewable; then page. Early pager quit (SIGPIPE) is the
       # reviewer's own act -- the diff itself already succeeded.
-      diff_out="$(sgit -c color.diff="$DIFF_COLOR" diff "$old_hash" "$hash")"
+      diff_out="$(sgit_review_diff "$old_hash" "$hash")"
       printf '%s\n' "$diff_out" | page || true
     elif [ "$trust_current" -eq 1 ]; then
       printf '%spinned:%s  (none)\n' "$C_DIM" "$C_OFF"
@@ -567,7 +583,7 @@ do_approve() {
       echo
       printf '%s--- full tree at %.10s (diff from empty) ---%s\n' "$C_B" "$hash" "$C_OFF"
       # 4b825d... is git's well-known empty tree; this shows every approved byte.
-      diff_out="$(sgit -c color.diff="$DIFF_COLOR" diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
+      diff_out="$(sgit_review_diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
       printf '%s\n' "$diff_out" | page || true
     fi
   fi
@@ -623,7 +639,7 @@ do_status() {
   else
     printf '%sstate:%s   %s✗ never approved%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF"
   fi
-  if ! sgit diff --quiet 2>/dev/null || ! sgit diff --cached --quiet 2>/dev/null; then
+  if ! sgit diff --no-ext-diff --no-textconv --quiet 2>/dev/null || ! sgit diff --no-ext-diff --no-textconv --cached --quiet 2>/dev/null; then
     printf '%swarning: work tree is dirty (uncommitted changes are never approved)%s\n' "$C_YEL" "$C_OFF"
   fi
 }
