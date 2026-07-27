@@ -196,9 +196,17 @@ verify_ancestry() {
 
 # ---- scrubbed git ----------------------------------------------------------
 
-# Absolute git; nix system profile first, Apple's as fallback.
+# Absolute git; nix system profile first, the OS's as fallback. Only
+# root-owned system locations -- consulting PATH or user-writable prefixes
+# (e.g. /opt/homebrew/bin) would reopen the hijack sgit exists to close.
+# Fail loud up front rather than confusingly mid-approve.
 GIT=/run/current-system/sw/bin/git
 [ -x "$GIT" ] || GIT=/usr/bin/git
+[ -x "$GIT" ] || {
+  echo "ERROR: no trusted git found (checked /run/current-system/sw/bin/git, /usr/bin/git)" >&2
+  echo "       install git in the system profile; pinned does not search PATH for it" >&2
+  exit 1
+}
 
 # Run git against $repo with NOTHING attacker-influencable in play:
 # env -i (no GIT_* smuggling), no global/system config, repo-local config
