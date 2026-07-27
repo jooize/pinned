@@ -12,7 +12,9 @@ pin file. Deploy tooling builds only `git+file://...?rev=<pinned hash>`.
     pinned setup [--yes]              self-install + digest-pinned sudoers
     pinned approve <repo> [--trust-current]
                                       human gate: review diff -> pin
-    pinned approve <repo> --tag <tag>   signature gate: verify signed tag -> pin
+    pinned approve <repo> --tag <tag> [--tag <tag> ...]
+                                      signature gate: verify signed tag(s),
+                                      all naming one commit -> pin
     pinned sign <repo> <tag>          signed release tag at the PINNED hash
     pinned status <repo>
     pinned list                       all pins: hash and repo path
@@ -46,9 +48,10 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   points at the pinned rev (promoting an unsigned release); moving a
   tag is refused. Co-signers use distinct tag names by convention
   (v1.2.3-alice, v1.2.3-bob) -- consumers approve whichever name they
-  trust; allowed_signers is any-of. Threshold multisig (k distinct
-  signed tags naming the same hash before the pin is written) is a
-  planned `approve --tag` extension, not yet implemented.
+  trust; allowed_signers is any-of. Threshold multisig: repeat --tag
+  (`approve <repo> --tag v1.2.3-alice --tag v1.2.3-bob`) -- every
+  named tag must verify and name the same commit or nothing is pinned;
+  k-of-n is the consumer demanding whichever k tags they trust.
 - Deploy consumers are separate scripts: pinned states trust, never
   acts on it.
 - Trust prerequisite: the interactive flow assumes your terminal and

@@ -2,7 +2,9 @@
 # pinned -- review-and-pin a git rev behind a human gate.
 #
 #   pinned approve <repo> [--trust-current]   review diff since last pin -> approve -> pin
-#   pinned approve <repo> --tag <tag>         verify signed tag -> approve -> pin
+#   pinned approve <repo> --tag <t> [--tag ..] verify signed tag(s) -> approve -> pin
+#                                              (repeat --tag = threshold multisig:
+#                                              all must agree on one commit)
 #   pinned sign <repo> <tag>                  signed release tag at the PINNED hash
 #   pinned status <repo>                      pinned hash vs HEAD; dirty-tree warning
 #   pinned setup [--yes]                      provision sudoers digest pin; self-install
@@ -81,9 +83,11 @@ usage: pinned <action> [args]
 
   approve <repo> [--trust-current]
                      (sudo) review diff since last pin, approve, write pin
-  approve <repo> --tag <tag>
-                     (sudo) verify signed tag against
-                     /etc/pinned/allowed_signers, approve, write pin
+  approve <repo> --tag <tag> [--tag <tag> ...]
+                     (sudo) verify signed tag(s) against root-owned
+                     allowed signers (per-repo <pin file>.signers,
+                     else global /etc/pinned/allowed_signers); all
+                     tags must name the same commit; approve, pin
   sign <repo> <tag>  create signed tag <tag> at the PINNED hash -- no sudo
                      (needs your SSH agent, e.g. 1Password)
   status <repo>      pinned hash vs HEAD; warns on dirty tree
@@ -390,10 +394,14 @@ do_approve() {
   inv="${SUDO_USER:-}"
   [ -n "$inv" ] || { echo "approve must be invoked via sudo" >&2; exit 1; }
 
-  local trust_current=0 tag_arg="" repo_arg=""
+  # --tag may repeat: threshold multisig. Every named tag must verify
+  # against the allowed signers AND name the same commit, or nothing is
+  # pinned. k-of-n is the caller demanding whichever k tags they trust.
+  local trust_current=0 repo_arg="" tag_args
+  tag_args=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      --tag)           tag_arg="$2"; shift 2 ;;
+      --tag)           tag_args+=("$2"); shift 2 ;;
       --trust-current) trust_current=1; shift ;;
       -*)              usage ;;
       *)               repo_arg="$1"; shift ;;
@@ -415,14 +423,17 @@ do_approve() {
   local hash old_hash diff_out
   old_hash="$(read_pin "$pin_file")" || exit 1
 
-  if [ -n "$tag_arg" ]; then
-    # Signature gate: verify a normally-signed release tag (git tag -s;
+  if [ "${#tag_args[@]}" -gt 0 ]; then
+    # Signature gate: verify normally-signed release tags (git tag -s;
     # nothing pinned-specific in the repo) against ROOT-OWNED allowed
-    # signers, then pin the commit it names. This is the second-machine
+    # signers, then pin the commit they name. This is the second-machine
     # bootstrap: clone anywhere, install the signer key once, approve the tag.
-    case "$tag_arg" in
-      -*) echo "invalid tag name: $tag_arg" >&2; exit 1 ;;
-    esac
+    local t
+    for t in "${tag_args[@]}"; do
+      case "$t" in
+        -*) echo "invalid tag name: $t" >&2; exit 1 ;;
+      esac
+    done
     # Per-repo signers take precedence; the global file is the fallback.
     # A key trusted to vouch for one repo shouldn't implicitly vouch for
     # every repo on the machine; keep machine-wide keys in the global
@@ -443,18 +454,36 @@ do_approve() {
       echo "ERROR: $signers is not root:wheel owned" >&2
       exit 1
     fi
-    if ! sgit -c gpg.ssh.allowedSignersFile="$signers" verify-tag "$tag_arg"; then
-      printf '%sERROR: signature verification FAILED for tag %s; pin unchanged%s\n' "$C_RED$C_B" "$tag_arg" "$C_OFF" >&2
-      log_action approve "$repo" "$tag_arg" verify-failed
-      exit 1
-    fi
-    hash="$(sgit rev-parse "refs/tags/${tag_arg}"'^{commit}')"
+    # Every tag must verify AND name the same commit -- all-or-nothing;
+    # a single failure leaves the pin unchanged.
+    local t_hash
+    hash=""
+    for t in "${tag_args[@]}"; do
+      if ! sgit -c gpg.ssh.allowedSignersFile="$signers" verify-tag "$t"; then
+        printf '%sERROR: signature verification FAILED for tag %s; pin unchanged%s\n' "$C_RED$C_B" "$t" "$C_OFF" >&2
+        log_action approve "$repo" "$t" verify-failed
+        exit 1
+      fi
+      t_hash="$(sgit rev-parse "refs/tags/${t}"'^{commit}')"
+      if [ -z "$hash" ]; then
+        hash="$t_hash"
+      elif [ "$hash" != "$t_hash" ]; then
+        printf '%sERROR: tags disagree: %s is at %s, expected %s; pin unchanged%s\n' \
+          "$C_RED$C_B" "$t" "$t_hash" "$hash" "$C_OFF" >&2
+        log_action approve "$repo" "$t" tags-disagree
+        exit 1
+      fi
+    done
     if [ -n "$old_hash" ] && [ "$old_hash" = "$hash" ]; then
       printf '%salready pinned: %s%s\n' "$C_GRN" "$hash" "$C_OFF"
       exit 0
     fi
     printf '%srepo:%s    %s\n' "$C_DIM" "$C_OFF" "$repo"
-    printf '%stag:%s     %s  %s✓ signature verified against %s%s\n' "$C_DIM" "$C_OFF" "$tag_arg" "$C_GRN" "$signers" "$C_OFF"
+    for t in "${tag_args[@]}"; do
+      printf '%stag:%s     %s  %s✓ signature verified against %s%s\n' "$C_DIM" "$C_OFF" "$t" "$C_GRN" "$signers" "$C_OFF"
+    done
+    [ "${#tag_args[@]}" -gt 1 ] \
+      && printf '%s%d/%d tags agree on the commit below%s\n' "$C_GRN" "${#tag_args[@]}" "${#tag_args[@]}" "$C_OFF"
     printf '%scommit:%s  %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
       "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
     [ -n "$old_hash" ] && printf '%spinned:%s  %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
