@@ -131,12 +131,19 @@ shift
 # prints special bits (setuid/sticky) as a fourth digit where BSD %OLp shows
 # low bits only; such a path fails the mode allowlist below, i.e. the
 # asymmetry fails closed.
+#
+# -L: judge the object a name REACHES, never a symlink itself. A symlink's
+# own owner/group gate nothing -- replacing one takes write on its parent
+# dir, which the ancestry walk already checks -- and BSD symlinks inherit
+# their parent's group, so an unfollowed stat reports noise (nix-darwin's
+# /run/current-system link shows root:daemon purely because /private/var/run
+# is group daemon).
 if stat --version >/dev/null 2>&1; then
-  stat_owner() { stat -c '%U:%G' "$1"; }
-  stat_mode()  { stat -c '%a' "$1"; }
+  stat_owner() { stat -Lc '%U:%G' "$1"; }
+  stat_mode()  { stat -Lc '%a' "$1"; }
 else
-  stat_owner() { stat -f '%Su:%Sg' "$1"; }
-  stat_mode()  { stat -f '%OLp' "$1"; }
+  stat_owner() { stat -Lf '%Su:%Sg' "$1"; }
+  stat_mode()  { stat -Lf '%OLp' "$1"; }
 fi
 
 # Verify a path is root-owned with no group/other write. Refuses to trust
@@ -144,12 +151,26 @@ fi
 # root's own (wheel on macOS/BSD, root on Linux); either way the mode
 # allowlist below denies every group-write bit, so group identity carries no
 # write authority.
+#
+# One carved-out exception: macOS's /run resolves to /private/var/run,
+# root:daemon 775 -- the OS's own home for the /run/current-system link, so
+# a nix-darwin install walks through it. Group daemon COULD swap links
+# there, but daemon-gid actors are system services, not code running as the
+# user -- outside this tool's threat model (user-level compromise) -- and
+# elevation is content-gated by the sudoers sha256 digest regardless of
+# which bytes a path reaches: a swapped binary makes sudo refuse.
 verify_root_owned_path() {
   local path="$1" owner mode
   owner="$(stat_owner "$path")"
   mode="$(stat_mode "$path")"
   case "$owner" in
     root:wheel|root:root) ;;
+    root:daemon)
+      case "$mode" in
+        775|755|750|700|555|550|500) return 0 ;;
+      esac
+      echo "ERROR: $path (root:daemon) has mode $mode, expected 775 or stricter" >&2
+      return 1 ;;
     *)
       echo "ERROR: $path is owned $owner, expected root:wheel (or root:root)" >&2
       echo "       fix manually: sudo chown root:wheel $path && sudo chmod 755 $path" >&2
