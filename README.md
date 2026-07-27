@@ -17,7 +17,7 @@ pin file. Deploy tooling builds only `git+file://...?rev=<pinned hash>`.
                                       all naming one commit -> pin
     pinned sign <repo> <tag>          signed release tag at the PINNED hash
     pinned status <repo>
-    pinned read <file> [--algo sha256|sha384|sha512|blake3]
+    pinned read <file> [--algo <name>] [--length <bits>]
                                       trusted read of a non-repo file:
                                       one read, shown and hashed
     pinned list                       all pins: hash and repo path
@@ -85,8 +85,11 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   display, which fails closed at the next hash check, a falsified
   ceremony fails OPEN. The digest equals what `shasum -a <algo> <file>`
   reports, so the ceremony can be cross-checked with ordinary tools.
-  sha256/384/512 work everywhere; `--algo blake3` uses `b3sum` when it is
-  installed system-wide. sha1/md5 and any digest under 256 bits are
+  Algorithms go by their standard names: sha256/sha384/sha512 work
+  everywhere; `blake2b-256/-384/-512` need `b2sum` (GNU coreutils) and
+  `blake3` needs `b3sum`, each installed system-wide. blake3 is an XOF, so
+  its output size is a flag, not part of the name: `--length <bits>`
+  (default 256). sha1/md5 and any digest under 256 bits are
   refused: this hash is the gate. There is deliberately no flag naming a
   hasher PATH -- whatever computes the digest decides whether the gate
   passes, so it must resolve inside the trusted PATH.
