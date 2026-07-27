@@ -38,13 +38,14 @@
 # single auditable place beats scattering absolute paths, which only restate
 # the same fact once per call site.
 #
-# The nix system profile comes first so a machine with a newer git/coreutils
-# uses them; it is a root-owned symlink farm into /nix/store (changing it needs
-# root, same as /usr/bin). Absent on non-nix machines -- harmless. NOTE what is
-# deliberately NOT here: ~/.nix-profile, ~/.local/bin, /opt/homebrew/bin and
+# Only the OS's own root-owned directories belong here. A packaging that
+# installs pinned alongside its own root-owned toolchain (the nix module does)
+# prepends its prefix by rewriting this line at build time -- the package
+# manager knows its trusted prefix; this script does not guess at them. NOTE
+# what must NEVER be added: ~/.nix-profile, ~/.local/bin, /opt/homebrew/bin and
 # friends are user-writable, which is exactly why an inherited PATH cannot be
 # trusted even from a session you trust.
-export PATH=/run/current-system/sw/bin:/usr/bin:/bin:/usr/sbin:/sbin
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
 set -euo pipefail
 

@@ -23,13 +23,22 @@ let
 
   srcText = builtins.readFile ../pinned;
 
-  # The script self-elevates by re-exec'ing $INSTALL_TARGET. Rewrite
-  # that anchor line to this module's configuration, and fail the eval
-  # loudly if the anchor ever changes shape in the script.
+  # The script self-elevates by re-exec'ing $INSTALL_TARGET, and its
+  # trusted PATH carries only the OS's root-owned directories -- each
+  # packaging prepends its own root-owned prefix. Rewrite those anchor
+  # lines to this module's configuration, and fail the eval loudly if
+  # any anchor ever changes shape in the script.
   anchors = [
     {
       from = '': "''${INSTALL_TARGET:=/usr/local/sbin/pinned}"'';
       to = '': "''${INSTALL_TARGET:=${cfg.installPath}}"'';
+    }
+    {
+      # The system profile is a root-owned symlink farm into /nix/store
+      # (changing it needs root, same as /usr/bin); it goes first so a
+      # machine with a newer git/coreutils uses them.
+      from = "export PATH=/usr/bin:/bin:/usr/sbin:/sbin";
+      to = "export PATH=/run/current-system/sw/bin:/usr/bin:/bin:/usr/sbin:/sbin";
     }
   ];
   scriptText =
