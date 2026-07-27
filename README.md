@@ -17,7 +17,7 @@ pin file. Deploy tooling builds only `git+file://...?rev=<pinned hash>`.
                                       all naming one commit -> pin
     pinned sign <repo> <tag>          signed release tag at the PINNED hash
     pinned status <repo>
-    pinned read <file> [--algo 256|384|512|blake3]
+    pinned read <file> [--algo sha256|sha384|sha512|blake3]
                                       trusted read of a non-repo file:
                                       one read, shown and hashed
     pinned list                       all pins: hash and repo path

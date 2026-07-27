@@ -102,7 +102,7 @@ usage: pinned <action> [args]
   sign <repo> <tag>  create signed tag <tag> at the PINNED hash -- no sudo
                      (needs your SSH agent, e.g. 1Password)
   status <repo>      pinned hash vs HEAD; warns on dirty tree
-  read <file> [--algo 256|384|512|blake3]
+  read <file> [--algo sha256|sha384|sha512|blake3]
                      trusted read of a non-repo file: display and hash ONE
                      read, print the hash + a fail-closed wrapper -- no sudo
   list               all pins: hash and repo path
@@ -804,7 +804,7 @@ do_list() {
 # genuinely matches the malicious file). A lying display fails closed; a lying
 # ceremony fails open. That asymmetry is why this lives here.
 do_read() {
-  local algo=256 file="" a
+  local algo=sha256 file="" a
   while [ $# -gt 0 ]; do
     case "$1" in
       --algo|-a)
@@ -831,24 +831,34 @@ do_read() {
   # 256-bit hash stays adequate; PQ pressure is on SIGNATURES, not digests.
   # 384/512 are available if you want margin anyway.
   #
-  # Adding another function (blake3 below is the template) means one line here
-  # plus one in hasher_for. The constraint is not the algorithm, it is the
+  # Adding another function (blake3 below is the template) means one case arm
+  # here plus one hash_cmd branch below. The constraint is not the algorithm,
+  # it is the
   # BINARY: whatever computes the digest decides whether the gate passes, so it
   # must resolve inside the trusted PATH pinned at the top of this file. That
   # is also why there is no --hasher flag taking a path -- it would let the
   # caller nominate an attacker-writable verifier.
+  # Canonical values are each algorithm's standard name -- sha256, blake3 --
+  # so the surface stays consistent across families. (blake3 has no length
+  # suffix by design: BLAKE3 is one function whose standard digest is 256-bit;
+  # longer output is the same function as an XOF, not a named variant.) Bare
+  # digits are accepted as unadvertised shasum -a aliases; $algo normalizes to
+  # the digit form shasum wants.
   local algo_name
   case "$algo" in
-    256|384|512|512256) algo_name="sha" ;;
+    sha256|256)         algo_name="sha"; algo=256 ;;
+    sha384|384)         algo_name="sha"; algo=384 ;;
+    sha512|512)         algo_name="sha"; algo=512 ;;
+    sha512/256|512256)  algo_name="sha"; algo=512256 ;;
     blake3|b3)          algo_name="blake3"; algo=blake3 ;;
     1|md5|sha1|MD5|SHA1)
       echo "refusing $algo: collision-vulnerable, and this hash is the gate" >&2
       exit 1 ;;
-    224|512224)
+    sha224|224|sha512/224|512224)
       echo "refusing $algo: 224-bit output is below the 256-bit floor for a trust decision" >&2
       exit 1 ;;
     *)
-      echo "unsupported algorithm: $algo (use 256, 384, 512, blake3)" >&2
+      echo "unsupported algorithm: $algo (use sha256, sha384, sha512, blake3)" >&2
       exit 1 ;;
   esac
 
