@@ -46,7 +46,9 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   points at the pinned rev (promoting an unsigned release); moving a
   tag is refused. Co-signers use distinct tag names by convention
   (v1.2.3-alice, v1.2.3-bob) -- consumers approve whichever name they
-  trust; allowed_signers is any-of.
+  trust; allowed_signers is any-of. Threshold multisig (k distinct
+  signed tags naming the same hash before the pin is written) is a
+  planned `approve --tag` extension, not yet implemented.
 - Deploy consumers are separate scripts: pinned states trust, never
   acts on it.
 - Trust prerequisite: the interactive flow assumes your terminal and
@@ -95,8 +97,13 @@ pre-install fallback) still works and warns loudly; prefer this one.
 
 ## Declarative install (nix-darwin / NixOS)
 
-Machines whose system config pinned will gate can skip `setup`
-entirely and install pinned from an approved rev instead:
+The manual route above is the first-class citizen: it works on any
+machine with sudo and needs nothing but this file. If a
+configuration-management tool builds your system, pinned can instead
+be installed BY that tool FROM an approved rev -- `setup` is then
+never needed, because the deploy does setup's three jobs (binary,
+sudoers digest, pin root) declaratively. This repo ships a Nix flake
+for that:
 
 1. Approve the config repo using the bootstrap above -- approve
    creates /etc/pinned itself, so setup never runs:

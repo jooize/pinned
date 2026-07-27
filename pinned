@@ -32,7 +32,7 @@
 
 # Pin PATH so bare command names can't be hijacked even if sudoers env_keep
 # ever leaks PATH from the invoker.
-export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
 set -euo pipefail
 
@@ -62,11 +62,11 @@ ${C_B}pinned setup will:${C_OFF}
      digest-pinned to its sha256 ${C_DIM}(a swapped binary makes sudo refuse)${C_OFF};
      ${C_YEL}no NOPASSWD${C_OFF} -- sudo still authenticates every invocation
 
-If your system configuration is managed by a tool that could install
-pinned for you ${C_DIM}(nix-darwin, NixOS, a package manager)${C_OFF}, you may
-prefer declaring the binary and sudoers entry there instead of running
-setup: see ${C_CYN}README, "Declarative install"${C_OFF} -- approve works
-pre-install, so setup can be skipped entirely on such machines.
+If a package manager or configuration-management tool installs pinned
+for you, you may prefer declaring the binary and sudoers entry there
+instead of running setup: see ${C_CYN}README, "Declarative install"${C_OFF}
+${C_DIM}(this repo ships a Nix flake)${C_OFF} -- approve works pre-install,
+so setup is not required on such machines.
 
 ${C_DIM}The exception: when pinned will gate that configuration's own deploys,
 its first install cannot arrive through a deploy it hasn't gated yet --
@@ -252,7 +252,7 @@ sgit() {
   # would use. Trust exactly $repo, from the command line (protected
   # config). The check's job -- refusing attacker-planted repo config
   # and hooks -- is already done here by scrubbing and hookless commands.
-  env -i PATH=/sbin:/bin:/usr/sbin:/usr/bin HOME=/var/empty \
+  env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/empty \
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
     "$GIT" -C "$repo" --no-pager -c safe.directory="$repo" \
     -c core.fsmonitor=false -c core.pager=cat "$@"

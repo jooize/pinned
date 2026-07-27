@@ -77,8 +77,12 @@ in
       type = lib.types.str;
       default = "/run/current-system/sw/bin/pinned";
       description = ''
-        Stable path the sudoers entry names and the script re-execs for
-        self-elevation. Must be the path actually invoked under sudo.
+        Path this module's sudoers entry names and that the installed
+        script re-execs for self-elevation; it must be the path actually
+        invoked under sudo. The default is the system-profile path, which
+        is stable across generations and always resolves to the current
+        build. (Manual, non-nix installs are unaffected by this option:
+        they use the script's own default, /usr/local/sbin/pinned.)
       '';
     };
   };
