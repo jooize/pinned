@@ -4,8 +4,8 @@ Review-and-pin a git rev. An agent can commit anything to a repo you
 deploy from; nothing becomes system state until a human gate says so.
 `sudo pinned approve` shows the diff since the last approval straight
 from the object store (scrubbed git environment -- no user config, no
-pager, no hooks), you approve, and it writes the SHA to a root-owned
-pin file. Deploy tooling builds only `git+file://...?rev=<pinned sha>`.
+pager, no hooks), you approve, and it writes the hash to a root-owned
+pin file. Deploy tooling builds only `git+file://...?rev=<pinned hash>`.
 
 ## Commands
 
@@ -13,9 +13,9 @@ pin file. Deploy tooling builds only `git+file://...?rev=<pinned sha>`.
     pinned approve <repo> [--trust-current]
                                       human gate: review diff -> pin
     pinned approve <repo> --tag <tag>   signature gate: verify signed tag -> pin
-    pinned sign <repo> <tag>          signed release tag at the PINNED sha
+    pinned sign <repo> <tag>          signed release tag at the PINNED hash
     pinned status <repo>
-    pinned list                       all pins: sha and repo path
+    pinned list                       all pins: hash and repo path
     pinned slot <repo>                print the repo's pin-file path
 
 approve and setup self-elevate via sudo (re-exec of the installed
@@ -31,7 +31,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
 - First approval of a repo shows the full tree (diff from the empty
   tree) unless `--trust-current` is passed, loudly.
 - Signing exports the pin. `pinned sign` creates a perfectly normal
-  signed release tag, but the sha it signs comes from the root-owned
+  signed release tag, but the hash it signs comes from the root-owned
   pin file: you read once at approve; nothing is re-read at sign time,
   so a compromised environment has nothing to MITM (SSH-agent signing
   is blind -- the binding to content is this code path). `approve --tag`
