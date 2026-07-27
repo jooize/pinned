@@ -47,6 +47,14 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   trust; allowed_signers is any-of.
 - Deploy consumers are separate scripts: pinned states trust, never
   acts on it.
+- Trust prerequisite: the interactive flow assumes your terminal and
+  shell honestly relay what you type and see. Shell configuration is
+  user-writable state -- a compromised config can alias `pinned`, fake
+  any output, and no in-band check (absolute paths, verifier helpers)
+  can prove otherwise from inside the session. The backstop that
+  survives a lying shell is out-of-band: the sudo authentication
+  dialog names the exact command it will run as root -- read it there.
+  Given a trusted shell config, invoking bare `pinned` is fine.
 
 ## Bootstrap without executing unverified code
 

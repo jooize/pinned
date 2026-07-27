@@ -237,9 +237,15 @@ page() {
 }
 
 sgit() {
+  # safe.directory: running as root on a user-owned repo trips git's
+  # ownership check, and env -i strips the SUDO_UID escape hatch git
+  # would use. Trust exactly $repo, from the command line (protected
+  # config). The check's job -- refusing attacker-planted repo config
+  # and hooks -- is already done here by scrubbing and hookless commands.
   env -i PATH=/sbin:/bin:/usr/sbin:/usr/bin HOME=/var/empty \
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-    "$GIT" -C "$repo" --no-pager -c core.fsmonitor=false -c core.pager=cat "$@"
+    "$GIT" -C "$repo" --no-pager -c safe.directory="$repo" \
+    -c core.fsmonitor=false -c core.pager=cat "$@"
 }
 
 # URL-encode % and / so a repo path becomes an unambiguous flat filename.
@@ -251,8 +257,10 @@ resolve_repo() {
   [ $# -ge 1 ] || usage
   repo="$(readlink -f "$1")"
   [ -n "$repo" ] && [ -d "$repo" ] || { echo "not a directory: ${1}" >&2; exit 1; }
-  sgit rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-    || { echo "not a git work tree: $repo" >&2; exit 1; }
+  # Let git's own stderr through -- swallowing it turned a safe.directory
+  # refusal into a misleading "not a git work tree".
+  sgit rev-parse --is-inside-work-tree >/dev/null \
+    || { echo "not a usable git work tree: $repo (git error above)" >&2; exit 1; }
   default_pin_file="$PIN_ROOT/$(encode "$repo")"
 }
 
