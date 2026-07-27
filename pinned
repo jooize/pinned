@@ -482,18 +482,18 @@ case "$action" in
             printf '%s(nothing to approve; no authentication needed)%s\n' "$C_DIM" "$C_OFF"
             exit 0
           fi
-          printf '%srepo:%s    %s\n' "$C_B" "$C_OFF" "$repo"
-          printf '%sHEAD:%s    %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_head" "$C_OFF" \
+          printf '%srepo:%s       %s\n' "$C_B" "$C_OFF" "$repo"
+          printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_head" "$C_OFF" \
             "$C_DIM" "$(sgit log -1 --format=%s "$preview_head")" "$C_OFF"
           if [ -n "$preview_pin" ]; then
-            printf '%spinned:%s  %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_pin" "$C_OFF"
+            printf '%spinned:%s     %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_pin" "$C_OFF"
             if [ "$preview_pin" != "$preview_head" ]; then
               echo
               printf '%scommits since last approval:%s\n' "$C_B" "$C_OFF"
               sgit log --format='  %h %s' "${preview_pin}..${preview_head}" || true
             fi
           else
-            printf '%spinned:%s  (none -- first approval)\n' "$C_B" "$C_OFF"
+            printf '%spinned:%s     (none -- first approval)\n' "$C_B" "$C_OFF"
           fi
           echo
         fi
@@ -640,7 +640,7 @@ do_approve() {
       printf '%salready pinned: %s%s\n' "$C_GRN" "$hash" "$C_OFF"
       exit 0
     fi
-    printf '%srepo:%s    %s\n' "$C_DIM" "$C_OFF" "$repo"
+    printf '%srepo:%s       %s\n' "$C_DIM" "$C_OFF" "$repo"
     for t in "${tag_args[@]}"; do
       printf '%stag:%s     %s  %s✓ signature verified against %s%s\n' "$C_DIM" "$C_OFF" "$t" "$C_GRN" "$signers" "$C_OFF"
     done
@@ -648,7 +648,7 @@ do_approve() {
       && printf '%s%d/%d tags agree on the commit below%s\n' "$C_GRN" "${#tag_args[@]}" "${#tag_args[@]}" "$C_OFF"
     printf '%scommit:%s  %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
       "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
-    [ -n "$old_hash" ] && printf '%spinned:%s  %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
+    [ -n "$old_hash" ] && printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
   else
     # Human gate: read the diff since the last pin from the object store.
     hash="$(sgit rev-parse 'HEAD^{commit}')"
@@ -662,11 +662,11 @@ do_approve() {
       exit 0
     fi
 
-    printf '%srepo:%s    %s\n' "$C_DIM" "$C_OFF" "$repo"
-    printf '%sHEAD:%s    %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
+    printf '%srepo:%s       %s\n' "$C_DIM" "$C_OFF" "$repo"
+    printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
       "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
     if [ -n "$old_hash" ]; then
-      printf '%spinned:%s  %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
+      printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
       echo
       printf '%s--- commits since last approval ---%s\n' "$C_B" "$C_OFF"
       sgit log --format='%h %s' "${old_hash}..${hash}" || true
@@ -678,13 +678,13 @@ do_approve() {
       diff_out="$(sgit_diff "$old_hash" "$hash")"
       printf '%s\n' "$diff_out" | page || true
     elif [ "$trust_current" -eq 1 ]; then
-      printf '%spinned:%s  (none)\n' "$C_DIM" "$C_OFF"
+      printf '%spinned:%s     (none)\n' "$C_DIM" "$C_OFF"
       echo
       printf '%s!!! FIRST APPROVAL WITH --trust-current !!!%s\n' "$C_RED$C_B" "$C_OFF"
       printf '%s!!! The full tree at %s is being approved WITHOUT review. !!!%s\n' "$C_RED$C_B" "$hash" "$C_OFF"
       printf '%s!!! Everything already in this repo becomes trusted as-is. !!!%s\n' "$C_RED$C_B" "$C_OFF"
     else
-      printf '%spinned:%s  (none -- first approval: full tree review)\n' "$C_DIM" "$C_OFF"
+      printf '%spinned:%s     (none -- first approval: full tree review)\n' "$C_DIM" "$C_OFF"
       echo
       printf '%s--- full tree at %.10s (diff from empty) ---%s\n' "$C_B" "$hash" "$C_OFF"
       # 4b825d... is git's well-known empty tree; this shows every approved byte.
@@ -726,23 +726,23 @@ do_status() {
   hash="$(read_pin "$pin_file")" || exit 1
   head_hash="$(sgit rev-parse 'HEAD^{commit}')"
 
-  printf '%srepo:%s    %s\n' "$C_DIM" "$C_OFF" "$repo"
-  printf '%spin:%s     %s\n' "$C_DIM" "$C_OFF" "$pin_file"
+  printf '%srepo:%s       %s\n' "$C_DIM" "$C_OFF" "$repo"
+  printf '%spin:%s        %s\n' "$C_DIM" "$C_OFF" "$pin_file"
   if [ -z "$hash" ]; then
-    printf '%spinned:%s  (none)\n' "$C_DIM" "$C_OFF"
+    printf '%spinned:%s     (none)\n' "$C_DIM" "$C_OFF"
   else
-    printf '%spinned:%s  %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
+    printf '%spinned:%s     %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
       "$C_DIM" "$(sgit log -1 --format=%s "$hash" 2>/dev/null || echo 'commit not in repo!')" "$C_OFF"
   fi
-  printf '%sHEAD:%s    %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$head_hash" "$C_OFF" \
+  printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$head_hash" "$C_OFF" \
     "$C_DIM" "$(sgit log -1 --format=%s "$head_hash")" "$C_OFF"
   if [ -n "$hash" ] && [ "$hash" = "$head_hash" ]; then
-    printf '%sstate:%s   %s✓ HEAD is approved%s\n' "$C_DIM" "$C_OFF" "$C_GRN" "$C_OFF"
+    printf '%sstate:%s      %s✓ HEAD is approved%s\n' "$C_DIM" "$C_OFF" "$C_GRN" "$C_OFF"
   elif [ -n "$hash" ]; then
-    printf '%sstate:%s   %s✗ HEAD is NOT approved (%s commits ahead of pin)%s\n' "$C_DIM" "$C_OFF" \
+    printf '%sstate:%s      %s✗ HEAD is NOT approved (%s commits ahead of pin)%s\n' "$C_DIM" "$C_OFF" \
       "$C_RED" "$(sgit rev-list --count "${hash}..${head_hash}" 2>/dev/null || echo '?')" "$C_OFF"
   else
-    printf '%sstate:%s   %s✗ never approved%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF"
+    printf '%sstate:%s      %s✗ never approved%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF"
   fi
   if ! sgit_diff --quiet 2>/dev/null || ! sgit_diff --cached --quiet 2>/dev/null; then
     printf '%swarning: work tree is dirty (uncommitted changes are never approved)%s\n' "$C_YEL" "$C_OFF"
