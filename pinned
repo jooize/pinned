@@ -91,7 +91,7 @@ usage: pinned <action> [args]
   sign <repo> <tag>  create signed tag <tag> at the PINNED hash -- no sudo
                      (needs your SSH agent, e.g. 1Password)
   status <repo>      pinned hash vs HEAD; warns on dirty tree
-  read <file> [--algo 256|384|512|512256]
+  read <file> [--algo 256|384|512]
                      trusted read of a non-repo file: display and hash ONE
                      read, print the hash + a fail-closed wrapper -- no sudo
   list               all pins: hash and repo path
@@ -197,23 +197,44 @@ sgit_diff() {
 }
 
 sgit() {
-  # Structural guard: every diff must carry --no-ext-diff --no-textconv, so
-  # bare `sgit diff` is a bug, not a style choice. Refuse it loudly instead of
-  # silently rendering through an attacker's driver. (Scanning all args, not
-  # just $1, because -c options precede the subcommand.)
+  # Structural guard: any diff a human might read must carry --no-ext-diff
+  # --no-textconv, so reaching for a rendering subcommand here is a bug, not a
+  # style choice. Refuse loudly instead of silently rendering through an
+  # attacker's driver. Git offers no config switch that disables textconv
+  # globally, so per-command flags are the only mechanism -- which is exactly
+  # why it needs a guard rather than a convention. (The subcommand is found by
+  # scanning past leading global options, since `-c key=val` precedes it.)
   if [ "${_sgit_diff_ok:-0}" -ne 1 ]; then
-    local _args _i=0
+    local _args _i=0 _sub="" _a
     _args=("$@")
-    while [ "$_i" -lt "${#_args[@]}" ]; do
+    while [ "$_i" -lt "${#_args[@]}" ]; do   # find the subcommand
       case "${_args[$_i]}" in
-        -c) _i=$((_i + 2)) ;;          # -c takes a value; skip both
+        -c) _i=$((_i + 2)) ;;               # -c takes a value; skip both
         --*) _i=$((_i + 1)) ;;
-        diff)
-          echo "pinned: internal error -- use sgit_diff, never bare 'sgit diff'" >&2
-          exit 1 ;;
-        *) break ;;                    # first non-option word: some other subcommand
+        *) _sub="${_args[$_i]}"; break ;;
       esac
     done
+    case "$_sub" in
+      # Every subcommand that can RENDER a diff, not just `diff` -- `show` and
+      # `log -p` route through the same attacker-controlled drivers. Refusing
+      # the whole class means a future edit reaching for any of them has to
+      # add a hardened helper rather than silently reopening the hole.
+      diff|show|format-patch|diff-tree|diff-index|diff-files|whatchanged|range-diff)
+        echo "pinned: internal error -- '$_sub' can render through repo diff drivers; use sgit_diff" >&2
+        exit 1 ;;
+      log|reflog|stash)
+        # Scan only AFTER the subcommand: a leading global `-c key=val` is not
+        # log's combined-diff `-c`.
+        _i=$((_i + 1))
+        while [ "$_i" -lt "${#_args[@]}" ]; do
+          _a="${_args[$_i]}"; _i=$((_i + 1))
+          case "$_a" in
+            -p|-u|--patch|--cc|-c|--full-diff)
+              echo "pinned: internal error -- patch-producing '$_sub' renders through repo diff drivers; use sgit_diff" >&2
+              exit 1 ;;
+          esac
+        done ;;
+    esac
   fi
   # safe.directory: running as root on a user-owned repo trips git's
   # ownership check, and env -i strips the SUDO_UID escape hatch git
@@ -812,14 +833,18 @@ do_read() {
   fi
 
   # THE single read. Everything below is derived from $content, never from a
-  # second look at the file.
+  # second look at the file. The `; printf x` + `%x` idiom preserves trailing
+  # newlines, which plain $(cat) strips -- so $content is the file's bytes
+  # EXACTLY, and the digest below equals `shasum -a <algo> <file>`. Matching
+  # the ordinary check matters: you can verify this tool with any other tool.
   local content hash
-  content="$(cat -- "$file")" || { echo "cannot read: $file" >&2; exit 1; }
+  content="$(cat -- "$file"; printf x)" || { echo "cannot read: $file" >&2; exit 1; }
+  content="${content%x}"
 
   printf '%s--- %s (exactly the bytes being hashed) ---%s\n' "$C_B" "$file" "$C_OFF"
-  printf '%s\n' "$content" | page || true
+  printf '%s' "$content" | page || true
 
-  hash="$(printf '%s\n' "$content" | shasum -a "$algo" | awk '{print $1}')"
+  hash="$(printf '%s' "$content" | shasum -a "$algo" | awk '{print $1}')"
   [ -n "$hash" ] || { echo "hashing failed" >&2; exit 1; }
 
   # Canonical name for display; shasum's -a still takes the digit form.
@@ -832,13 +857,15 @@ do_read() {
   echo
   printf '%s%s:%s %s%s%s\n' "$C_B" "$label" "$C_OFF" "$C_CYN" "$hash" "$C_OFF"
   echo
-  # Emit the consumer snippet rather than only the hash: the wrapper MUST read
-  # and hash the same way this did (`$(cat)` + trailing newline), or the two
-  # sides drift and every launch refuses. Shipping both together removes that
-  # footgun.
+  # Emit the consumer snippet, not just the hash: the wrapper must read and
+  # hash exactly as this did, or the two sides drift and every launch refuses.
+  # Every tool in it is ABSOLUTE -- unlike this script, the wrapper runs in the
+  # hook's inherited environment, where PATH is whatever the session has, so a
+  # bare `shasum` or `cat` would be the attacker's to replace and the gate
+  # would verify nothing.
   printf '%sfail-closed wrapper (paste into the hash-gated settings file):%s\n' "$C_DIM" "$C_OFF"
   cat <<EOF
-c=\$(cat $file) && [ "\$(printf '%s\\n' "\$c" | shasum -a $algo | awk '{print \$1}')" = "$hash" ] && exec bash -c "\$c" || { echo 'hook hash mismatch -- refusing' >&2; exit 2; }
+c=\$(/bin/cat $file; printf x); c=\${c%x}; h=\$(printf '%s' "\$c" | /usr/bin/shasum -a $algo); [ "\${h%% *}" = "$hash" ] && exec /bin/bash -c "\$c" || { echo 'hook hash mismatch -- refusing' >&2; exit 2; }
 EOF
   log_action read "$file" "$hash"
 }
