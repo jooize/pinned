@@ -23,19 +23,15 @@ let
 
   srcText = builtins.readFile ../pinned;
 
-  # The script self-elevates by re-exec'ing $INSTALL_TARGET under sudo,
-  # and hard-codes its trusted-git candidates. Rewrite those anchor
-  # lines to this module's configuration, and fail the eval loudly if
-  # any anchor ever changes shape in the script.
+  # The script self-elevates by re-exec'ing $INSTALL_TARGET. Rewrite
+  # that anchor line to this module's configuration, and fail the eval
+  # loudly if the anchor ever changes shape in the script.
   anchors = [
     {
       from = '': "''${INSTALL_TARGET:=/usr/local/sbin/pinned}"'';
       to = '': "''${INSTALL_TARGET:=${cfg.installPath}}"'';
     }
-  ] ++ lib.optional (cfg.gitPath != null) {
-    from = "GIT=/run/current-system/sw/bin/git";
-    to = "GIT=${cfg.gitPath}";
-  };
+  ];
   scriptText =
     assert lib.assertMsg (lib.all (a: lib.hasInfix a.from srcText) anchors)
       "pinned/nix: an anchor line was not found in ../pinned; update module.nix";
@@ -92,17 +88,6 @@ in
       '';
     };
 
-    gitPath = lib.mkOption {
-      type = with lib.types; nullOr str;
-      default = null;
-      description = ''
-        Absolute path of the trusted git the installed script tries
-        first. null keeps the script's own candidates (the system
-        profile's git, then the OS's /usr/bin/git). /usr/bin/git stays
-        as the fallback either way. Must be a root-owned location --
-        never a user-writable prefix.
-      '';
-    };
   };
 
   config = lib.mkIf cfg.enable {
