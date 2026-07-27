@@ -137,82 +137,6 @@ verify_ancestry() {
   done
 }
 
-# Root-requiring actions self-elevate: re-exec the INSTALLED (root-owned,
-# digest-pinned) binary under sudo so the elevated code is never a copy the
-# invoker could have modified. Pre-install (setup from a checkout) falls
-# back to this script's own path.
-case "$action" in
-  approve|setup)
-    if [ "$EUID" -ne 0 ]; then
-      # setup: show the plan and confirm BEFORE sudo, so reading what it
-      # will do never costs an authentication.
-      if [ "$action" = "setup" ]; then
-        want_yes=0
-        for a in "$@"; do [ "$a" = "--yes" ] && want_yes=1; done
-        if [ "$want_yes" -eq 0 ]; then
-          setup_plan "$(id -un)"
-          printf '%sproceed? [y/N]%s ' "$C_B" "$C_OFF"
-          read -r answer </dev/tty
-          case "$answer" in
-            y|Y|yes) ;;
-            *) echo "aborted; nothing installed."; exit 2 ;;
-          esac
-          set -- --yes "$@"
-        fi
-      fi
-      elev="$INSTALL_TARGET"
-      if [ -x "$elev" ]; then
-        # Refuse to hand sudo a target that is not root-owned end to end.
-        # Not hypothetical: old Homebrew left /usr/local user-owned on
-        # many Intel Macs, which would make the "installed" copy exactly
-        # as swappable as the checkout.
-        verify_root_owned_path "$elev" || exit 1
-        verify_ancestry "$elev" || exit 1
-      else
-        # Pre-install fallback: the checkout copy is USER-WRITABLE, so
-        # running it as root is only safe in the bootstrap window right
-        # after a hand-read. Never silent: warn and confirm. (setup is
-        # exempt -- installing the just-read checkout is its whole job.)
-        elev="$(readlink -f "$0")"
-        if [ "$action" != "setup" ]; then
-          printf '%swarning: pinned is not installed at %s.%s\n' "$C_YEL$C_B" "$INSTALL_TARGET" "$C_OFF"
-          printf '%s  About to run the UNINSTALLED, user-writable copy at%s\n' "$C_YEL" "$C_OFF"
-          printf '%s  %s as root.%s\n' "$C_YEL" "$elev" "$C_OFF"
-          printf '%s  Only proceed if you have just read this exact file and%s\n' "$C_YEL" "$C_OFF"
-          printf '%s  trust your user-space not to have swapped it since.%s\n' "$C_YEL" "$C_OFF"
-          printf '%s  Safer: stage with trusted tooling, read the root-owned copy,%s\n' "$C_DIM" "$C_OFF"
-          printf '%s  promote it, rerun (README: "Bootstrap without executing%s\n' "$C_DIM" "$C_OFF"
-          printf '%s  unverified code"):%s\n' "$C_DIM" "$C_OFF"
-          printf '%s    sudo /usr/bin/install -d -o root -g wheel -m 755 %s%s\n' "$C_DIM" "$(dirname "$INSTALL_TARGET")" "$C_OFF"
-          printf '%s    sudo /usr/bin/install -o root -g wheel -m 444 \\%s\n' "$C_DIM" "$C_OFF"
-          printf '%s      %s %s-unverified%s\n' "$C_DIM" "$elev" "$INSTALL_TARGET" "$C_OFF"
-          printf '%s    less %s-unverified%s\n' "$C_DIM" "$INSTALL_TARGET" "$C_OFF"
-          printf '%s    sudo mv %s-unverified %s%s\n' "$C_DIM" "$INSTALL_TARGET" "$INSTALL_TARGET" "$C_OFF"
-          printf '%s    sudo chmod 755 %s%s\n' "$C_DIM" "$INSTALL_TARGET" "$C_OFF"
-          printf '%scontinue? [y/N]%s ' "$C_B" "$C_OFF"
-          read -r answer </dev/tty
-          case "$answer" in
-            y|Y|yes) ;;
-            *) echo "aborted." ; exit 2 ;;
-          esac
-        fi
-      fi
-      # approve: say what the authentication buys BEFORE sudo asks for it.
-      # The privileged binary only DISPLAYS the review; nothing is pinned
-      # until the y/N answered after it. Invoke pinned bare (self-elevating)
-      # rather than typing sudo yourself, so this note precedes the prompt.
-      if [ "$action" = "approve" ] && [ "$elev" = "$INSTALL_TARGET" ]; then
-        printf '%sself-elevating: sudo runs the installed root-owned binary%s\n' "$C_DIM" "$C_OFF"
-        printf '%s  %s%s\n' "$C_DIM" "$elev" "$C_OFF"
-        printf '%s(if your sudo prompt shows the command being authorized,%s\n' "$C_DIM" "$C_OFF"
-        printf '%sverify it names exactly that path). It shows the review%s\n' "$C_DIM" "$C_OFF"
-        printf '%sfirst; nothing is pinned until you answer y after it.%s\n' "$C_DIM" "$C_OFF"
-      fi
-      exec /usr/bin/sudo -- "$elev" "$action" "$@"
-    fi
-    ;;
-esac
-
 log_action() {
   # visible via: log show --predicate 'eventMessage CONTAINS "pinned:"' --last 1d
   logger -t pinned "user=${inv:-$(id -un)} action=$1 repo=${2:-} hash=${3:-} result=${4:-ok}"
@@ -386,6 +310,123 @@ if [ -f "$INSTALL_TARGET" ]; then
   verify_root_owned_path "$INSTALL_TARGET" || exit 1
   verify_ancestry "$INSTALL_TARGET" || exit 1
 fi
+
+# Root-requiring actions self-elevate: re-exec the INSTALLED (root-owned,
+# digest-pinned) binary under sudo so the elevated code is never a copy the
+# invoker could have modified. Pre-install (setup from a checkout) falls
+# back to this script's own path. Sits after the helper definitions so the
+# approve preview below can reuse them.
+case "$action" in
+  approve|setup)
+    if [ "$EUID" -ne 0 ]; then
+      # setup: show the plan and confirm BEFORE sudo, so reading what it
+      # will do never costs an authentication.
+      if [ "$action" = "setup" ]; then
+        want_yes=0
+        for a in "$@"; do [ "$a" = "--yes" ] && want_yes=1; done
+        if [ "$want_yes" -eq 0 ]; then
+          setup_plan "$(id -un)"
+          printf '%sproceed? [y/N]%s ' "$C_B" "$C_OFF"
+          read -r answer </dev/tty
+          case "$answer" in
+            y|Y|yes) ;;
+            *) echo "aborted; nothing installed."; exit 2 ;;
+          esac
+          set -- --yes "$@"
+        fi
+      fi
+      # approve: an unprivileged PREVIEW of what authenticating will let
+      # you review, so the sudo prompt never arrives context-free. This is
+      # orientation only -- the authoritative review re-derives everything
+      # from the object store as root, after sudo.
+      if [ "$action" = "approve" ]; then
+        preview_repo="" skip_next=0
+        for a in "$@"; do
+          if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
+          case "$a" in
+            --tag) skip_next=1 ;;
+            -*) ;;
+            *) preview_repo="$a" ;;
+          esac
+        done
+        if [ -n "$preview_repo" ]; then
+          resolve_repo "$preview_repo"
+          preview_head="$(sgit rev-parse 'HEAD^{commit}')"
+          preview_pin="$(read_pin "$default_pin_file")" || preview_pin=""
+          # Same short-circuit the privileged side would take -- but here it
+          # costs no authentication. The pin is root-owned; HEAD is the
+          # repo the caller is looking at.
+          if [ -n "$preview_pin" ] && [ "$preview_pin" = "$preview_head" ]; then
+            printf '%salready pinned: %s%s\n' "$C_GRN" "$preview_head" "$C_OFF"
+            printf '%s(nothing to approve; no authentication needed)%s\n' "$C_DIM" "$C_OFF"
+            exit 0
+          fi
+          printf '%srepo:%s    %s\n' "$C_B" "$C_OFF" "$repo"
+          printf '%sHEAD:%s    %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_head" "$C_OFF" \
+            "$C_DIM" "$(sgit log -1 --format=%s "$preview_head")" "$C_OFF"
+          if [ -n "$preview_pin" ]; then
+            printf '%spinned:%s  %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_pin" "$C_OFF"
+            if [ "$preview_pin" != "$preview_head" ]; then
+              echo
+              printf '%scommits since last approval:%s\n' "$C_B" "$C_OFF"
+              sgit log --format='  %h %s' "${preview_pin}..${preview_head}" || true
+            fi
+          else
+            printf '%spinned:%s  (none -- first approval)\n' "$C_B" "$C_OFF"
+          fi
+          echo
+        fi
+      fi
+      elev="$INSTALL_TARGET"
+      if [ -x "$elev" ]; then
+        # Refuse to hand sudo a target that is not root-owned end to end.
+        # Not hypothetical: old Homebrew left /usr/local user-owned on
+        # many Intel Macs, which would make the "installed" copy exactly
+        # as swappable as the checkout.
+        verify_root_owned_path "$elev" || exit 1
+        verify_ancestry "$elev" || exit 1
+      else
+        # Pre-install fallback: the checkout copy is USER-WRITABLE, so
+        # running it as root is only safe in the bootstrap window right
+        # after a hand-read. Never silent: warn and confirm. (setup is
+        # exempt -- installing the just-read checkout is its whole job.)
+        elev="$(readlink -f "$0")"
+        if [ "$action" != "setup" ]; then
+          printf '%swarning: pinned is not installed at %s.%s\n' "$C_YEL$C_B" "$INSTALL_TARGET" "$C_OFF"
+          printf '%s  About to run the UNINSTALLED, user-writable copy at%s\n' "$C_YEL" "$C_OFF"
+          printf '%s  %s as root.%s\n' "$C_YEL" "$elev" "$C_OFF"
+          printf '%s  Only proceed if you have just read this exact file and%s\n' "$C_YEL" "$C_OFF"
+          printf '%s  trust your user-space not to have swapped it since.%s\n' "$C_YEL" "$C_OFF"
+          printf '%s  Safer: stage with trusted tooling, read the root-owned copy,%s\n' "$C_YEL" "$C_OFF"
+          printf '%s  promote it, rerun (README: "Bootstrap without executing%s\n' "$C_YEL" "$C_OFF"
+          printf '%s  unverified code"):%s\n' "$C_YEL" "$C_OFF"
+          printf '    sudo /usr/bin/install -d -o root -g wheel -m 755 %s\n' "$(dirname "$INSTALL_TARGET")"
+          printf '    sudo /usr/bin/install -o root -g wheel -m 444 \\\n'
+          printf '      %s %s-unverified\n' "$elev" "$INSTALL_TARGET"
+          printf '    less %s-unverified\n' "$INSTALL_TARGET"
+          printf '    sudo mv %s-unverified %s\n' "$INSTALL_TARGET" "$INSTALL_TARGET"
+          printf '    sudo chmod 755 %s\n' "$INSTALL_TARGET"
+          printf '%scontinue? [y/N]%s ' "$C_B" "$C_OFF"
+          read -r answer </dev/tty
+          case "$answer" in
+            y|Y|yes) ;;
+            *) echo "aborted." ; exit 2 ;;
+          esac
+        fi
+      fi
+      # Say what the authentication buys BEFORE sudo asks for it.
+      if [ "$action" = "approve" ] && [ "$elev" = "$INSTALL_TARGET" ]; then
+        printf '%sself-elevating:%s sudo runs the installed root-owned binary %s%s%s\n' \
+          "$C_B" "$C_OFF" "$C_CYN" "$elev" "$C_OFF"
+        printf 'It shows the authoritative review (from the object store, as\n'
+        printf 'root); the preview above is orientation only. Nothing is pinned\n'
+        printf 'until you answer y after that review. If your sudo prompt shows\n'
+        printf 'the command being authorized, verify it names exactly that binary.\n'
+      fi
+      exec /usr/bin/sudo -- "$elev" "$action" "$@"
+    fi
+    ;;
+esac
 
 # ---- approve -----------------------------------------------------------------
 
