@@ -21,7 +21,8 @@
 # signs comes from the root-owned pin file -- you read once at approve;
 # nothing is re-read at sign time, so there is nothing to MITM. approve
 # --tag verifies such a tag against root-owned allowed signers
-# (/etc/pinned/allowed_signers, git's native format) -- that is the
+# (per-repo <pin file>.signers first, global /etc/pinned/allowed_signers
+# as fallback; git's native format) -- that is the
 # second-machine bootstrap: clone anywhere, install the signer key once,
 # approve the release.
 #
@@ -123,7 +124,14 @@ case "$action" in
         fi
       fi
       elev="$INSTALL_TARGET"
-      if [ ! -x "$elev" ]; then
+      if [ -x "$elev" ]; then
+        # Refuse to hand sudo a target that is not root-owned end to end.
+        # Not hypothetical: old Homebrew left /usr/local user-owned on
+        # many Intel Macs, which would make the "installed" copy exactly
+        # as swappable as the checkout.
+        verify_root_owned_path "$elev" || exit 1
+        verify_ancestry "$elev" || exit 1
+      else
         # Pre-install fallback: the checkout copy is USER-WRITABLE, so
         # running it as root is only safe in the bootstrap window right
         # after a hand-read. Never silent: warn and confirm. (setup is
@@ -159,8 +167,9 @@ case "$action" in
       if [ "$action" = "approve" ] && [ "$elev" = "$INSTALL_TARGET" ]; then
         printf '%sself-elevating: sudo runs the installed root-owned binary%s\n' "$C_DIM" "$C_OFF"
         printf '%s  %s%s\n' "$C_DIM" "$elev" "$C_OFF"
-        printf '%s(verify the auth prompt names exactly that command). It shows%s\n' "$C_DIM" "$C_OFF"
-        printf '%sthe review first; nothing is pinned until you answer y after.%s\n' "$C_DIM" "$C_OFF"
+        printf '%s(if your sudo prompt shows the command being authorized,%s\n' "$C_DIM" "$C_OFF"
+        printf '%sverify it names exactly that path). It shows the review%s\n' "$C_DIM" "$C_OFF"
+        printf '%sfirst; nothing is pinned until you answer y after it.%s\n' "$C_DIM" "$C_OFF"
       fi
       exec /usr/bin/sudo -- "$elev" "$action" "$@"
     fi
@@ -365,9 +374,11 @@ if [ "$action" = "setup" ]; then
   exit 0
 fi
 
-# Re-verify INSTALL_TARGET ancestry on every invocation (catches a later
-# "chown -R \$USER /usr/local" undoing the install-path guarantees).
+# Re-verify INSTALL_TARGET itself and its ancestry on every invocation
+# (catches a later "chown -R \$USER /usr/local" undoing the install-path
+# guarantees).
 if [ -f "$INSTALL_TARGET" ]; then
+  verify_root_owned_path "$INSTALL_TARGET" || exit 1
   verify_ancestry "$INSTALL_TARGET" || exit 1
 fi
 
@@ -391,6 +402,11 @@ do_approve() {
   resolve_repo "$repo_arg"
   local pin_file="$default_pin_file"
 
+  # Create the pin root BEFORE the ancestry check -- approve must work on
+  # machines that never ran setup (declarative installs); install -d also
+  # re-asserts root:wheel 755 on an existing dir.
+  install -d -m 755 -o root -g wheel "$PIN_ROOT"
+
   # The pin file must live under a root-owned ancestry or the machine gate
   # is only as strong as the weakest writable dir on the way there.
   verify_ancestry "$pin_file" || exit 1
@@ -406,11 +422,17 @@ do_approve() {
     case "$tag_arg" in
       -*) echo "invalid tag name: $tag_arg" >&2; exit 1 ;;
     esac
-    local signers="$PIN_ROOT/allowed_signers"
+    # Per-repo signers take precedence; the global file is the fallback.
+    # A key trusted to vouch for one repo shouldn't implicitly vouch for
+    # every repo on the machine; keep machine-wide keys in the global
+    # file deliberately.
+    local signers="${pin_file}.signers"
+    [ -f "$signers" ] || signers="$PIN_ROOT/allowed_signers"
     if [ ! -f "$signers" ]; then
-      echo "ERROR: $signers not found" >&2
+      echo "ERROR: no allowed signers for this repo" >&2
       echo "  install the signer's public key (git allowed-signers format) root-owned:" >&2
-      echo "    sudo install -m 644 -o root -g wheel <file> $signers" >&2
+      echo "    per-repo: sudo install -m 644 -o root -g wheel <file> ${pin_file}.signers" >&2
+      echo "    global:   sudo install -m 644 -o root -g wheel <file> $PIN_ROOT/allowed_signers" >&2
       echo "  obtain the key OUT OF BAND (printed card, password manager," >&2
       echo "  existing trusted machine) -- never from this repo." >&2
       exit 1
@@ -493,12 +515,7 @@ do_approve() {
   esac
 
   # Atomic pin write: stage in the (root-owned) pin dir, single rename.
-  # Create the pin root here too (not only in setup) so approve works on
-  # machines that never run setup (declarative installs); install -d also
-  # re-asserts root:wheel 755 on an existing dir.
   local tmp
-  install -d -m 755 -o root -g wheel "$PIN_ROOT"
-  verify_root_owned_path "$PIN_ROOT" || exit 1
   tmp="$(mktemp "$PIN_ROOT/.pin.XXXXXX")"
   printf '%s\n' "$hash" >"$tmp"
   chown root:wheel "$tmp"

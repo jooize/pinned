@@ -35,8 +35,10 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   pin file: you read once at approve; nothing is re-read at sign time,
   so a compromised environment has nothing to MITM (SSH-agent signing
   is blind -- the binding to content is this code path). `approve --tag`
-  verifies such a tag against root-owned /etc/pinned/allowed_signers
-  (git's native format); any repo with signed releases works with no
+  verifies such a tag against root-owned allowed signers -- per-repo
+  `<pin file>.signers` first, global /etc/pinned/allowed_signers as
+  fallback, so a key trusted for one repo doesn't implicitly vouch for
+  every repo (git's native format); any repo with signed releases works with no
   pinned-specific conventions. Second-machine bootstrap: clone
   anywhere, install the signer key once (obtained out of band), approve
   the tag.
