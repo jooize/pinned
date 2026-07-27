@@ -197,8 +197,11 @@ verify_ancestry() {
 # ---- scrubbed git ----------------------------------------------------------
 
 # Absolute git; nix system profile first, the OS's as fallback. Only
-# root-owned system locations -- consulting PATH or user-writable prefixes
-# (e.g. /opt/homebrew/bin) would reopen the hijack sgit exists to close.
+# root-owned system locations -- consulting PATH, env, or user-writable
+# prefixes (e.g. /opt/homebrew/bin) would reopen the hijack sgit exists
+# to close. If your trusted git lives elsewhere, edit this candidate
+# list BEFORE bootstrapping: this hand-read file is the configuration
+# surface (declarative installs substitute it at build time instead).
 # Fail loud up front rather than confusingly mid-approve.
 GIT=/run/current-system/sw/bin/git
 [ -x "$GIT" ] || GIT=/usr/bin/git
@@ -212,6 +215,17 @@ GIT=/run/current-system/sw/bin/git
 # env -i (no GIT_* smuggling), no global/system config, repo-local config
 # neutralized where it matters (-c overrides, no pager, no fsmonitor daemon).
 # show/diff/rev-parse/log run no hooks; aliases can't shadow builtins.
+# Trusted pager for review output: absolute system less, -R passes the
+# diff colors through. cat when non-interactive or less is absent. Never
+# $PAGER/user config -- the pager sits between reviewed bytes and eyes.
+page() {
+  if [ -t 1 ] && [ -x /usr/bin/less ]; then
+    /usr/bin/less -R
+  else
+    cat
+  fi
+}
+
 sgit() {
   env -i PATH=/sbin:/bin:/usr/sbin:/usr/bin HOME=/var/empty \
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
@@ -363,7 +377,7 @@ do_approve() {
   # is only as strong as the weakest writable dir on the way there.
   verify_ancestry "$pin_file" || exit 1
 
-  local hash old_hash
+  local hash old_hash diff_out
   old_hash="$(read_pin "$pin_file")" || exit 1
 
   if [ -n "$tag_arg" ]; then
@@ -426,7 +440,11 @@ do_approve() {
       sgit log --format='%h %s' "${old_hash}..${hash}" || true
       echo
       printf '%s--- diff %.10s..%.10s (from object store) ---%s\n' "$C_B" "$old_hash" "$hash" "$C_OFF"
-      sgit -c color.diff="$DIFF_COLOR" diff "$old_hash" "$hash"
+      # Capture first so a git failure aborts (set -e) BEFORE anything is
+      # shown as reviewable; then page. Early pager quit (SIGPIPE) is the
+      # reviewer's own act -- the diff itself already succeeded.
+      diff_out="$(sgit -c color.diff="$DIFF_COLOR" diff "$old_hash" "$hash")"
+      printf '%s\n' "$diff_out" | page || true
     elif [ "$trust_current" -eq 1 ]; then
       printf '%spinned:%s  (none)\n' "$C_DIM" "$C_OFF"
       echo
@@ -438,7 +456,8 @@ do_approve() {
       echo
       printf '%s--- full tree at %.10s (diff from empty) ---%s\n' "$C_B" "$hash" "$C_OFF"
       # 4b825d... is git's well-known empty tree; this shows every approved byte.
-      sgit -c color.diff="$DIFF_COLOR" diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash"
+      diff_out="$(sgit -c color.diff="$DIFF_COLOR" diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
+      printf '%s\n' "$diff_out" | page || true
     fi
   fi
   echo
