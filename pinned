@@ -152,6 +152,16 @@ case "$action" in
           esac
         fi
       fi
+      # approve: say what the authentication buys BEFORE sudo asks for it.
+      # The privileged binary only DISPLAYS the review; nothing is pinned
+      # until the y/N answered after it. Invoke pinned bare (self-elevating)
+      # rather than typing sudo yourself, so this note precedes the prompt.
+      if [ "$action" = "approve" ] && [ "$elev" = "$INSTALL_TARGET" ]; then
+        printf '%sself-elevating: sudo runs the installed root-owned binary%s\n' "$C_DIM" "$C_OFF"
+        printf '%s  %s%s\n' "$C_DIM" "$elev" "$C_OFF"
+        printf '%s(verify the auth prompt names exactly that command). It shows%s\n' "$C_DIM" "$C_OFF"
+        printf '%sthe review first; nothing is pinned until you answer y after.%s\n' "$C_DIM" "$C_OFF"
+      fi
       exec /usr/bin/sudo -- "$elev" "$action" "$@"
     fi
     ;;
