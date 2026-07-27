@@ -17,7 +17,7 @@ pin file. Deploy tooling builds only `git+file://...?rev=<pinned hash>`.
                                       all naming one commit -> pin
     pinned sign <repo> <tag>          signed release tag at the PINNED hash
     pinned status <repo>
-    pinned read <file> [--algo 256|384|512]
+    pinned read <file> [--algo 256|384|512|blake3]
                                       trusted read of a non-repo file:
                                       one read, shown and hashed
     pinned list                       all pins: hash and repo path
@@ -58,9 +58,13 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   k-of-n is the consumer demanding whichever k tags they trust.
 - Deploy consumers are separate scripts: pinned states trust, never
   acts on it.
-- Rendered diffs are never trusted blindly. All review output goes
-  through one internal helper that forces `--no-ext-diff --no-textconv`,
-  and calling git's `diff` any other way is refused inside the script.
+- Rendered diffs are never trusted blindly, in three layers: every git
+  call sets `attr.tree` to the empty tree (so no `.gitattributes` can
+  select a driver or filter for ANY subcommand -- the only repo-wide
+  switch git offers); the review helper additionally forces
+  `--no-ext-diff --no-textconv`; and reaching for any rendering
+  subcommand (`diff`, `show`, `log -p`, `format-patch`, ...) another way
+  is refused inside the script.
   Repo-local `.git/config` can define an external diff driver or
   textconv filter, selected by a `.gitattributes` that need not even be
   committed; both are attacker-writable, both are shell commands, and
@@ -79,8 +83,13 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   root-owned binary because a user-writable review script could show
   innocent bytes and hash malicious ones -- and unlike a falsified
   display, which fails closed at the next hash check, a falsified
-  ceremony fails OPEN. Digests below 256 bits of output and sha1/md5 are
-  refused: this hash is the gate.
+  ceremony fails OPEN. The digest equals what `shasum -a <algo> <file>`
+  reports, so the ceremony can be cross-checked with ordinary tools.
+  sha256/384/512 work everywhere; `--algo blake3` uses `b3sum` when it is
+  installed system-wide. sha1/md5 and any digest under 256 bits are
+  refused: this hash is the gate. There is deliberately no flag naming a
+  hasher PATH -- whatever computes the digest decides whether the gate
+  passes, so it must resolve inside the trusted PATH.
 - Trust prerequisite: the interactive flow assumes your terminal and
   shell honestly relay what you type and see. Shell configuration is
   user-writable state -- a compromised config can alias `pinned`, fake

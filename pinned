@@ -32,9 +32,19 @@
 # friendlier path, point a root-owned symlink at the slot, e.g.
 #   ln -s "/etc/pinned/$(pinned slot /path/to/repo)" /etc/nix-darwin/pinned-rev
 
-# Pin PATH so bare command names can't be hijacked even if sudoers env_keep
-# ever leaks PATH from the invoker.
-export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+# Pin PATH to root-owned directories only, before anything runs. This is the
+# ONE place trust in command resolution is established: everything below calls
+# tools by bare name, and this line is what makes that safe. Keeping it in a
+# single auditable place beats scattering absolute paths, which only restate
+# the same fact once per call site.
+#
+# The nix system profile comes first so a machine with a newer git/coreutils
+# uses them; it is a root-owned symlink farm into /nix/store (changing it needs
+# root, same as /usr/bin). Absent on non-nix machines -- harmless. NOTE what is
+# deliberately NOT here: ~/.nix-profile, ~/.local/bin, /opt/homebrew/bin and
+# friends are user-writable, which is exactly why an inherited PATH cannot be
+# trusted even from a session you trust.
+export PATH=/run/current-system/sw/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
 set -euo pipefail
 
@@ -91,7 +101,7 @@ usage: pinned <action> [args]
   sign <repo> <tag>  create signed tag <tag> at the PINNED hash -- no sudo
                      (needs your SSH agent, e.g. 1Password)
   status <repo>      pinned hash vs HEAD; warns on dirty tree
-  read <file> [--algo 256|384|512]
+  read <file> [--algo 256|384|512|blake3]
                      trusted read of a non-repo file: display and hash ONE
                      read, print the hash + a fail-closed wrapper -- no sudo
   list               all pins: hash and repo path
@@ -147,18 +157,14 @@ log_action() {
 
 # ---- scrubbed git ----------------------------------------------------------
 
-# Absolute git; nix system profile first, the OS's as fallback. Only
-# root-owned system locations -- consulting PATH, env, or user-writable
-# prefixes (e.g. /opt/homebrew/bin) would reopen the hijack sgit exists
-# to close. If your trusted git lives elsewhere, edit this candidate
-# list BEFORE bootstrapping: this hand-read file is the configuration
+# git resolved from the pinned PATH above (root-owned dirs only), so a
+# user-writable prefix can never shadow it. Fail loud up front rather than
+# confusingly mid-approve. If your trusted git lives outside those dirs, edit
+# the PATH line BEFORE bootstrapping: this hand-read file is the configuration
 # surface (declarative installs substitute it at build time instead).
-# Fail loud up front rather than confusingly mid-approve.
-GIT=/run/current-system/sw/bin/git
-[ -x "$GIT" ] || GIT=/usr/bin/git
-[ -x "$GIT" ] || {
-  echo "ERROR: no trusted git found (checked /run/current-system/sw/bin/git, /usr/bin/git)" >&2
-  echo "       install git in the system profile; pinned does not search PATH for it" >&2
+command -v git >/dev/null 2>&1 || {
+  echo "ERROR: no git in the trusted PATH ($PATH)" >&2
+  echo "       install git system-wide; pinned will not use a user-writable one" >&2
   exit 1
 }
 
@@ -170,8 +176,8 @@ GIT=/run/current-system/sw/bin/git
 # diff colors through. cat when non-interactive or less is absent. Never
 # $PAGER/user config -- the pager sits between reviewed bytes and eyes.
 page() {
-  if [ -t 1 ] && [ -x /usr/bin/less ]; then
-    /usr/bin/less -R
+  if [ -t 1 ] && command -v less >/dev/null 2>&1; then
+    less -R
   else
     cat
   fi
@@ -241,9 +247,18 @@ sgit() {
   # would use. Trust exactly $repo, from the command line (protected
   # config). The check's job -- refusing attacker-planted repo config
   # and hooks -- is already done here by scrubbing and hookless commands.
-  env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME=/var/empty \
+  # attr.tree=<empty tree>: attributes come from an EMPTY tree instead of the
+  # working tree, so no .gitattributes -- committed or untracked -- can select a
+  # diff driver, textconv filter, or clean/smudge filter for ANY subcommand.
+  # This is the only repo-wide switch that exists (there is no config that
+  # disables textconv globally), so it is the primary defense; the per-command
+  # --no-ext-diff --no-textconv in sgit_diff and the render guard above are the
+  # second and third layers. Silently ignored by git older than ~2.40 -- which
+  # is why the other two layers still carry their weight.
+  env -i PATH="$PATH" HOME=/var/empty \
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-    "$GIT" -C "$repo" --no-pager -c safe.directory="$repo" \
+    git -C "$repo" --no-pager -c safe.directory="$repo" \
+    -c attr.tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904 \
     -c core.fsmonitor=false -c core.pager=cat "$@"
 }
 
@@ -484,7 +499,7 @@ case "$action" in
         printf 'until you answer y after that review. If your sudo prompt shows\n'
         printf 'the command being authorized, verify it names exactly that binary.\n'
       fi
-      exec /usr/bin/sudo -- "$elev" "$action" "$@"
+      exec sudo -- "$elev" "$action" "$@"
     fi
     ;;
 esac
@@ -738,9 +753,9 @@ do_sign() {
   # -- fail closed. The absolute git binary and the explicit hash are what
   # matter; `git tag` runs no hooks and builtins can't be alias-shadowed.
   if [ -n "$force" ]; then
-    "$GIT" -C "$repo" --no-pager tag -s -f -m "signed by $inv via pinned" "$tag_name" "$hash"
+    git -C "" --no-pager tag -s -f -m "signed by $inv via pinned" "$tag_name" "$hash"
   else
-    "$GIT" -C "$repo" --no-pager tag -s -m "signed by $inv via pinned" "$tag_name" "$hash"
+    git -C "" --no-pager tag -s -m "signed by $inv via pinned" "$tag_name" "$hash"
   fi
   printf '%s✓ signed:%s %s at %s%s%s (the pinned hash)\n' "$C_GRN$C_B" "$C_OFF" "$tag_name" "$C_CYN" "$hash" "$C_OFF"
   printf '%s  consumers verify with approve --tag %s against their allowed_signers%s\n' "$C_DIM" "$tag_name" "$C_OFF"
@@ -809,8 +824,22 @@ do_read() {
   # out, exactly like sha224, despite both being SHA-512 underneath. sha1/md5
   # are refused outright: this hash IS the gate, and a chosen-prefix collision
   # would let the bytes you reviewed and the bytes that execute differ.
+  #
+  # Post-quantum: nothing to do here. Grover only square-roots preimage search
+  # and quantum collision search does not beat classical in practice, so a
+  # 256-bit hash stays adequate; PQ pressure is on SIGNATURES, not digests.
+  # 384/512 are available if you want margin anyway.
+  #
+  # Adding another function (blake3 below is the template) means one line here
+  # plus one in hasher_for. The constraint is not the algorithm, it is the
+  # BINARY: whatever computes the digest decides whether the gate passes, so it
+  # must resolve inside the trusted PATH pinned at the top of this file. That
+  # is also why there is no --hasher flag taking a path -- it would let the
+  # caller nominate an attacker-writable verifier.
+  local algo_name
   case "$algo" in
-    256|384|512|512256) ;;
+    256|384|512|512256) algo_name="sha" ;;
+    blake3|b3)          algo_name="blake3"; algo=blake3 ;;
     1|md5|sha1|MD5|SHA1)
       echo "refusing $algo: collision-vulnerable, and this hash is the gate" >&2
       exit 1 ;;
@@ -818,9 +847,18 @@ do_read() {
       echo "refusing $algo: 224-bit output is below the 256-bit floor for a trust decision" >&2
       exit 1 ;;
     *)
-      echo "unsupported algorithm: $algo (use 256, 384, 512, 512256)" >&2
+      echo "unsupported algorithm: $algo (use 256, 384, 512, blake3)" >&2
       exit 1 ;;
   esac
+
+  # Resolve the hashing command; fail closed and say what to install.
+  if [ "$algo_name" = blake3 ]; then
+    command -v b3sum >/dev/null 2>&1 || {
+      echo "blake3 requested but b3sum is not in the trusted PATH ($PATH)" >&2
+      echo "       install b3sum system-wide (a user-writable one would defeat the gate)" >&2
+      exit 1
+    }
+  fi
 
   [ -f "$file" ] || { echo "not a regular file: $file" >&2; exit 1; }
 
@@ -844,28 +882,37 @@ do_read() {
   printf '%s--- %s (exactly the bytes being hashed) ---%s\n' "$C_B" "$file" "$C_OFF"
   printf '%s' "$content" | page || true
 
-  hash="$(printf '%s' "$content" | shasum -a "$algo" | awk '{print $1}')"
-  [ -n "$hash" ] || { echo "hashing failed" >&2; exit 1; }
+  # Digest and the command that recomputes it, kept in lockstep: $hash_cmd is
+  # emitted into the wrapper verbatim, so the two sides cannot drift.
+  local hash hash_cmd label
+  if [ "$algo_name" = blake3 ]; then
+    hash_cmd="b3sum --no-names"
+    label="blake3"
+  else
+    hash_cmd="shasum -a $algo"
+    case "$algo" in
+      512256) label="sha512/256" ;;   # canonical name; -a takes the digit form
+      *)      label="sha${algo}" ;;
+    esac
+  fi
 
-  # Canonical name for display; shasum's -a still takes the digit form.
-  local label
-  case "$algo" in
-    512256) label="sha512/256" ;;
-    *)      label="sha${algo}" ;;
-  esac
+  hash="$(printf '%s' "$content" | $hash_cmd)" || { echo "hashing failed" >&2; exit 1; }
+  hash="${hash%% *}"
+  [ -n "$hash" ] || { echo "hashing failed" >&2; exit 1; }
 
   echo
   printf '%s%s:%s %s%s%s\n' "$C_B" "$label" "$C_OFF" "$C_CYN" "$hash" "$C_OFF"
   echo
   # Emit the consumer snippet, not just the hash: the wrapper must read and
   # hash exactly as this did, or the two sides drift and every launch refuses.
-  # Every tool in it is ABSOLUTE -- unlike this script, the wrapper runs in the
-  # hook's inherited environment, where PATH is whatever the session has, so a
-  # bare `shasum` or `cat` would be the attacker's to replace and the gate
-  # would verify nothing.
+  # It opens by pinning PATH for the same reason this script does -- a hook
+  # inherits the session's PATH, which legitimately contains user-writable
+  # prefixes (~/.nix-profile, ~/.local/bin, /opt/homebrew/bin), so bare names
+  # would otherwise resolve through directories an attacker can write. One
+  # pinned PATH, then bare tools, exactly as above.
   printf '%sfail-closed wrapper (paste into the hash-gated settings file):%s\n' "$C_DIM" "$C_OFF"
   cat <<EOF
-c=\$(/bin/cat $file; printf x); c=\${c%x}; h=\$(printf '%s' "\$c" | /usr/bin/shasum -a $algo); [ "\${h%% *}" = "$hash" ] && exec /bin/bash -c "\$c" || { echo 'hook hash mismatch -- refusing' >&2; exit 2; }
+export PATH=$PATH; c=\$(cat $file; printf x); c=\${c%x}; h=\$(printf '%s' "\$c" | $hash_cmd); [ "\${h%% *}" = "$hash" ] && exec bash -c "\$c" || { echo 'hook hash mismatch -- refusing' >&2; exit 2; }
 EOF
   log_action read "$file" "$hash"
 }
