@@ -100,6 +100,39 @@ EOF
 action="$1"
 shift
 
+# ---- shared verification (locked-family pattern) ---------------------------
+# Defined before the self-elevation block below, which is the first caller.
+
+# Verify a path is root:wheel owned with no group/other write. Refuses to
+# trust binaries or pin files reachable through a user-writable ancestor.
+verify_root_owned_path() {
+  local path="$1" owner mode
+  owner="$(stat -f '%Su:%Sg' "$path")"
+  mode="$(stat -f '%OLp' "$path")"
+  if [ "$owner" != "root:wheel" ]; then
+    echo "ERROR: $path is owned $owner, expected root:wheel" >&2
+    echo "       fix manually: sudo chown root:wheel $path && sudo chmod 755 $path" >&2
+    return 1
+  fi
+  case "$mode" in
+    755|750|700|555|550|500) ;;
+    *)
+      echo "ERROR: $path has mode $mode, expected 755 or stricter" >&2
+      return 1
+      ;;
+  esac
+}
+
+verify_ancestry() {
+  # Walk ancestry of a path (itself excluded) up to /, verify each dir.
+  local p
+  p="$(dirname "$1")"
+  while [ "$p" != "/" ]; do
+    verify_root_owned_path "$p" || return 1
+    p="$(dirname "$p")"
+  done
+}
+
 # Root-requiring actions self-elevate: re-exec the INSTALLED (root-owned,
 # digest-pinned) binary under sudo so the elevated code is never a copy the
 # invoker could have modified. Pre-install (setup from a checkout) falls
@@ -179,38 +212,6 @@ esac
 log_action() {
   # visible via: log show --predicate 'eventMessage CONTAINS "pinned:"' --last 1d
   logger -t pinned "user=${inv:-$(id -un)} action=$1 repo=${2:-} hash=${3:-} result=${4:-ok}"
-}
-
-# ---- shared verification (locked-family pattern) ---------------------------
-
-# Verify a path is root:wheel owned with no group/other write. Refuses to
-# trust binaries or pin files reachable through a user-writable ancestor.
-verify_root_owned_path() {
-  local path="$1" owner mode
-  owner="$(stat -f '%Su:%Sg' "$path")"
-  mode="$(stat -f '%OLp' "$path")"
-  if [ "$owner" != "root:wheel" ]; then
-    echo "ERROR: $path is owned $owner, expected root:wheel" >&2
-    echo "       fix manually: sudo chown root:wheel $path && sudo chmod 755 $path" >&2
-    return 1
-  fi
-  case "$mode" in
-    755|750|700|555|550|500) ;;
-    *)
-      echo "ERROR: $path has mode $mode, expected 755 or stricter" >&2
-      return 1
-      ;;
-  esac
-}
-
-verify_ancestry() {
-  # Walk ancestry of a path (itself excluded) up to /, verify each dir.
-  local p
-  p="$(dirname "$1")"
-  while [ "$p" != "/" ]; do
-    verify_root_owned_path "$p" || return 1
-    p="$(dirname "$p")"
-  done
 }
 
 # ---- scrubbed git ----------------------------------------------------------
