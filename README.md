@@ -17,11 +17,15 @@ pin file. Deploy tooling builds only `git+file://...?rev=<pinned hash>`.
                                       all naming one commit -> pin
     pinned sign <repo> <tag>          signed release tag at the PINNED hash
     pinned status <repo>
+    pinned read <file> [--algo 256|384|512|512256]
+                                      trusted read of a non-repo file:
+                                      one read, shown and hashed
     pinned list                       all pins: hash and repo path
     pinned slot <repo>                print the repo's pin-file path
 
 approve and setup self-elevate via sudo (re-exec of the installed
-root-owned binary). sign runs as you: it needs your SSH agent.
+root-owned binary). sign and read run as you: sign needs your SSH agent,
+read writes nothing.
 
 Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
 
@@ -54,6 +58,29 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   k-of-n is the consumer demanding whichever k tags they trust.
 - Deploy consumers are separate scripts: pinned states trust, never
   acts on it.
+- Rendered diffs are never trusted blindly. All review output goes
+  through one internal helper that forces `--no-ext-diff --no-textconv`,
+  and calling git's `diff` any other way is refused inside the script.
+  Repo-local `.git/config` can define an external diff driver or
+  textconv filter, selected by a `.gitattributes` that need not even be
+  committed; both are attacker-writable, both are shell commands, and
+  scrubbing the environment does not stop them. Unhardened, a driver can
+  render any diff as arbitrary text -- a textconv mapping both sides to
+  one constant shows an EMPTY diff for a commit that changed everything
+  -- and it EXECUTES during rendering, which for a tool that elevates
+  before diffing means as root.
+- `pinned read <file>` extends the same idea past git, for content that
+  is gated by hash rather than by rev (e.g. a hook wired into a
+  hash-checked settings file). The security-relevant act is the READ:
+  one read into memory, those bytes displayed, those bytes hashed --
+  never two reads with a swap in between. It prints the digest plus a
+  ready-to-paste fail-closed wrapper, so the consumer hashes exactly the
+  way `read` did. Runs unprivileged (it writes nothing); it lives in a
+  root-owned binary because a user-writable review script could show
+  innocent bytes and hash malicious ones -- and unlike a falsified
+  display, which fails closed at the next hash check, a falsified
+  ceremony fails OPEN. Digests below 256 bits of output and sha1/md5 are
+  refused: this hash is the gate.
 - Trust prerequisite: the interactive flow assumes your terminal and
   shell honestly relay what you type and see. Shell configuration is
   user-writable state -- a compromised config can alias `pinned`, fake

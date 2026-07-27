@@ -91,6 +91,9 @@ usage: pinned <action> [args]
   sign <repo> <tag>  create signed tag <tag> at the PINNED hash -- no sudo
                      (needs your SSH agent, e.g. 1Password)
   status <repo>      pinned hash vs HEAD; warns on dirty tree
+  read <file> [--algo 256|384|512|512256]
+                     trusted read of a non-repo file: display and hash ONE
+                     read, print the hash + a fail-closed wrapper -- no sudo
   list               all pins: hash and repo path
   slot <repo>        print the repo's pin-file path (for consumer symlinks)
   setup [--yes]      (sudo) provision sudoers digest pin; self-install
@@ -186,11 +189,32 @@ page() {
 # --no-ext-diff --no-textconv is the only thing that closes it.
 # Measured 2026-07-27 on git 2.54.0; harness + evidence in the hardening repo:
 # proofs/claims/git/git-diff-display-falsifiable-by-repo-drivers.md
-sgit_review_diff() {
-  sgit --no-pager -c color.diff="$DIFF_COLOR" diff --no-ext-diff --no-textconv "$@"
+# The ONLY way to diff in this script. Always carries the hardening flags, so
+# a future edit cannot reintroduce a falsifiable review by writing the obvious
+# thing; `sgit diff` itself is refused below.
+sgit_diff() {
+  _sgit_diff_ok=1 sgit -c color.diff="$DIFF_COLOR" diff --no-ext-diff --no-textconv "$@"
 }
 
 sgit() {
+  # Structural guard: every diff must carry --no-ext-diff --no-textconv, so
+  # bare `sgit diff` is a bug, not a style choice. Refuse it loudly instead of
+  # silently rendering through an attacker's driver. (Scanning all args, not
+  # just $1, because -c options precede the subcommand.)
+  if [ "${_sgit_diff_ok:-0}" -ne 1 ]; then
+    local _args _i=0
+    _args=("$@")
+    while [ "$_i" -lt "${#_args[@]}" ]; do
+      case "${_args[$_i]}" in
+        -c) _i=$((_i + 2)) ;;          # -c takes a value; skip both
+        --*) _i=$((_i + 1)) ;;
+        diff)
+          echo "pinned: internal error -- use sgit_diff, never bare 'sgit diff'" >&2
+          exit 1 ;;
+        *) break ;;                    # first non-option word: some other subcommand
+      esac
+    done
+  fi
   # safe.directory: running as root on a user-owned repo trips git's
   # ownership check, and env -i strips the SUDO_UID escape hatch git
   # would use. Trust exactly $repo, from the command line (protected
@@ -548,7 +572,7 @@ do_approve() {
     # Human gate: read the diff since the last pin from the object store.
     hash="$(sgit rev-parse 'HEAD^{commit}')"
 
-    if ! sgit diff --no-ext-diff --no-textconv --quiet 2>/dev/null || ! sgit diff --no-ext-diff --no-textconv --cached --quiet 2>/dev/null; then
+    if ! sgit_diff --quiet 2>/dev/null || ! sgit_diff --cached --quiet 2>/dev/null; then
       echo "note: work tree is dirty; only COMMITTED content at $hash is being approved" >&2
     fi
 
@@ -570,7 +594,7 @@ do_approve() {
       # Capture first so a git failure aborts (set -e) BEFORE anything is
       # shown as reviewable; then page. Early pager quit (SIGPIPE) is the
       # reviewer's own act -- the diff itself already succeeded.
-      diff_out="$(sgit_review_diff "$old_hash" "$hash")"
+      diff_out="$(sgit_diff "$old_hash" "$hash")"
       printf '%s\n' "$diff_out" | page || true
     elif [ "$trust_current" -eq 1 ]; then
       printf '%spinned:%s  (none)\n' "$C_DIM" "$C_OFF"
@@ -583,7 +607,7 @@ do_approve() {
       echo
       printf '%s--- full tree at %.10s (diff from empty) ---%s\n' "$C_B" "$hash" "$C_OFF"
       # 4b825d... is git's well-known empty tree; this shows every approved byte.
-      diff_out="$(sgit_review_diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
+      diff_out="$(sgit_diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
       printf '%s\n' "$diff_out" | page || true
     fi
   fi
@@ -639,7 +663,7 @@ do_status() {
   else
     printf '%sstate:%s   %s✗ never approved%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF"
   fi
-  if ! sgit diff --no-ext-diff --no-textconv --quiet 2>/dev/null || ! sgit diff --no-ext-diff --no-textconv --cached --quiet 2>/dev/null; then
+  if ! sgit_diff --quiet 2>/dev/null || ! sgit_diff --cached --quiet 2>/dev/null; then
     printf '%swarning: work tree is dirty (uncommitted changes are never approved)%s\n' "$C_YEL" "$C_OFF"
   fi
 }
@@ -725,6 +749,100 @@ do_list() {
   [ "$found" -eq 1 ] || echo "(no pins)"
 }
 
+# ---- read ------------------------------------------------------------------
+
+# Trusted read of a file OUTSIDE any repo, for hash-gated consumers (e.g. a
+# hook wired in a content-gated settings file: the wrapper reads once, hashes
+# what it read, and executes only on match).
+#
+# The security-relevant act is the READ, not the hash. Hashing is trivial;
+# what earns trust is that the bytes shown to you and the bytes hashed are the
+# SAME single read -- never two reads of a file an attacker can swap between
+# them. So: one read into memory, display those bytes, hash those bytes.
+#
+# Runs unprivileged (nothing to elevate -- it writes nothing). Root ownership
+# of this binary is what protects the ceremony itself: a user-writable review
+# script could show you innocent bytes and hash malicious ones, and unlike a
+# falsified display that lie would SURVIVE (you would paste a hash that
+# genuinely matches the malicious file). A lying display fails closed; a lying
+# ceremony fails open. That asymmetry is why this lives here.
+do_read() {
+  local algo=256 file="" a
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --algo|-a)
+        [ $# -ge 2 ] || { echo "--algo needs a value" >&2; exit 1; }
+        algo="$2"; shift 2 ;;
+      --) shift; break ;;
+      -*) echo "unknown option: $1" >&2; usage ;;
+      *)  [ -z "$file" ] || { echo "read takes one file" >&2; usage; }
+          file="$1"; shift ;;
+    esac
+  done
+  [ -n "$file" ] || [ $# -eq 0 ] || { file="$1"; shift; }
+  [ -n "$file" ] || usage
+
+  # Only algorithms whose collision resistance still carries a trust decision.
+  # The floor is 256 bits of OUTPUT (~128-bit collision resistance), applied by
+  # output length rather than by family -- so sha512/256 is in and sha512/224 is
+  # out, exactly like sha224, despite both being SHA-512 underneath. sha1/md5
+  # are refused outright: this hash IS the gate, and a chosen-prefix collision
+  # would let the bytes you reviewed and the bytes that execute differ.
+  case "$algo" in
+    256|384|512|512256) ;;
+    1|md5|sha1|MD5|SHA1)
+      echo "refusing $algo: collision-vulnerable, and this hash is the gate" >&2
+      exit 1 ;;
+    224|512224)
+      echo "refusing $algo: 224-bit output is below the 256-bit floor for a trust decision" >&2
+      exit 1 ;;
+    *)
+      echo "unsupported algorithm: $algo (use 256, 384, 512, 512256)" >&2
+      exit 1 ;;
+  esac
+
+  [ -f "$file" ] || { echo "not a regular file: $file" >&2; exit 1; }
+
+  # NUL bytes cannot survive a shell variable, so the consumer wrapper could
+  # never execute the file's literal bytes. Refuse rather than hash something
+  # that differs from what any wrapper would run.
+  if [ "$(LC_ALL=C tr -d '\000' <"$file" | wc -c)" -ne "$(wc -c <"$file")" ]; then
+    echo "refusing: file contains NUL bytes (not shell-executable text)" >&2
+    exit 1
+  fi
+
+  # THE single read. Everything below is derived from $content, never from a
+  # second look at the file.
+  local content hash
+  content="$(cat -- "$file")" || { echo "cannot read: $file" >&2; exit 1; }
+
+  printf '%s--- %s (exactly the bytes being hashed) ---%s\n' "$C_B" "$file" "$C_OFF"
+  printf '%s\n' "$content" | page || true
+
+  hash="$(printf '%s\n' "$content" | shasum -a "$algo" | awk '{print $1}')"
+  [ -n "$hash" ] || { echo "hashing failed" >&2; exit 1; }
+
+  # Canonical name for display; shasum's -a still takes the digit form.
+  local label
+  case "$algo" in
+    512256) label="sha512/256" ;;
+    *)      label="sha${algo}" ;;
+  esac
+
+  echo
+  printf '%s%s:%s %s%s%s\n' "$C_B" "$label" "$C_OFF" "$C_CYN" "$hash" "$C_OFF"
+  echo
+  # Emit the consumer snippet rather than only the hash: the wrapper MUST read
+  # and hash the same way this did (`$(cat)` + trailing newline), or the two
+  # sides drift and every launch refuses. Shipping both together removes that
+  # footgun.
+  printf '%sfail-closed wrapper (paste into the hash-gated settings file):%s\n' "$C_DIM" "$C_OFF"
+  cat <<EOF
+c=\$(cat $file) && [ "\$(printf '%s\\n' "\$c" | shasum -a $algo | awk '{print \$1}')" = "$hash" ] && exec bash -c "\$c" || { echo 'hook hash mismatch -- refusing' >&2; exit 2; }
+EOF
+  log_action read "$file" "$hash"
+}
+
 # ---- slot ------------------------------------------------------------------
 
 do_slot() {
@@ -741,5 +859,6 @@ case "$action" in
   status)  do_status "$@" ;;
   list)    do_list ;;
   slot)    do_slot "$@" ;;
+  read)    do_read "$@" ;;
   *)       usage ;;
 esac
