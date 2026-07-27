@@ -121,17 +121,37 @@ shift
 # ---- shared verification (locked-family pattern) ---------------------------
 # Defined before the self-elevation block below, which is the first caller.
 
-# Verify a path is root:wheel owned with no group/other write. Refuses to
-# trust binaries or pin files reachable through a user-writable ancestor.
+# stat differs by FLAVOR, not platform convention: BSD stat takes -f FORMAT
+# while GNU's -f means file-system (its FORMAT flag is -c). Detect once from
+# whichever stat the trusted PATH resolves -- a nix-built install puts GNU
+# coreutils first even on macOS, and NixOS has no BSD stat at all. GNU %a
+# prints special bits (setuid/sticky) as a fourth digit where BSD %OLp shows
+# low bits only; such a path fails the mode allowlist below, i.e. the
+# asymmetry fails closed.
+if stat --version >/dev/null 2>&1; then
+  stat_owner() { stat -c '%U:%G' "$1"; }
+  stat_mode()  { stat -c '%a' "$1"; }
+else
+  stat_owner() { stat -f '%Su:%Sg' "$1"; }
+  stat_mode()  { stat -f '%OLp' "$1"; }
+fi
+
+# Verify a path is root-owned with no group/other write. Refuses to trust
+# binaries or pin files reachable through a user-writable ancestor. Group is
+# root's own (wheel on macOS/BSD, root on Linux); either way the mode
+# allowlist below denies every group-write bit, so group identity carries no
+# write authority.
 verify_root_owned_path() {
   local path="$1" owner mode
-  owner="$(stat -f '%Su:%Sg' "$path")"
-  mode="$(stat -f '%OLp' "$path")"
-  if [ "$owner" != "root:wheel" ]; then
-    echo "ERROR: $path is owned $owner, expected root:wheel" >&2
-    echo "       fix manually: sudo chown root:wheel $path && sudo chmod 755 $path" >&2
-    return 1
-  fi
+  owner="$(stat_owner "$path")"
+  mode="$(stat_mode "$path")"
+  case "$owner" in
+    root:wheel|root:root) ;;
+    *)
+      echo "ERROR: $path is owned $owner, expected root:wheel (or root:root)" >&2
+      echo "       fix manually: sudo chown root:wheel $path && sudo chmod 755 $path" >&2
+      return 1 ;;
+  esac
   case "$mode" in
     755|750|700|555|550|500) ;;
     *)
@@ -568,10 +588,10 @@ do_approve() {
       exit 1
     fi
     verify_root_owned_path "$PIN_ROOT" || exit 1
-    if [ "$(stat -f '%Su:%Sg' "$signers")" != "root:wheel" ]; then
-      echo "ERROR: $signers is not root:wheel owned" >&2
-      exit 1
-    fi
+    case "$(stat_owner "$signers")" in root:wheel|root:root) ;; *)
+      echo "ERROR: $signers is not root-owned (root:wheel / root:root)" >&2
+      exit 1 ;;
+    esac
     # Every tag must verify AND name the same commit -- all-or-nothing;
     # a single failure leaves the pin unchanged.
     local t_hash
