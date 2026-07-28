@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# pinned-deploy -- make the system run what is approved.
+#
+# Scans the system flake for git+file:// inputs, looks each repo up in
+# pinned's root-owned pin files, syncs every stale rev= to its APPROVED
+# hash, and rebuilds. The flake matching the pins says nothing about what
+# the SYSTEM runs (a prior rebuild may have failed after the rev swap), so
+# the rebuild runs even when every input is already in sync.
+#
+# This is the deploy CONSUMER of pinned: pinned states trust and never
+# acts on it; acting is this separate program's whole job. Run the
+# INSTALLED root-owned copy -- this script composes the exact commands
+# that run as root, so a user-writable copy is a user-writable root
+# command line.
+#
+# A git+file input with no pin slot deploys whatever rev= was hand-edited;
+# that is surfaced loudly but not blocked. Non-local inputs (github:...)
+# are not pinned's to speak for and are untouched.
+
+# Pin PATH to root-owned directories only, before anything runs. Same
+# contract as pinned: the OS's own dirs here; a packaging that installs
+# alongside its own root-owned toolchain rewrites this line at build time.
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+
+set -euo pipefail
+IFS=$'\n\t'
+
+usage() {
+  cat <<'EOF'
+usage: pinned-deploy [--plan] [--yes] [--flake <path>] [-h|--help]
+
+Syncs every git+file input of the system flake to its approved rev
+(from pinned's pin files under /etc/pinned) and runs the system
+rebuild. Commands that will run as root are always shown first.
+
+  --plan          print status and the commands, run nothing
+  --yes           skip the confirmation prompt (still prints commands)
+  --flake <path>  system flake (default: /etc/nix-darwin/flake.nix on
+                  Darwin, /etc/nixos/flake.nix elsewhere; env
+                  NIX_DARWIN_FLAKE overrides the default)
+EOF
+}
+
+PLAN=0 YES=0 FLAKE_ARG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --plan|--dry-run) PLAN=1; shift ;;
+    --yes) YES=1; shift ;;
+    --flake)
+      [ $# -ge 2 ] || { echo "--flake needs a path" >&2; exit 1; }
+      FLAKE_ARG="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) printf 'error: unknown argument: %s\n' "$1" >&2; usage >&2; exit 1 ;;
+  esac
+done
+
+if [ -t 1 ]; then
+  C_OFF=$'\033[0m' C_B=$'\033[1m' C_DIM=$'\033[2m'
+  C_RED=$'\033[31m' C_GRN=$'\033[32m' C_YEL=$'\033[33m' C_CYN=$'\033[36m'
+else
+  C_OFF='' C_B='' C_DIM='' C_RED='' C_GRN='' C_YEL='' C_CYN=''
+fi
+
+if [ "$(uname -s)" = Darwin ]; then
+  DEFAULT_FLAKE="/etc/nix-darwin/flake.nix"
+  REBUILD="darwin-rebuild"
+else
+  DEFAULT_FLAKE="/etc/nixos/flake.nix"
+  REBUILD="nixos-rebuild"
+fi
+FLAKE="${FLAKE_ARG:-${NIX_DARWIN_FLAKE:-$DEFAULT_FLAKE}}"
+: "${PIN_ROOT:=/etc/pinned}"
+
+[ -r "$FLAKE" ] || {
+  printf '%serror: cannot read %s -- pass --flake.%s\n' "$C_RED" "$FLAKE" "$C_OFF" >&2
+  exit 1
+}
+
+# URL-encode % and / -- must mirror pinned's pin-file naming exactly.
+encode() {
+  printf '%s' "$1" | sed -e 's|%|%25|g' -e 's|/|%2F|g'
+}
+
+# Collect git+file inputs: repo path + current rev=, one per line. An
+# input without rev= is skipped (nothing to sync; nix floats the branch).
+inputs="$(grep -oE 'git\+file:///[^"]+' "$FLAKE" | while IFS= read -r url; do
+  p="${url#git+file://}"; p="${p%%\?*}"
+  r="$(printf '%s' "$url" | grep -oE '[?&]rev=[0-9a-f]{40,128}' | head -n1 | cut -d= -f2 || true)"
+  [ -n "$r" ] && printf '%s|%s\n' "$p" "$r"
+done || true)"
+
+[ -n "$inputs" ] || {
+  printf '%serror: no git+file inputs with rev= in %s -- nothing pinned-deploy manages.%s\n' \
+    "$C_RED" "$FLAKE" "$C_OFF" >&2
+  exit 1
+}
+
+# Longest repo basename, for column alignment.
+width=0
+while IFS='|' read -r path _; do
+  name="${path##*/}"
+  [ "${#name}" -gt "$width" ] && width="${#name}"
+done <<EOF
+$inputs
+EOF
+
+perl_prog=""     # accumulated s///g fragments, one per stale input
+updates=0 unpinned=0
+
+printf '%sgit+file inputs%s %s(%s)%s\n' "$C_B" "$C_OFF" "$C_DIM" "$FLAKE" "$C_OFF"
+while IFS='|' read -r path flake_rev; do
+  name="${path##*/}"
+  pin_file="$PIN_ROOT/$(encode "$path")"
+  if [ ! -r "$pin_file" ]; then
+    unpinned=$((unpinned + 1))
+    printf '  %-*s  %snix flake %s%s   %s! no pin slot -- deploys as hand-edited%s\n' \
+      "$width" "$name" "$C_CYN" "${flake_rev:0:10}" "$C_OFF" "$C_YEL" "$C_OFF"
+    continue
+  fi
+  IFS= read -r approved < "$pin_file"
+  if ! printf '%s' "$approved" | grep -qE '^[0-9a-f]{40,128}$'; then
+    printf '%serror: pin file %s is corrupt.%s\n' "$C_RED$C_B" "$pin_file" "$C_OFF" >&2
+    exit 1
+  fi
+  if [ "$flake_rev" = "$approved" ]; then
+    printf '  %-*s  %spinned %s%s = %snix flake%s   %s✓ in sync%s\n' \
+      "$width" "$name" "$C_CYN" "${approved:0:10}" "$C_OFF" "$C_DIM" "$C_OFF" "$C_GRN" "$C_OFF"
+  else
+    updates=$((updates + 1))
+    perl_prog="${perl_prog}s/rev=\\Q${flake_rev}\\E/rev=${approved}/g;"
+    printf '  %-*s  %spinned %s%s %s!=%s %snix flake %s%s   %s-> update%s\n' \
+      "$width" "$name" "$C_CYN" "${approved:0:10}" "$C_OFF" "$C_YEL" "$C_OFF" \
+      "$C_CYN" "${flake_rev:0:10}" "$C_OFF" "$C_YEL$C_B" "$C_OFF"
+  fi
+  # Context only -- approvals gate the build, the checkout gates nothing.
+  if [ -d "$path" ] && git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
+    ahead="$(git -C "$path" rev-list --count "${approved}..HEAD" 2>/dev/null || echo '?')"
+    if [ "$ahead" != 0 ]; then
+      printf '  %-*s  %sgit HEAD is %s commit(s) past the pin (unapproved)%s\n' \
+        "$width" '' "$C_DIM" "$ahead" "$C_OFF"
+    fi
+    if ! git -C "$path" diff --no-ext-diff --no-textconv --quiet 2>/dev/null \
+      || ! git -C "$path" diff --no-ext-diff --no-textconv --cached --quiet 2>/dev/null; then
+      printf '  %-*s  %swork tree is dirty (uncommitted changes never deploy)%s\n' \
+        "$width" '' "$C_DIM" "$C_OFF"
+    fi
+  fi
+done <<EOF
+$inputs
+EOF
+printf '\n'
+
+if [ "$updates" -eq 0 ]; then
+  if [ "$unpinned" -gt 0 ]; then
+    printf '%sPinned inputs all at their approved revs%s %s(%s without a pin slot)%s %s-- rebuilding so the system matches.%s\n\n' \
+      "$C_GRN" "$C_OFF" "$C_YEL" "$unpinned" "$C_OFF" "$C_GRN" "$C_OFF"
+  else
+    printf '%sAll inputs at their approved revs -- rebuilding so the system matches.%s\n\n' \
+      "$C_GRN" "$C_OFF"
+  fi
+fi
+
+REBUILD_CMD=("$REBUILD" switch --flake "$(dirname "$FLAKE")")
+
+printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
+if [ "$updates" -gt 0 ]; then
+  PIN_CMD=(perl -i -pe "$perl_prog" -- "$FLAKE")
+  printf '  %ssudo' "$C_CYN"; printf ' %q' "${PIN_CMD[@]}"; printf '%s\n' "$C_OFF"
+fi
+printf '  %ssudo' "$C_CYN"; printf ' %q' "${REBUILD_CMD[@]}"; printf '%s\n' "$C_OFF"
+printf '\n'
+
+if [ "$PLAN" -eq 1 ]; then
+  printf '%sPlan only -- nothing executed.%s\n' "$C_YEL" "$C_OFF"
+  exit 0
+fi
+
+if [ "$YES" -eq 0 ]; then
+  if [ ! -t 0 ]; then
+    printf '%serror: no tty for confirmation -- pass --yes to proceed non-interactively.%s\n' \
+      "$C_RED" "$C_OFF" >&2
+    exit 2
+  fi
+  printf '%sProceed? [y/N]%s ' "$C_B" "$C_OFF"
+  IFS= read -r answer
+  case "$answer" in
+    y|Y|yes|YES) ;;
+    *) printf '%sAborted.%s\n' "$C_YEL" "$C_OFF"; exit 2 ;;
+  esac
+fi
+
+if [ "$updates" -gt 0 ]; then
+  sudo "${PIN_CMD[@]}"
+  printf '%s✓ flake revs updated (%s input(s))%s\n' "$C_GRN" "$updates" "$C_OFF"
+fi
+sudo "${REBUILD_CMD[@]}"
+printf '%s✓ rebuild complete%s\n' "$C_GRN" "$C_OFF"

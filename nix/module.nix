@@ -48,6 +48,19 @@ let
 
   package = pkgs.writeScriptBin "pinned" scriptText;
 
+  # pinned-deploy: the deploy consumer (separate program -- pinned states
+  # trust, never acts on it). Same PATH anchor; no INSTALL_TARGET (it does
+  # not self-elevate) and no sudoers digest (it is not the trust gate --
+  # it composes and shows commands that run under ordinary sudo).
+  pathAnchor = builtins.elemAt anchors 1;
+  deploySrcText = builtins.readFile ../pinned-deploy;
+  deployText =
+    assert lib.assertMsg (lib.hasInfix pathAnchor.from deploySrcText)
+      "pinned/nix: the PATH anchor line was not found in ../pinned-deploy; update module.nix";
+    builtins.replaceStrings [ pathAnchor.from ] [ pathAnchor.to ] deploySrcText;
+
+  deployPackage = pkgs.writeScriptBin "pinned-deploy" deployText;
+
   digest = builtins.hashString "sha256" scriptText;
 
   sudoersText = lib.concatMapStrings
@@ -111,7 +124,7 @@ in
       }
     ];
 
-    environment.systemPackages = [ package ];
+    environment.systemPackages = [ package deployPackage ];
 
     environment.etc."sudoers.d/pinned".source = sudoersFile;
   };

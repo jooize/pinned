@@ -23,6 +23,11 @@ pin file. Deploy tooling builds only `git+file://...?rev=<pinned hash>`.
     pinned list                       all pins: hash and repo path
     pinned slot <repo>                print the repo's pin-file path
 
+    pinned-deploy [--plan] [--yes]    sync every git+file input of the
+                                      system flake to its approved rev,
+                                      rebuild (separate program: pinned
+                                      states trust, pinned-deploy acts)
+
 approve and setup self-elevate via sudo (re-exec of the installed
 root-owned binary). sign and read run as you: sign needs your SSH agent,
 read writes nothing.
@@ -56,8 +61,16 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   (`approve <repo> --tag v1.2.3-alice --tag v1.2.3-bob`) -- every
   named tag must verify and name the same commit or nothing is pinned;
   k-of-n is the consumer demanding whichever k tags they trust.
-- Deploy consumers are separate scripts: pinned states trust, never
-  acts on it.
+- Deploy consumers are separate programs: pinned states trust, never
+  acts on it. `pinned-deploy` is the shipped consumer: it scans the
+  system flake for `git+file://` inputs, syncs each stale `rev=` to
+  its approved hash, and rebuilds -- the rebuild runs even when every
+  rev is already in sync, because the flake matching the pins says
+  nothing about what the SYSTEM runs. Inputs without a pin slot are
+  surfaced loudly (they deploy as hand-edited); non-local inputs are
+  not pinned's to speak for. Run the installed root-owned copy: the
+  script composes the exact commands that run as root, so a
+  user-writable copy is a user-writable root command line.
 - Rendered diffs are never trusted blindly, in three layers: every git
   call sets `attr.tree` to the empty tree (so no `.gitattributes` can
   select a driver or filter for ANY subcommand -- the only repo-wide
