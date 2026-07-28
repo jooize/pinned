@@ -23,10 +23,10 @@ pin file. Deploy tooling builds only `git+file://...?rev=<pinned hash>`.
     pinned list                       all pins: hash and repo path
     pinned slot <repo>                print the repo's pin-file path
 
-    pinned-deploy [--dry-run] [--yes] sync every git+file input of the
+    pinned deploy [--dry-run] [--yes] sync every git+file input of the
                                       system flake to its approved rev,
-                                      rebuild (separate program: pinned
-                                      states trust, pinned-deploy acts)
+                                      rebuild; shows the root commands
+                                      first, never self-elevates
 
 approve and setup self-elevate via sudo (re-exec of the installed
 root-owned binary). sign and read run as you: sign needs your SSH agent,
@@ -61,16 +61,20 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   (`approve <repo> --tag v1.2.3-alice --tag v1.2.3-bob`) -- every
   named tag must verify and name the same commit or nothing is pinned;
   k-of-n is the consumer demanding whichever k tags they trust.
-- Deploy consumers are separate programs: pinned states trust, never
-  acts on it. `pinned-deploy` is the shipped consumer: it scans the
-  system flake for `git+file://` inputs, syncs each stale `rev=` to
-  its approved hash, and rebuilds -- the rebuild runs even when every
-  rev is already in sync, because the flake matching the pins says
-  nothing about what the SYSTEM runs. Inputs without a pin slot are
-  surfaced loudly (they deploy as hand-edited); non-local inputs are
-  not pinned's to speak for. Run the installed root-owned copy: the
-  script composes the exact commands that run as root, so a
-  user-writable copy is a user-writable root command line.
+- The pin-stating paths never execute what they approve; `deploy` is
+  the one acting subcommand, and it acts only by composing and SHOWING
+  the commands that run as root, then running them under ordinary sudo
+  -- it never self-elevates. It scans the system flake for
+  `git+file://` inputs, syncs each stale `rev=` to its approved hash,
+  and rebuilds -- the rebuild runs even when every rev is already in
+  sync, because the flake matching the pins says nothing about what
+  the SYSTEM runs. Inputs without a pin slot are surfaced loudly (they
+  deploy as hand-edited); non-local inputs are not pinned's to speak
+  for. One binary for gate and consumer is deliberate: one file to
+  hand-read at bootstrap, and the sudoers digest attests the deployer
+  too. Run the installed root-owned copy -- deploy composes the exact
+  commands that run as root, so a user-writable copy is a
+  user-writable root command line.
 - Rendered diffs are never trusted blindly, in three layers: every git
   call sets `attr.tree` to the empty tree (so no `.gitattributes` can
   select a driver or filter for ANY subcommand -- the only repo-wide
