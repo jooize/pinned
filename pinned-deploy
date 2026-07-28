@@ -27,13 +27,13 @@ IFS=$'\n\t'
 
 usage() {
   cat <<'EOF'
-usage: pinned-deploy [--plan] [--yes] [--flake <path>] [-h|--help]
+usage: pinned-deploy [--dry-run] [--yes] [--flake <path>] [-h|--help]
 
 Syncs every git+file input of the system flake to its approved rev
 (from pinned's pin files under /etc/pinned) and runs the system
 rebuild. Commands that will run as root are always shown first.
 
-  --plan          print status and the commands, run nothing
+  --dry-run       print status and the commands, run nothing
   --yes           skip the confirmation prompt (still prints commands)
   --flake <path>  system flake (default: /etc/nix-darwin/flake.nix on
                   Darwin, /etc/nixos/flake.nix elsewhere; env
@@ -41,10 +41,10 @@ rebuild. Commands that will run as root are always shown first.
 EOF
 }
 
-PLAN=0 YES=0 FLAKE_ARG=""
+DRY=0 YES=0 FLAKE_ARG=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --plan|--dry-run) PLAN=1; shift ;;
+    --dry-run) DRY=1; shift ;;
     --yes) YES=1; shift ;;
     --flake)
       [ $# -ge 2 ] || { echo "--flake needs a path" >&2; exit 1; }
@@ -170,8 +170,8 @@ fi
 printf '  %ssudo' "$C_CYN"; printf ' %q' "${REBUILD_CMD[@]}"; printf '%s\n' "$C_OFF"
 printf '\n'
 
-if [ "$PLAN" -eq 1 ]; then
-  printf '%sPlan only -- nothing executed.%s\n' "$C_YEL" "$C_OFF"
+if [ "$DRY" -eq 1 ]; then
+  printf '%sDry run -- nothing executed.%s\n' "$C_YEL" "$C_OFF"
   exit 0
 fi
 
