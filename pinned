@@ -100,11 +100,11 @@ usage: pinned <action> [args]
                      allowed signers (per-repo <pin file>.signers,
                      else global /etc/pinned/allowed_signers); all
                      tags must name the same commit; approve, pin
-  sign <repo> <tag>  create signed tag <tag> at the PINNED hash -- no sudo
+  sign <repo> <tag>  create signed tag <tag> at the pinned hash -- no sudo
                      (needs your SSH agent, e.g. 1Password)
   status <repo>      pinned hash vs HEAD; warns on dirty tree
   read <file> [--algo <name>] [--length <bits>]
-                     trusted read of a non-repo file: display and hash ONE
+                     trusted read of a non-repo file: display and hash one
                      read, print the hash + a fail-closed wrapper -- no sudo
                      names: sha256 sha384 sha512, blake2b-256/-384/-512,
                      blake3 (--length: blake3 only, default 256); blake2b
@@ -543,7 +543,7 @@ case "$action" in
       # Say what the authentication buys BEFORE sudo asks for it: one
       # highlighted headline carrying the whole story, details dimmed.
       if [ "$action" = "approve" ] && [ "$elev" = "$INSTALL_TARGET" ]; then
-        printf '\n%ssudo will now ask: it re-runs this approve as ROOT, which shows the\n' "$C_YEL$C_B"
+        printf '\n%ssudo will now ask: it re-runs this approve as root, which shows the\n' "$C_YEL$C_B"
         printf 'authoritative review -- nothing is pinned until you answer y there.%s\n' "$C_OFF"
         printf '%s  runs:    %s  (installed, root-owned, digest-pinned)\n' "$C_DIM" "$elev"
         printf '  preview: the output above was orientation only\n'
@@ -1109,7 +1109,15 @@ do_deploy() {
 $inputs
 EOF
 
-  local perl_prog="" updates=0 unpinned=0 pin_file approved ahead
+  # In-place editor: sed, not perl -- sed is POSIX-everywhere while perl is
+  # not guaranteed (minimal NixOS). Only the -i spelling differs by flavor
+  # (GNU: -i; BSD: -i ''), detected like stat above; the expressions are
+  # safe as literals because both revs are validated hex. Each stale input
+  # contributes one -e expression to a single invocation.
+  local SED_I=()
+  if sed --version >/dev/null 2>&1; then SED_I=(sed -i); else SED_I=(sed -i ''); fi
+
+  local sed_exprs=() updates=0 unpinned=0 pin_file approved ahead
   printf '%sgit+file inputs%s %s(%s)%s\n' "$C_B" "$C_OFF" "$C_DIM" "$FLAKE" "$C_OFF"
   while IFS='|' read -r path flake_rev; do
     name="${path##*/}"
@@ -1130,7 +1138,7 @@ EOF
         "$width" "$name" "$C_CYN" "${approved:0:10}" "$C_OFF" "$C_DIM" "$C_OFF" "$C_GRN" "$C_OFF"
     else
       updates=$((updates + 1))
-      perl_prog="${perl_prog}s/rev=\\Q${flake_rev}\\E/rev=${approved}/g;"
+      sed_exprs+=(-e "s/rev=${flake_rev}/rev=${approved}/g")
       printf '  %-*s  %spinned %s%s %s!=%s %snix flake %s%s   %s-> update%s\n' \
         "$width" "$name" "$C_CYN" "${approved:0:10}" "$C_OFF" "$C_YEL" "$C_OFF" \
         "$C_CYN" "${flake_rev:0:10}" "$C_OFF" "$C_YEL$C_B" "$C_OFF"
@@ -1165,20 +1173,29 @@ EOF
     fi
   fi
 
-  # Display structurally, not via %q soup: the perl program holds no single
-  # quotes (revs are hex, the template is fixed), so wrapping it in single
-  # quotes IS its exact shell spelling -- what is shown is copy-pasteable
-  # and what runs is the same argv. Command names bold, arguments plain.
-  local PIN_CMD=() REBUILD_CMD=()
+  # Display structurally: what is shown is the exact shell spelling of the
+  # argv that runs (expressions hold no quotes -- hex revs, fixed template
+  # -- so single-quoting them is their pasteable form). Parts are colored
+  # by role so the command reads at a glance: sudo bold, command name
+  # cyan, expressions plain, file paths yellow.
+  local PIN_CMD=() REBUILD_CMD=() expr_disp="" e
   REBUILD_CMD=("$REBUILD" switch --flake "$(dirname "$FLAKE")")
   printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
   if [ "$updates" -gt 0 ]; then
-    PIN_CMD=(perl -i -pe "$perl_prog" -- "$FLAKE")
-    printf "  %ssudo perl%s -i -pe %s'%s'%s -- %s%s%s\n" \
-      "$C_B$C_CYN" "$C_OFF" "$C_CYN" "$perl_prog" "$C_OFF" "$C_CYN" "$FLAKE" "$C_OFF"
+    PIN_CMD=("${SED_I[@]}" "${sed_exprs[@]}" "$FLAKE")
+    for e in "${sed_exprs[@]}"; do
+      if [ "$e" = "-e" ]; then expr_disp="${expr_disp}-e "; else expr_disp="${expr_disp}'${e}' "; fi
+    done
+    if [ "${#SED_I[@]}" -eq 3 ]; then
+      printf "  %ssudo%s %ssed%s -i '' %s%s%s%s\n" \
+        "$C_B" "$C_OFF" "$C_CYN" "$C_OFF" "$expr_disp" "$C_YEL" "$FLAKE" "$C_OFF"
+    else
+      printf '  %ssudo%s %ssed%s -i %s%s%s%s\n' \
+        "$C_B" "$C_OFF" "$C_CYN" "$C_OFF" "$expr_disp" "$C_YEL" "$FLAKE" "$C_OFF"
+    fi
   fi
-  printf '  %ssudo %s%s switch --flake %s%s%s\n' \
-    "$C_B$C_CYN" "$REBUILD" "$C_OFF" "$C_CYN" "$(dirname "$FLAKE")" "$C_OFF"
+  printf '  %ssudo%s %s%s%s switch --flake %s%s%s\n' \
+    "$C_B" "$C_OFF" "$C_CYN" "$REBUILD" "$C_OFF" "$C_YEL" "$(dirname "$FLAKE")" "$C_OFF"
   printf '\n'
 
   if [ "$DRY" -eq 1 ]; then
