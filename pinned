@@ -540,14 +540,15 @@ case "$action" in
           esac
         fi
       fi
-      # Say what the authentication buys BEFORE sudo asks for it.
+      # Say what the authentication buys BEFORE sudo asks for it: one
+      # highlighted headline carrying the whole story, details dimmed.
       if [ "$action" = "approve" ] && [ "$elev" = "$INSTALL_TARGET" ]; then
-        printf '%sself-elevating:%s sudo runs the installed root-owned binary %s%s%s\n' \
-          "$C_B" "$C_OFF" "$C_CYN" "$elev" "$C_OFF"
-        printf 'It shows the authoritative review (from the object store, as\n'
-        printf 'root); the preview above is orientation only. Nothing is pinned\n'
-        printf 'until you answer y after that review. If your sudo prompt shows\n'
-        printf 'the command being authorized, verify it names exactly that binary.\n'
+        printf '\n%ssudo will now ask: it re-runs this approve as ROOT, which shows the\n' "$C_YEL$C_B"
+        printf 'authoritative review -- nothing is pinned until you answer y there.%s\n' "$C_OFF"
+        printf '%s  runs:    %s  (installed, root-owned, digest-pinned)\n' "$C_DIM" "$elev"
+        printf '  preview: the output above was orientation only\n'
+        printf '  check:   if the sudo prompt shows the command, it must name exactly\n'
+        printf '           that binary%s\n\n' "$C_OFF"
       fi
       exec sudo -- "$elev" "$action" "$@"
     fi
@@ -1060,12 +1061,25 @@ do_deploy() {
     esac
   done
 
+  # Per-OS flake root and rebuild command. The rebuild tool is named by
+  # ABSOLUTE path: it lives only in the system profile, which the trusted
+  # PATH of a manual (non-nix) install deliberately lacks -- and sudo
+  # inherits our PATH, so a bare name would die with "command not found"
+  # exactly when run from a bootstrap checkout (live-fired 2026-07-28).
+  # The absolute path also makes the displayed sudo command unambiguous.
   local DEFAULT_FLAKE REBUILD FLAKE
   if [ "$(uname -s)" = Darwin ]; then
-    DEFAULT_FLAKE="/etc/nix-darwin/flake.nix"; REBUILD="darwin-rebuild"
+    DEFAULT_FLAKE="/etc/nix-darwin/flake.nix"
+    REBUILD="/run/current-system/sw/bin/darwin-rebuild"
   else
-    DEFAULT_FLAKE="/etc/nixos/flake.nix"; REBUILD="nixos-rebuild"
+    DEFAULT_FLAKE="/etc/nixos/flake.nix"
+    REBUILD="/run/current-system/sw/bin/nixos-rebuild"
   fi
+  [ -x "$REBUILD" ] || {
+    printf '%serror: %s not found -- is this a nix-darwin/NixOS system?%s\n' \
+      "$C_RED" "$REBUILD" "$C_OFF" >&2
+    exit 1
+  }
   FLAKE="${FLAKE_ARG:-${NIX_DARWIN_FLAKE:-$DEFAULT_FLAKE}}"
   [ -r "$FLAKE" ] || {
     printf '%serror: cannot read %s -- pass --flake.%s\n' "$C_RED" "$FLAKE" "$C_OFF" >&2
@@ -1151,14 +1165,20 @@ EOF
     fi
   fi
 
+  # Display structurally, not via %q soup: the perl program holds no single
+  # quotes (revs are hex, the template is fixed), so wrapping it in single
+  # quotes IS its exact shell spelling -- what is shown is copy-pasteable
+  # and what runs is the same argv. Command names bold, arguments plain.
   local PIN_CMD=() REBUILD_CMD=()
   REBUILD_CMD=("$REBUILD" switch --flake "$(dirname "$FLAKE")")
   printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
   if [ "$updates" -gt 0 ]; then
     PIN_CMD=(perl -i -pe "$perl_prog" -- "$FLAKE")
-    printf '  %ssudo' "$C_CYN"; printf ' %q' "${PIN_CMD[@]}"; printf '%s\n' "$C_OFF"
+    printf "  %ssudo perl%s -i -pe %s'%s'%s -- %s%s%s\n" \
+      "$C_B$C_CYN" "$C_OFF" "$C_CYN" "$perl_prog" "$C_OFF" "$C_CYN" "$FLAKE" "$C_OFF"
   fi
-  printf '  %ssudo' "$C_CYN"; printf ' %q' "${REBUILD_CMD[@]}"; printf '%s\n' "$C_OFF"
+  printf '  %ssudo %s%s switch --flake %s%s%s\n' \
+    "$C_B$C_CYN" "$REBUILD" "$C_OFF" "$C_CYN" "$(dirname "$FLAKE")" "$C_OFF"
   printf '\n'
 
   if [ "$DRY" -eq 1 ]; then

@@ -23,7 +23,8 @@ pin file. Deploy tooling builds only `git+file://...?rev=<pinned hash>`.
     pinned list                       all pins: hash and repo path
     pinned slot <repo>                print the repo's pin-file path
 
-    pinned deploy [--dry-run] [--yes] sync every git+file input of the
+    pinned deploy [--dry-run] [--yes] [--flake <path>]
+                                      sync every git+file input of the
                                       system flake to its approved rev,
                                       rebuild; shows the root commands
                                       first, never self-elevates
