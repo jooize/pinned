@@ -1207,7 +1207,17 @@ do_approve() {
 
   # The record must live under a root-owned ancestry or the machine gate
   # is only as strong as the weakest writable dir on the way there.
-  verify_ancestry "$slot/rev.git" || exit 1
+  # Walk from the deepest component that EXISTS, exactly like the file
+  # ceremony below: a first-ever approval has not created the slot yet
+  # (write_slot_state creates it root-owned when it records), and walking
+  # through the not-yet-existing dir read an empty owner as "not root" --
+  # refusing every brand-new repo with a chown remediation for a directory
+  # that did not exist.
+  if [ -d "$slot" ]; then
+    verify_ancestry "$slot/rev.git" || exit 1
+  else
+    verify_ancestry "$slot" || exit 1
+  fi
 
   local hash old_hash diff_out
   old_hash="$(read_rev "$slot")" || exit 1
