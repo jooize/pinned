@@ -580,17 +580,46 @@ hash_file() {
 }
 
 # Canonicalize a path that need not exist (BSD readlink -f demands
-# existence): resolve the parent, keep the last component.
+# existence): resolve the nearest EXISTING ancestor, then re-append the
+# missing tail literally.
+#
+# Walking up rather than stopping at the immediate parent is load-bearing.
+# A path is absent whether one component is missing or five, and the verdict
+# for an absent path belongs to its SLOT -- no slot -> 10, live pin -> 12,
+# tombstone -> 0. Erroring out because the parent dir happens to be gone
+# made those states unreachable for an entire subtree: verify returned a
+# generic failure that callers must treat as "pinned itself broke" (the shim
+# hard-refuses on it, fail-closed), so a project that simply never had a
+# .claude-devcontainer/ could not launch. Tombstone was worse -- it refuses
+# a path that still exists, so the one case tombstones are FOR, a directory
+# removed wholesale, was the one case it could not name.
+#
+# Only the missing tail is appended literally, and that is safe precisely
+# because it does not exist: there are no symlinks left to resolve below
+# the deepest real ancestor. `..` in the tail is the exception -- it would
+# have to traverse a directory that isn't there, so there is no honest
+# answer and it refuses.
 canon_path() {
-  local p="$1" d b
+  local p="$1" d b tail=""
   if [ -e "$p" ]; then
     readlink -f "$p"
     return
   fi
-  d="$(dirname "$p")"; b="$(basename "$p")"
+  d="$p"
+  while :; do
+    b="$(basename "$d")"; d="$(dirname "$d")"
+    case "$b" in
+      ..) echo "ERROR: cannot resolve: $p (.. below a missing directory)" >&2; return 1 ;;
+      .)  : ;;
+      *)  tail="$b${tail:+/}$tail" ;;
+    esac
+    # dirname bottoms out at / (or . for a relative path), both of which
+    # exist, so this terminates.
+    [ -e "$d" ] && break
+  done
   d="$(readlink -f "$d" 2>/dev/null)" \
-    || { echo "ERROR: cannot resolve: $p (parent directory missing)" >&2; return 1; }
-  printf '%s/%s\n' "${d%/}" "$b"
+    || { echo "ERROR: cannot resolve: $p" >&2; return 1; }
+  printf '%s/%s\n' "${d%/}" "$tail"
 }
 
 # Private scratch for frozen copies; removed on exit. freeze_file is THE
