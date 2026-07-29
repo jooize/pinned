@@ -604,6 +604,19 @@ resolve_repo() {
   default_slot="$(slot_dir_for "$(tier_user)" "$repo")"
 }
 
+# Declared-name grammar for the slot `tag` annotation, deliberately
+# narrower than git's own ref rules: the name is spliced into sed
+# expressions and flake URLs at deploy time, so only [A-Za-z0-9._/+-]
+# survives -- validated fail-closed on WRITE and on READ (the record
+# declares; an undeclared shape refuses).
+validate_tag_name() {
+  case "$1" in
+    ''|-*|/*|*/|*..*|*.lock|*.lock/*) return 1 ;;
+    *[!A-Za-z0-9._/+-]*) return 1 ;;
+  esac
+  return 0
+}
+
 read_rev() {
   # Echoes the slot's pinned rev, or nothing for no slot / no state.
   # The slot DECLARES the VCS in the filename (rev.git); validation is
@@ -942,6 +955,14 @@ do_approve() {
   if [ -n "$sel_tag" ]; then
     sgit check-ref-format "refs/tags/$sel_tag" \
       || { echo "invalid tag name: $sel_tag" >&2; exit 1; }
+    # An explicitly selected tag is also the DECLARED name; refuse
+    # upfront if it cannot be declared (the fallback declaration from a
+    # signed tag merely degrades to rev-only, but an explicit request
+    # that cannot be honored must not half-succeed).
+    validate_tag_name "$sel_tag" || {
+      echo "ERROR: tag name '$sel_tag' is outside the declared-name grammar [A-Za-z0-9._/+-]" >&2
+      exit 1
+    }
   fi
 
   # Create the pin tree BEFORE the ancestry check -- approve must work on
@@ -1106,7 +1127,33 @@ do_approve() {
   esac
 
   write_slot_state "$slot" rev.git "$hash"
-  printf '%s✓ pinned:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" "$slot/rev.git"
+  # The declared release name (optional `tag` annotation, repo slots
+  # only): deploy syncs the input's ref= to it after cross-checking the
+  # live tag still names the pinned rev. The --tag selector is the
+  # declared name; with only --signed-tag evidence the first signed name
+  # is the fallback; a plain review approve with no tag CLEARS any prior
+  # declaration (no declaration -> rev-only sync, a supported shape).
+  local decl_tag="$sel_tag"
+  if [ -z "$decl_tag" ] && [ "${#tag_args[@]}" -gt 0 ]; then
+    decl_tag="${tag_args[0]}"
+  fi
+  if [ -n "$decl_tag" ]; then
+    if ! validate_tag_name "$decl_tag"; then
+      printf '%snote: tag name %s is outside the declared-name grammar [A-Za-z0-9._/+-]; not declaring it (rev-only slot)%s\n' \
+        "$C_YEL" "$decl_tag" "$C_OFF"
+      rm -f "$slot/tag"
+    else
+      local ttmp
+      ttmp="$(mktemp "$slot/.stage.XXXXXX")"
+      printf '%s\n' "$decl_tag" >"$ttmp"
+      chown "root:$TREE_GRP" "$ttmp"
+      chmod "$TREE_FMODE" "$ttmp"
+      mv -f "$ttmp" "$slot/tag"
+      printf '%s✓ declared:%s %s -> %s\n' "$C_GRN" "$C_OFF" "$decl_tag" "$slot/tag"
+    fi
+  else
+    rm -f "$slot/tag"
+  fi
   log_action approve "$repo" "$hash"
 }
 
@@ -1280,6 +1327,7 @@ do_tombstone() {
     *) echo "aborted; slot unchanged."; log_action tombstone "$path" "" abort; exit 2 ;;
   esac
   write_slot_state "$slot" tombstone "$(date -u +%Y-%m-%dT%H:%M:%SZ) retired by $inv"
+  rm -f "$slot/tag"   # a declared release name has no meaning on a tombstone
   printf '%s✓ tombstoned:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$path"
   log_action tombstone "$path"
 }
@@ -1999,13 +2047,15 @@ do_deploy() {
     exit 1
   }
 
-  # Collect git+file inputs: repo path + current rev=, one per line. An
-  # input without rev= is skipped (nothing to sync; nix floats the branch).
+  # Collect git+file inputs: repo path + current rev= + current ref=,
+  # one per line. An input without rev= is skipped (nothing to sync; nix
+  # floats the branch).
   local inputs
   inputs="$(grep -oE 'git\+file:///[^"]+' "$FLAKE" | while IFS= read -r url; do
     p="${url#git+file://}"; p="${p%%\?*}"
     r="$(printf '%s' "$url" | grep -oE '[?&]rev=[0-9a-f]{40,128}' | head -n1 | cut -d= -f2 || true)"
-    [ -n "$r" ] && printf '%s|%s\n' "$p" "$r"
+    ref="$(printf '%s' "$url" | grep -oE '[?&]ref=[^&]*' | head -n1 | cut -d= -f2- || true)"
+    [ -n "$r" ] && printf '%s|%s|%s\n' "$p" "$r" "$ref"
   done || true)"
   [ -n "$inputs" ] || {
     printf '%serror: no git+file inputs with rev= in %s -- nothing deploy manages.%s\n' \
@@ -2031,8 +2081,9 @@ EOF
   if sed --version >/dev/null 2>&1; then SED_I=(sed -i); else SED_I=(sed -i ''); fi
 
   local sed_exprs=() updates=0 unpinned=0 slot approved ahead
+  local decl_tag want_ref ref_stale live_tag tag_detail esc
   printf '%sgit+file inputs%s %s(%s)%s\n' "$C_B" "$C_OFF" "$C_DIM" "$FLAKE" "$C_OFF"
-  while IFS='|' read -r path flake_rev; do
+  while IFS='|' read -r path flake_rev flake_ref; do
     name="${path##*/}"
     slot="$(slot_dir_for "$(id -un)" "$path")"
     # read_rev refuses tombstoned/malformed/unknown-VCS slots -- a
@@ -2044,15 +2095,58 @@ EOF
         "$width" "$name" "$C_CYN" "${flake_rev:0:10}" "$C_OFF" "$C_YEL" "$C_OFF"
       continue
     fi
-    if [ "$flake_rev" = "$approved" ]; then
+    # Declared release name: sync ref= only after cross-checking that
+    # the LIVE tag still names the approved rev -- a moved or deleted
+    # tag is a clean fail-closed refusal here, never a nix fetch error.
+    # No declaration -> rev-only sync; rev-only slots are a supported
+    # shape, not degraded (the rev is the anchor, the name is context).
+    decl_tag="" want_ref="" ref_stale=0
+    if [ -f "$slot/tag" ]; then
+      verify_record_file "$slot/tag" || exit 1
+      IFS= read -r decl_tag <"$slot/tag" || decl_tag=""
+      validate_tag_name "$decl_tag" || {
+        printf '%serror: %s declares an invalid tag name; refusing.%s\n' \
+          "$C_RED$C_B" "$slot/tag" "$C_OFF" >&2
+        exit 1
+      }
+      live_tag="$(git -C "$path" rev-parse -q --verify "refs/tags/${decl_tag}^{commit}" 2>/dev/null || true)"
+      if [ "$live_tag" != "$approved" ]; then
+        if [ -z "$live_tag" ]; then tag_detail="is missing from the checkout"; else tag_detail="names ${live_tag:0:10}, not the approved ${approved:0:10}"; fi
+        printf '%serror: slot for %s declares tag %s, but the live tag %s -- refusing (moved or deleted tags do not deploy).%s\n' \
+          "$C_RED$C_B" "$name" "$decl_tag" "$tag_detail" "$C_OFF" >&2
+        exit 1
+      fi
+      want_ref="refs/tags/$decl_tag"
+      [ -n "$flake_ref" ] && [ "$flake_ref" != "$want_ref" ] && ref_stale=1
+    fi
+    if [ "$flake_rev" = "$approved" ] && [ "$ref_stale" -eq 0 ]; then
       printf '  %-*s  %spinned %s%s = %snix flake%s   %s✓ in sync%s\n' \
         "$width" "$name" "$C_CYN" "${approved:0:10}" "$C_OFF" "$C_DIM" "$C_OFF" "$C_GRN" "$C_OFF"
     else
       updates=$((updates + 1))
-      sed_exprs+=(-e "s/rev=${flake_rev}/rev=${approved}/g")
+      if [ "$flake_rev" != "$approved" ]; then
+        sed_exprs+=(-e "s/rev=${flake_rev}/rev=${approved}/g")
+      fi
       printf '  %-*s  %spinned %s%s %s!=%s %snix flake %s%s   %s-> update%s\n' \
         "$width" "$name" "$C_CYN" "${approved:0:10}" "$C_OFF" "$C_YEL" "$C_OFF" \
         "$C_CYN" "${flake_rev:0:10}" "$C_OFF" "$C_YEL$C_B" "$C_OFF"
+      if [ "$ref_stale" -eq 1 ]; then
+        # Scoped to this input by its literal path (regex-escaped); the
+        # rev expressions can stay global because revs are unique hex.
+        esc="$(printf '%s' "$path" | sed 's/[][\.*^$|]/\\&/g')"
+        sed_exprs+=(-e "s|\\(git+file://${esc}?[^\"]*\\)ref=[^&\"]*|\\1ref=${want_ref}|")
+        printf '  %-*s  %sref %s -> %s%s\n' \
+          "$width" '' "$C_YEL" "$flake_ref" "$want_ref" "$C_OFF"
+      fi
+    fi
+    if [ -n "$decl_tag" ]; then
+      if [ -z "$flake_ref" ]; then
+        printf '  %-*s  %sdeclares tag %s, but the input has no ref= -- rev-only sync%s\n' \
+          "$width" '' "$C_YEL" "$decl_tag" "$C_OFF"
+      elif [ "$ref_stale" -eq 0 ]; then
+        printf '  %-*s  %stag %s (live tag verified at the approved rev)%s\n' \
+          "$width" '' "$C_DIM" "$decl_tag" "$C_OFF"
+      fi
     fi
     # Context only -- approvals gate the build, the checkout gates nothing.
     # Direct git (not sgit: that is bound to one resolved repo), unprivileged,
