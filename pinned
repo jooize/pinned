@@ -139,6 +139,16 @@ usage: pinned <action> [args]
                      verify caller-frozen bytes against <path>'s record
   sign <repo> <tag>  create signed tag <tag> at the pinned hash -- no sudo
                      (needs your SSH agent, e.g. 1Password)
+  signer add [--repo <path>] (--file <pubkey> | --key '<line>') [--principal <id>]
+                     (sudo) allowed-signers ceremony: fingerprint,
+                     confirm, root-owned write; a bare public key needs
+                     --principal (the label signature verification
+                     matches); --repo targets the per-repo override
+  signer remove [--repo <path>] (--file <pubkey> | --key '<line>')
+                     (sudo) remove that key's entries (key compromise
+                     must not be the hand-edited path)
+  signer list [--repo <path>]
+                     principals, key types, fingerprints
   status <repo|file> repo: pinned hash vs HEAD, dirty-tree warning
                      file: record vs live state
   review <file> [--algo <name>] [--length <bits>]
@@ -888,6 +898,31 @@ case "$action" in
       fi
       exec sudo -- "$elev" "$action" "$@"
     fi
+    ;;
+  signer)
+    # add/remove write root-owned files; list stays unprivileged.
+    case "${1:-}" in
+      add|remove)
+        if [ "$EUID" -ne 0 ]; then
+          elev="$INSTALL_TARGET"
+          if [ -x "$elev" ]; then
+            verify_root_owned_path "$elev" || exit 1
+            verify_ancestry "$elev" || exit 1
+          else
+            elev="$(readlink -f "$0")"
+            printf '%swarning: pinned is not installed at %s; about to run the\nuser-writable checkout copy as root (safe only right after a hand-read).%s\n' \
+              "$C_YEL" "$INSTALL_TARGET" "$C_OFF"
+            printf '%scontinue? [y/N]%s ' "$C_B" "$C_OFF"
+            read -r answer </dev/tty
+            case "$answer" in
+              y|Y|yes) ;;
+              *) echo "aborted."; exit 2 ;;
+            esac
+          fi
+          exec sudo -- "$elev" "$action" "$@"
+        fi
+        ;;
+    esac
     ;;
 esac
 
@@ -1910,6 +1945,232 @@ do_slot() {
   printf '%s\n' "$default_slot"
 }
 
+# ---- signer ----------------------------------------------------------------
+
+# Manage allowed_signers through a ceremony instead of hand-run sudo
+# installs: fingerprint display, confirm, atomic root-owned write, syslog
+# line. Input is EXPLICITLY FLAGGED, never sniffed -- a trust tool does
+# not guess whether an operand is a path or key material (--file vs
+# --key; public keys are not secret, so --key in argv is fine). A full
+# allowed_signers line is taken as-is (it carries its principal); a bare
+# public key needs --principal to construct one. THE PRINCIPAL IS THE
+# LABEL, and it is load-bearing: ssh-keygen -Y matches it at
+# verification, so it cannot drift into decoration.
+#
+# Storage: user tier = <user>/signers/allowed_signers; --repo writes the
+# per-slot override (signers/ is a dir at BOTH tiers: one resolution
+# rule, and slot signer data stays independently mountable). `signer add
+# --repo` may create a slot dir holding only signers/ -- a legitimate
+# pre-approve bootstrap, since approve --signed-tag verifies AGAINST the
+# signers; verify still answers "no slot" for such a dir. remove is
+# first-class: key compromise response must not be the hand-edited path.
+#
+# Format is OpenSSH's SSHSIG allowed_signers, deliberately: the
+# signature layer is git SSH signing end to end, stock ssh-keygen -Y
+# verification, nothing pinned-specific anywhere. (# comment lines DO
+# survive OpenSSH's parser -- measured 2026-07-29 with ssh-keygen -Y
+# verify -- but this tool writes none.)
+
+is_keytype() {
+  case "$1" in
+    ssh-ed25519|ssh-rsa|ssh-dss|rsa-sha2-256|rsa-sha2-512|ecdsa-sha2-*|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-*) return 0 ;;
+  esac
+  return 1
+}
+
+key_fingerprint() {
+  # $1 = keytype, $2 = base64 blob. Echoes ssh-keygen's fingerprint line.
+  printf '%s %s\n' "$1" "$2" | ssh-keygen -lf /dev/stdin
+}
+
+do_signer() {
+  [ $# -ge 1 ] || usage
+  local sub="$1"; shift
+  case "$sub" in add|remove|list) ;; *) usage ;; esac
+  command -v ssh-keygen >/dev/null 2>&1 \
+    || { echo "ERROR: no ssh-keygen in the trusted PATH ($PATH)" >&2; exit 1; }
+
+  local repo_arg="" keyfile="" keyline="" principal=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo)
+        [ $# -ge 2 ] || { echo "--repo needs a path" >&2; exit 1; }
+        repo_arg="$2"; shift 2 ;;
+      --file)
+        [ $# -ge 2 ] || { echo "--file needs a path" >&2; exit 1; }
+        keyfile="$2"; shift 2 ;;
+      --key)
+        [ $# -ge 2 ] || { echo "--key needs a line" >&2; exit 1; }
+        keyline="$2"; shift 2 ;;
+      --principal)
+        [ $# -ge 2 ] || { echo "--principal needs an identity" >&2; exit 1; }
+        principal="$2"; shift 2 ;;
+      *) echo "unknown signer option: $1" >&2; usage ;;
+    esac
+  done
+
+  # Resolve the target file. resolve_repo keys the slot to the ceremony
+  # tier (SUDO_USER when elevated), same as approve.
+  local tier target
+  tier="$(tier_user)"
+  if [ -n "$repo_arg" ]; then
+    resolve_repo "$repo_arg"
+    target="$default_slot/signers/allowed_signers"
+  else
+    target="$PIN_ROOT/$tier/signers/allowed_signers"
+  fi
+
+  if [ "$sub" = "list" ]; then
+    [ -z "$keyfile$keyline$principal" ] || { echo "signer list takes only --repo" >&2; exit 1; }
+    do_signer_list "$target"
+    return
+  fi
+  require_root signer
+
+  if [ -n "$keyfile" ] && [ -n "$keyline" ]; then
+    echo "--file and --key are exclusive" >&2
+    exit 1
+  fi
+  [ -n "$keyfile" ] || [ -n "$keyline" ] \
+    || { echo "signer $sub needs --file <pubkey> or --key '<line>'" >&2; exit 1; }
+  local line
+  if [ -n "$keyfile" ]; then
+    [ -f "$keyfile" ] || { echo "not a readable file: $keyfile" >&2; exit 1; }
+    IFS= read -r line <"$keyfile" || line=""
+  else
+    line="$keyline"
+  fi
+  case "$line" in
+    ''|'#'*)
+      echo "ERROR: no key material in the input" >&2; exit 1 ;;
+    *"$NL"*)
+      echo "ERROR: one key per invocation (the input has multiple lines)" >&2; exit 1 ;;
+  esac
+
+  # Classify: bare public key vs full allowed_signers line.
+  local first keytype keyblob entry
+  first="${line%% *}"
+  if is_keytype "$first"; then
+    keytype="$first"
+    entry="${line#* }"; keyblob="${entry%% *}"
+    if [ "$sub" = "add" ]; then
+      [ -n "$principal" ] || {
+        echo "ERROR: a bare public key needs --principal <identity>" >&2
+        echo "       (the principal is the label ssh-keygen -Y matches at verification)" >&2
+        exit 1
+      }
+      case "$principal" in
+        *[!A-Za-z0-9@._+-]*|'')
+          echo "ERROR: principal must be non-empty [A-Za-z0-9@._+-]" >&2; exit 1 ;;
+      esac
+      entry="$principal $keytype $keyblob"
+    else
+      entry=""   # remove matches by key blob; no line to construct
+    fi
+  else
+    [ -z "$principal" ] \
+      || { echo "ERROR: --principal only applies to a bare public key (this line already carries one)" >&2; exit 1; }
+    entry="$line"
+    # Find the key material past the principal (and any options field).
+    local words w i=0 ki=-1
+    read -r -a words <<EOF
+$line
+EOF
+    for w in "${words[@]}"; do
+      if is_keytype "$w"; then ki="$i"; break; fi
+      i=$((i + 1))
+    done
+    [ "$ki" -ge 1 ] || { echo "ERROR: no recognized key type in the line" >&2; exit 1; }
+    keytype="${words[$ki]}"
+    keyblob="${words[$((ki + 1))]:-}"
+    [ -n "$keyblob" ] || { echo "ERROR: key type with no key material" >&2; exit 1; }
+  fi
+
+  local fp
+  fp="$(key_fingerprint "$keytype" "$keyblob")" \
+    || { echo "ERROR: ssh-keygen cannot parse this key" >&2; exit 1; }
+
+  local answer tmp tdir
+  tdir="$(dirname "$target")"
+  if [ "$sub" = "add" ]; then
+    ensure_tree "$inv"
+    if [ -n "$repo_arg" ]; then
+      install -d -m "$TREE_DMODE" -o root -g "$TREE_GRP" "$default_slot" "$tdir"
+    fi
+    if [ -f "$target" ] && grep -qF "$keyblob" "$target"; then
+      printf '%salready present%s (same key material): %s\n' "$C_GRN" "$C_OFF" "$target"
+      exit 0
+    fi
+    printf '%starget:%s      %s\n' "$C_B" "$C_OFF" "$target"
+    printf '%sentry:%s       %s\n' "$C_B" "$C_OFF" "$entry"
+    printf '%sfingerprint:%s %s\n' "$C_B" "$C_OFF" "$fp"
+    printf '%s(obtain the key OUT OF BAND -- printed card, password manager, existing\ntrusted machine -- never from the repo it will vouch for.)%s\n' "$C_DIM" "$C_OFF"
+    printf '%strust this key to vouch? [y/N]%s ' "$C_B" "$C_OFF"
+    read -r answer </dev/tty
+    case "$answer" in
+      y|Y|yes) ;;
+      *) echo "aborted; signers unchanged."; log_action signer-add "$target" "" abort; exit 2 ;;
+    esac
+    tmp="$(mktemp "$tdir/.stage.XXXXXX")"
+    { [ -f "$target" ] && cat "$target"; printf '%s\n' "$entry"; } >"$tmp"
+    chown "root:$TREE_GRP" "$tmp"
+    chmod "$TREE_FMODE" "$tmp"
+    mv -f "$tmp" "$target"
+    printf '%s✓ added:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$fp"
+    log_action signer-add "$target" "${fp##*SHA256:}"
+  else
+    [ -f "$target" ] || { echo "no signers file: $target" >&2; exit 1; }
+    if ! grep -qF "$keyblob" "$target"; then
+      echo "key not present in $target" >&2
+      exit 1
+    fi
+    ensure_tree "$inv"
+    printf '%starget:%s      %s\n' "$C_B" "$C_OFF" "$target"
+    printf '%sremoving:%s\n' "$C_B" "$C_OFF"
+    grep -F "$keyblob" "$target" | sed 's/^/  /'
+    printf '%sfingerprint:%s %s\n' "$C_B" "$C_OFF" "$fp"
+    printf "%sremove this key's entries? [y/N]%s " "$C_B" "$C_OFF"
+    read -r answer </dev/tty
+    case "$answer" in
+      y|Y|yes) ;;
+      *) echo "aborted; signers unchanged."; log_action signer-remove "$target" "" abort; exit 2 ;;
+    esac
+    tmp="$(mktemp "$tdir/.stage.XXXXXX")"
+    grep -vF "$keyblob" "$target" >"$tmp" || true   # empty result is fine: verifies nothing, fail closed
+    chown "root:$TREE_GRP" "$tmp"
+    chmod "$TREE_FMODE" "$tmp"
+    mv -f "$tmp" "$target"
+    printf '%s✓ removed:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$fp"
+    log_action signer-remove "$target" "${fp##*SHA256:}"
+  fi
+}
+
+do_signer_list() {
+  # Principals, key types, fingerprints. Unprivileged (group-read).
+  local f="$1" line words ki i w found=0
+  [ -f "$f" ] || { echo "(no signers file: $f)"; return; }
+  while IFS= read -r line; do
+    case "$line" in ''|'#'*) continue ;; esac
+    read -r -a words <<EOF
+$line
+EOF
+    ki=-1; i=0
+    for w in "${words[@]}"; do
+      if is_keytype "$w"; then ki="$i"; break; fi
+      i=$((i + 1))
+    done
+    if [ "$ki" -lt 1 ] || [ -z "${words[$((ki + 1))]:-}" ]; then
+      printf '%sUNPARSEABLE%s  %s\n' "$C_RED$C_B" "$C_OFF" "$line"
+      found=1
+      continue
+    fi
+    printf '%s%s%s  %s  %s\n' "$C_CYN" "${words[0]}" "$C_OFF" "${words[$ki]}" \
+      "$(key_fingerprint "${words[$ki]}" "${words[$((ki + 1))]}" 2>/dev/null || echo 'fingerprint failed')"
+    found=1
+  done <"$f"
+  [ "$found" -eq 1 ] || echo "(no signers)"
+}
+
 # ---- migrate ---------------------------------------------------------------
 
 # One-shot move of the flat /etc/pinned records into the per-user slot
@@ -2235,6 +2496,7 @@ case "$action" in
   tombstone) do_tombstone "$@" ;;
   verify)    do_verify "$@" ;;
   sign)      do_sign "$@" ;;
+  signer)    do_signer "$@" ;;
   status)    do_status "$@" ;;
   list)      do_list "$@" ;;
   slot)      do_slot "$@" ;;
