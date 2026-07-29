@@ -20,6 +20,8 @@
 #   4. `install -o root -g ...` / `chown root:...` -> plain install / no-op
 #   5. `read -r answer </dev/tty` -> read from stdin, so ceremonies are
 #      driven by $ANS
+#   6. log_action's `logger -t pinned` -> no-op, so fixture ceremonies never
+#      land in the machine's real approval history
 # Every anchor is counted in the source BEFORE the sed (see need()), so a
 # drifting script aborts the harness loudly instead of silently testing a
 # no-op stub. PIN_ROOT and INSTALL_TARGET are honest environment overrides
@@ -39,6 +41,11 @@
 #   - blake2b/blake3 algorithms are not exercised (sha256 only)
 #   - `review`, `slot`, `status <repo>` dirty-tree warnings: only status's
 #     approved/never-approved verdicts are covered
+#
+# S8's first case is a REGRESSION test: a first-ever repo approval (no slot
+# dir yet) must succeed. This harness caught it refusing on delivery day --
+# the same not-yet-created-slot ancestry defect approve --file had -- and
+# the fix landed with the harness. Details at the S8 comment.
 
 set -euo pipefail
 export LC_ALL=C   # byte semantics for the encode/decode round-trips
@@ -110,6 +117,7 @@ need '^  install -d -m 755 -o root -g wheel "\$PIN_ROOT"$'  1 'pin-root install'
 need '-o root -g "\$TREE_GRP" '                             4 'slot-tree installs'
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              4 'record chowns'
+need '^  logger -t pinned '                                 1 'audit-log call'
 need '</dev/tty'                                           10 'ceremony tty reads'
 need '^# ---- setup ---'                                    1 'library cut marker'
 
@@ -122,6 +130,7 @@ sed -e 's/if \[ "\$EUID" -ne 0 \]; then/if false; then/' \
     -e 's/-o root -g "\$TREE_GRP" //g' \
     -e 's/^\( *\)chown -R "root:\$TREE_GRP".*/\1:/' \
     -e 's/^\( *\)chown "root:\$TREE_GRP".*/\1:/' \
+    -e 's/^  logger -t pinned .*/  :/' \
     -e 's#</dev/tty##g' \
     "$SRC" > "$STUB"
 chmod 755 "$STUB"
@@ -130,6 +139,7 @@ chmod 755 "$STUB"
 # turn every ceremony test into a hang or a sudo prompt).
 if grep -q '</dev/tty' "$STUB"; then say "STUB SED FAILED: /dev/tty survives"; exit 2; fi
 if [ "$(grep -c 'if false; then' "$STUB")" != 2 ]; then say "STUB SED FAILED: elevation gates"; exit 2; fi
+if grep -q '^  logger -t pinned ' "$STUB"; then say "STUB SED FAILED: logger survives"; exit 2; fi
 
 # The pure-function library: everything above the first action.
 sed '/^# ---- setup ---/,$d' "$STUB" > "$LIB"
@@ -490,10 +500,17 @@ if [ "$GIT_OK" -eq 1 ]; then
   HEAD_HASH="$(hgit rev-parse 'HEAD^{commit}')"
   REPO_SLOT="$(slot_of "$REPO_FIX")"
 
+  # REGRESSION (was a KNOWN-BUG lock): a FIRST-EVER repo approval must
+  # succeed with no pre-existing slot dir. do_approve used to walk ancestry
+  # through the not-yet-created slot (`verify_ancestry "$slot/rev.git"`
+  # unconditionally), read the failed stat's empty owner as "not root", and
+  # refuse every brand-new repo -- the same defect approve --file fixed
+  # with its `[ -d "$slot" ]` branch (see S4). The slot dir is deliberately
+  # NOT pre-created here: its absence is the case under test.
   ANS='y
 '
   run_pinned approve "$REPO_FIX"
-  assert_exit "$RC" 0 "first repo approval succeeds"
+  assert_exit "$RC" 0 "first-ever repo approval succeeds (no slot dir pre-created)"
   assert_contains "$OUT" "full tree at" "first approval shows the full tree"
   assert_contains "$OUT" "rev.git" "ceremony names the record it wrote"
   assert_file "$REPO_SLOT/rev.git" "rev.git written"
