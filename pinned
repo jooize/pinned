@@ -2,9 +2,10 @@
 # pinned -- review-and-pin a git rev behind a human gate.
 #
 #   pinned approve <repo> [--trust-current]   review diff since last pin -> approve -> pin
-#   pinned approve <repo> --tag <t> [--tag ..] verify signed tag(s) -> approve -> pin
-#                                              (repeat --tag = threshold multisig:
-#                                              all must agree on one commit)
+#   pinned approve <repo> --signed-tag <t> [--signed-tag ..]
+#                                              verify signed tag(s) -> approve -> pin
+#                                              (repeat --signed-tag = threshold
+#                                              multisig: all must agree on one commit)
 #   pinned sign <repo> <tag>                  signed release tag at the PINNED hash
 #   pinned status <repo>                      pinned hash vs HEAD; dirty-tree warning
 #   pinned deploy [--dry-run]                 sync flake inputs to approved revs, rebuild
@@ -23,7 +24,7 @@
 # tag (git tag -s, nothing pinned-specific in the repo), but the hash it
 # signs comes from the root-owned pin file -- you read once at approve;
 # nothing is re-read at sign time, so there is nothing to MITM. approve
-# --tag verifies such a tag against root-owned allowed signers
+# --signed-tag verifies such a tag against root-owned allowed signers
 # (per-repo <pin file>.signers first, global /etc/pinned/allowed_signers
 # as fallback; git's native format) -- that is the
 # second-machine bootstrap: clone anywhere, install the signer key once,
@@ -95,7 +96,7 @@ usage: pinned <action> [args]
 
   approve <repo> [--trust-current]
                      (sudo) review diff since last pin, approve, write pin
-  approve <repo> --tag <tag> [--tag <tag> ...]
+  approve <repo> --signed-tag <tag> [--signed-tag <tag> ...]
                      (sudo) verify signed tag(s) against root-owned
                      allowed signers (per-repo <pin file>.signers,
                      else global /etc/pinned/allowed_signers); all
@@ -470,7 +471,7 @@ case "$action" in
         for a in "$@"; do
           if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
           case "$a" in
-            --tag) skip_next=1 ;;
+            --signed-tag) skip_next=1 ;;
             -*) ;;
             *) preview_repo="$a" ;;
           esac
@@ -573,14 +574,14 @@ do_approve() {
   inv="${SUDO_USER:-}"
   [ -n "$inv" ] || { echo "approve must be invoked via sudo" >&2; exit 1; }
 
-  # --tag may repeat: threshold multisig. Every named tag must verify
+  # --signed-tag may repeat: threshold multisig. Every named tag must verify
   # against the allowed signers AND name the same commit, or nothing is
   # pinned. k-of-n is the caller demanding whichever k tags they trust.
   local trust_current=0 repo_arg="" tag_args
   tag_args=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      --tag)           tag_args+=("$2"); shift 2 ;;
+      --signed-tag)    tag_args+=("$2"); shift 2 ;;
       --trust-current) trust_current=1; shift ;;
       -*)              usage ;;
       *)               repo_arg="$1"; shift ;;
@@ -820,7 +821,7 @@ do_sign() {
     git -C "$repo" --no-pager tag -s -m "signed by $inv via pinned" "$tag_name" "$hash"
   fi
   printf '%s✓ signed:%s %s at %s%s%s (the pinned hash)\n' "$C_GRN$C_B" "$C_OFF" "$tag_name" "$C_CYN" "$hash" "$C_OFF"
-  printf '%s  consumers verify with approve --tag %s against their allowed_signers%s\n' "$C_DIM" "$tag_name" "$C_OFF"
+  printf '%s  consumers verify with approve --signed-tag %s against their allowed_signers%s\n' "$C_DIM" "$tag_name" "$C_OFF"
   log_action sign "$repo" "$hash"
 }
 

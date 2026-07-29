@@ -12,7 +12,7 @@ pin file. Deploy tooling builds only `git+file://...?rev=<pinned hash>`.
     pinned setup [--yes]              self-install + digest-pinned sudoers
     pinned approve <repo> [--trust-current]
                                       human gate: review diff -> pin
-    pinned approve <repo> --tag <tag> [--tag <tag> ...]
+    pinned approve <repo> --signed-tag <tag> [--signed-tag <tag> ...]
                                       signature gate: verify signed tag(s),
                                       all naming one commit -> pin
     pinned sign <repo> <tag>          signed release tag at the PINNED hash
@@ -46,7 +46,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   signed release tag, but the hash it signs comes from the root-owned
   pin file: you read once at approve; nothing is re-read at sign time,
   so a compromised environment has nothing to MITM (SSH-agent signing
-  is blind -- the binding to content is this code path). `approve --tag`
+  is blind -- the binding to content is this code path). `approve --signed-tag`
   verifies such a tag against root-owned allowed signers -- per-repo
   `<pin file>.signers` first, global /etc/pinned/allowed_signers as
   fallback, so a key trusted for one repo doesn't implicitly vouch for
@@ -58,8 +58,8 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   points at the pinned rev (promoting an unsigned release); moving a
   tag is refused. Co-signers use distinct tag names by convention
   (v1.2.3-alice, v1.2.3-bob) -- consumers approve whichever name they
-  trust; allowed_signers is any-of. Threshold multisig: repeat --tag
-  (`approve <repo> --tag v1.2.3-alice --tag v1.2.3-bob`) -- every
+  trust; allowed_signers is any-of. Threshold multisig: repeat --signed-tag
+  (`approve <repo> --signed-tag v1.2.3-alice --signed-tag v1.2.3-bob`) -- every
   named tag must verify and name the same commit or nothing is pinned;
   k-of-n is the consumer demanding whichever k tags they trust.
 - The pin-stating paths never execute what they approve; `deploy` is
