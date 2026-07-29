@@ -815,9 +815,9 @@ do_sign() {
   # -- fail closed. The absolute git binary and the explicit hash are what
   # matter; `git tag` runs no hooks and builtins can't be alias-shadowed.
   if [ -n "$force" ]; then
-    git -C "" --no-pager tag -s -f -m "signed by $inv via pinned" "$tag_name" "$hash"
+    git -C "$repo" --no-pager tag -s -f -m "signed by $inv via pinned" "$tag_name" "$hash"
   else
-    git -C "" --no-pager tag -s -m "signed by $inv via pinned" "$tag_name" "$hash"
+    git -C "$repo" --no-pager tag -s -m "signed by $inv via pinned" "$tag_name" "$hash"
   fi
   printf '%s✓ signed:%s %s at %s%s%s (the pinned hash)\n' "$C_GRN$C_B" "$C_OFF" "$tag_name" "$C_CYN" "$hash" "$C_OFF"
   printf '%s  consumers verify with approve --tag %s against their allowed_signers%s\n' "$C_DIM" "$tag_name" "$C_OFF"
