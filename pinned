@@ -554,7 +554,7 @@ case "$action" in
         done
         printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
         printf '  %s\n\n' "$cmd_disp"
-        printf '%ssudo asks for your password; the root-side re-run shows the authoritative\n' "$C_YEL$C_B"
+        printf '%ssudo asks you to authenticate; the root-side re-run shows the authoritative\n' "$C_YEL$C_B"
         printf 'review -- nothing is pinned until you answer y after it.%s\n\n' "$C_OFF"
         printf '%s  The preview above was orientation only.\n' "$C_DIM"
         printf '  The binary is root-owned (path and ancestry verified just now) and\n'
