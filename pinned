@@ -115,8 +115,8 @@ usage: pinned <action> [args]
   sign <repo> <tag>  create signed tag <tag> at the pinned hash -- no sudo
                      (needs your SSH agent, e.g. 1Password)
   status <repo>      pinned hash vs HEAD; warns on dirty tree
-  read <file> [--algo <name>] [--length <bits>]
-                     trusted read of a non-repo file: display and hash one
+  review <file> [--algo <name>] [--length <bits>]
+                     trusted review of a non-repo file: display and hash one
                      read, print the hash + a fail-closed wrapper -- no sudo
                      names: sha256 sha384 sha512, blake2b-256/-384/-512,
                      blake3 (--length: blake3 only, default 256); blake2b
@@ -920,11 +920,14 @@ do_list() {
   [ "$found" -eq 1 ] || echo "(no pins)"
 }
 
-# ---- read ------------------------------------------------------------------
+# ---- review ----------------------------------------------------------------
 
-# Trusted read of a file OUTSIDE any repo, for hash-gated consumers (e.g. a
+# Trusted review of a file OUTSIDE any repo, for hash-gated consumers (e.g. a
 # hook wired in a content-gated settings file: the wrapper reads once, hashes
-# what it read, and executes only on match).
+# what it read, and executes only on match). Review is the REHEARSAL: it
+# records nothing -- `approve --file` is the ceremony that does, and
+# `verify --emit` is the programmatic read. Humans review, machines verify,
+# records happen only in approve.
 #
 # The security-relevant act is the READ, not the hash. Hashing is trivial;
 # what earns trust is that the bytes shown to you and the bytes hashed are the
@@ -937,7 +940,7 @@ do_list() {
 # falsified display that lie would SURVIVE (you would paste a hash that
 # genuinely matches the malicious file). A lying display fails closed; a lying
 # ceremony fails open. That asymmetry is why this lives here.
-do_read() {
+do_review() {
   local algo=sha256 file="" a length=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -949,7 +952,7 @@ do_read() {
         length="$2"; shift 2 ;;
       --) shift; break ;;
       -*) echo "unknown option: $1" >&2; usage ;;
-      *)  [ -z "$file" ] || { echo "read takes one file" >&2; usage; }
+      *)  [ -z "$file" ] || { echo "review takes one file" >&2; usage; }
           file="$1"; shift ;;
     esac
   done
@@ -1105,7 +1108,7 @@ do_read() {
   cat <<EOF
 export PATH=$PATH; c=\$(cat $file; printf x); c=\${c%x}; h=\$(printf '%s' "\$c" | $hash_cmd); [ "\${h%% *}" = "$hash" ] && exec bash -c "\$c" || { echo 'hook hash mismatch -- refusing' >&2; exit 2; }
 EOF
-  log_action read "$file" "$hash"
+  log_action review "$file" "$hash"
 }
 
 # ---- slot ------------------------------------------------------------------
@@ -1315,7 +1318,7 @@ case "$action" in
   status)  do_status "$@" ;;
   list)    do_list ;;
   slot)    do_slot "$@" ;;
-  read)    do_read "$@" ;;
+  review)  do_review "$@" ;;
   deploy)  do_deploy "$@" ;;
   *)       usage ;;
 esac

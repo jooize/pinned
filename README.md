@@ -21,8 +21,8 @@ pin file. Deploy tooling builds only `git+file://...?rev=<pinned hash>`.
                                       an unsigned name that must agree)
     pinned sign <repo> <tag>          signed release tag at the PINNED hash
     pinned status <repo>
-    pinned read <file> [--algo <name>] [--length <bits>]
-                                      trusted read of a non-repo file:
+    pinned review <file> [--algo <name>] [--length <bits>]
+                                      trusted review of a non-repo file:
                                       one read, shown and hashed
     pinned list                       all pins: hash and repo path
     pinned slot <repo>                print the repo's pin-file path
@@ -34,8 +34,8 @@ pin file. Deploy tooling builds only `git+file://...?rev=<pinned hash>`.
                                       first, never self-elevates
 
 approve and setup self-elevate via sudo (re-exec of the installed
-root-owned binary). sign and read run as you: sign needs your SSH agent,
-read writes nothing.
+root-owned binary). sign and review run as you: sign needs your SSH
+agent, review writes nothing.
 
 Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
 
@@ -95,13 +95,13 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   one constant shows an EMPTY diff for a commit that changed everything
   -- and it EXECUTES during rendering, which for a tool that elevates
   before diffing means as root.
-- `pinned read <file>` extends the same idea past git, for content that
-  is gated by hash rather than by rev (e.g. a hook wired into a
+- `pinned review <file>` extends the same idea past git, for content
+  that is gated by hash rather than by rev (e.g. a hook wired into a
   hash-checked settings file). The security-relevant act is the READ:
   one read into memory, those bytes displayed, those bytes hashed --
   never two reads with a swap in between. It prints the digest plus a
   ready-to-paste fail-closed wrapper, so the consumer hashes exactly the
-  way `read` did. Runs unprivileged (it writes nothing); it lives in a
+  way `review` did. Runs unprivileged (it writes nothing); it lives in a
   root-owned binary because a user-writable review script could show
   innocent bytes and hash malicious ones -- and unlike a falsified
   display, which fails closed at the next hash check, a falsified
