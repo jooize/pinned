@@ -77,6 +77,7 @@ else
   C_OFF='' C_B='' C_DIM='' C_RED='' C_GRN='' C_YEL='' C_CYN=''
   DIFF_COLOR=never
 fi
+NL=$'\n'
 
 # What setup would do -- shown BEFORE any sudo prompt, so nobody has to
 # authenticate just to read the plan. $1 = the user the sudoers entry names.
@@ -120,9 +121,26 @@ usage: pinned <action> [args]
                      tags must name the same commit; approve, pin
                      --tag may add an unsigned name (a clean release
                      name) that must name the same commit
+  approve --file <path> [--baseline <copy>] [--file <path> ...] [--algo <name>]
+                     (sudo) file-pin ceremony: each file is frozen,
+                     displayed ROOT-SIDE, confirmed, and its hash
+                     recorded; multiple --file share one authentication;
+                     --baseline (after its --file) diffs against a copy
+                     that re-hashes to the prior record
+  tombstone <path>   (sudo) retire a pinned file that is GONE; if it
+                     reappears, verify refuses until re-approved
+  verify <path>      file-pin verdict, quiet contract for gates:
+                     0 ok, 10 no slot, 11 mismatch, 12 pinned-but-
+                     missing, 13 tombstoned-but-present, 14 mode/owner
+  verify --emit <path>
+                     verify, then print the VERIFIED bytes on stdout
+                     (nothing on failure) -- the parse-safely form
+  verify --frozen <copy> <path>
+                     verify caller-frozen bytes against <path>'s record
   sign <repo> <tag>  create signed tag <tag> at the pinned hash -- no sudo
                      (needs your SSH agent, e.g. 1Password)
-  status <repo>      pinned hash vs HEAD; warns on dirty tree
+  status <repo|file> repo: pinned hash vs HEAD, dirty-tree warning
+                     file: record vs live state
   review <file> [--algo <name>] [--length <bits>]
                      trusted review of a non-repo file: display and hash one
                      read, print the hash + a fail-closed wrapper -- no sudo
@@ -482,6 +500,99 @@ write_slot_state() {
   mv -f "$tmp" "$d/$name"
 }
 
+# ---- hash algorithms (file pins) -------------------------------------------
+# Labels are EXACT function names -- the shipped --algo vocabulary and the
+# pin.<algo> filename suffixes; verbatim lookup tokens, never parsed on
+# "-". Digest LENGTH alone fixes the digest size, not the algorithm
+# (sha256, sha512/256, blake2b-256 and blake3 all emit 64 hex), hence a
+# declared label per record -- and declare-then-validate makes length a
+# checkable invariant: a wrong-length digest is a malformed record,
+# refused before anything is hashed. Unknown labels refuse.
+
+algo_hash_cmd() {
+  case "$1" in
+    sha256)      echo "shasum -a 256" ;;
+    sha384)      echo "shasum -a 384" ;;
+    sha512)      echo "shasum -a 512" ;;
+    sha512256)   echo "shasum -a 512256" ;;
+    blake2b-256) echo "b2sum -l 256" ;;
+    blake2b-384) echo "b2sum -l 384" ;;
+    blake2b-512) echo "b2sum -l 512" ;;
+    blake3)      echo "b3sum --no-names" ;;
+    *) return 1 ;;
+  esac
+}
+
+algo_hex_len() {
+  case "$1" in
+    sha256|sha512256|blake2b-256|blake3) echo 64 ;;
+    sha384|blake2b-384)                  echo 96 ;;
+    sha512|blake2b-512)                  echo 128 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Fail closed when the declared function's tool is absent from the
+# trusted PATH -- availability is checked here, never encoded in help.
+require_hasher() {
+  case "$1" in
+    blake3)
+      command -v b3sum >/dev/null 2>&1 || {
+        echo "ERROR: $1 declared but b3sum is not in the trusted PATH ($PATH)" >&2
+        echo "       install b3sum system-wide (a user-writable one would defeat the gate)" >&2
+        return 1
+      } ;;
+    blake2b-*)
+      command -v b2sum >/dev/null 2>&1 || {
+        echo "ERROR: $1 declared but b2sum is not in the trusted PATH ($PATH)" >&2
+        echo "       install GNU coreutils system-wide (a user-writable b2sum would defeat the gate)" >&2
+        return 1
+      } ;;
+  esac
+}
+
+hash_file() {
+  # $1 = algo label, $2 = file. Echoes the digest; equals what the
+  # stock tool (shasum/b2sum/b3sum) reports for the same file, so every
+  # record can be cross-checked with ordinary tools.
+  local cmd out
+  cmd="$(algo_hash_cmd "$1")" || return 1
+  require_hasher "$1" || return 1
+  out="$($cmd "$2")" || return 1
+  printf '%s\n' "${out%% *}"
+}
+
+# Canonicalize a path that need not exist (BSD readlink -f demands
+# existence): resolve the parent, keep the last component.
+canon_path() {
+  local p="$1" d b
+  if [ -e "$p" ]; then
+    readlink -f "$p"
+    return
+  fi
+  d="$(dirname "$p")"; b="$(basename "$p")"
+  d="$(readlink -f "$d" 2>/dev/null)" \
+    || { echo "ERROR: cannot resolve: $p (parent directory missing)" >&2; return 1; }
+  printf '%s/%s\n' "${d%/}" "$b"
+}
+
+# Private scratch for frozen copies; removed on exit. freeze_file is THE
+# single read of a subject file -- display, diff, hash and emit all
+# derive from the frozen copy, never a second look at the live path
+# (TOCTOU closure). Sets FROZEN_COPY.
+workdir="" FREEZE_N=0
+# Never-failing: under set -e a failing EXIT trap OVERRIDES the script's
+# exit status (a bare `[ -n ... ] && ...` here turned verify's success
+# into exit 1 -- live-fired in the build harness).
+cleanup_workdir() { [ -z "$workdir" ] || rm -rf "$workdir"; }
+trap cleanup_workdir EXIT
+freeze_file() {
+  [ -n "$workdir" ] || workdir="$(mktemp -d)"
+  FREEZE_N=$((FREEZE_N + 1))
+  FROZEN_COPY="$workdir/frozen.$FREEZE_N"
+  cat -- "$1" >"$FROZEN_COPY"
+}
+
 resolve_repo() {
   [ $# -ge 1 ] || usage
   repo="$(readlink -f "$1")"
@@ -626,7 +737,7 @@ fi
 # back to this script's own path. Sits after the helper definitions so the
 # approve preview below can reuse them.
 case "$action" in
-  approve|setup|migrate)
+  approve|setup|migrate|tombstone)
     if [ "$EUID" -ne 0 ]; then
       # setup: show the plan and confirm BEFORE sudo, so reading what it
       # will do never costs an authentication.
@@ -779,8 +890,8 @@ do_approve() {
   # must verify against the allowed signers AND name the same commit, or
   # nothing is pinned. k-of-n is the caller demanding whichever k tags they
   # trust.
-  local trust=0 repo_arg="" sel_tag="" tag_args
-  tag_args=()
+  local trust=0 repo_arg="" sel_tag="" tag_args files file_base file_algo=sha256 algo_given=0
+  tag_args=(); files=(); file_base=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --signed-tag) tag_args+=("$2"); shift 2 ;;
@@ -788,10 +899,34 @@ do_approve() {
         [ -z "$sel_tag" ] || { echo "--tag may be given once (it selects the commit)" >&2; exit 1; }
         sel_tag="$2"; shift 2 ;;
       --trust)      trust=1; shift ;;
+      --file)
+        [ $# -ge 2 ] || { echo "--file needs a path" >&2; exit 1; }
+        files+=("$2"); file_base+=(""); shift 2 ;;
+      --baseline)
+        [ $# -ge 2 ] || { echo "--baseline needs a path" >&2; exit 1; }
+        [ "${#files[@]}" -gt 0 ] \
+          || { echo "--baseline must follow the --file it belongs to" >&2; exit 1; }
+        [ -z "${file_base[$((${#files[@]} - 1))]}" ] \
+          || { echo "one --baseline per --file" >&2; exit 1; }
+        file_base[$((${#files[@]} - 1))]="$2"; shift 2 ;;
+      --algo)
+        [ $# -ge 2 ] || { echo "--algo needs a value" >&2; exit 1; }
+        file_algo="$2"; algo_given=1; shift 2 ;;
       -*)           usage ;;
       *)            repo_arg="$1"; shift ;;
     esac
   done
+  # The file-pin ceremony is its own mode: repo selectors and evidence
+  # flags say nothing about file content.
+  if [ "${#files[@]}" -gt 0 ]; then
+    if [ -n "$repo_arg" ] || [ -n "$sel_tag" ] || [ "$trust" -eq 1 ] || [ "${#tag_args[@]}" -gt 0 ]; then
+      echo "--file is its own ceremony; repo arguments and evidence flags do not combine with it" >&2
+      exit 1
+    fi
+    do_approve_files
+    return
+  fi
+  [ "$algo_given" -eq 0 ] || { echo "--algo applies to the --file ceremony only" >&2; exit 1; }
   [ -n "$repo_arg" ] || usage
   case "$sel_tag" in
     -*) echo "invalid tag name: $sel_tag" >&2; exit 1 ;;
@@ -975,10 +1110,349 @@ do_approve() {
   log_action approve "$repo" "$hash"
 }
 
+# The file-pin ceremony (the claude-trust-append port). The CEREMONY is
+# the only recording path -- there is deliberately NO hash argument and
+# no handoff form: a displayless handoff would preserve exactly the
+# vulnerable path it replaces (a weak-environment caller feeding an
+# opaque hash for root to record sight-unseen). The one display happens
+# HERE, root-side, after sudo's env_reset, resting only on root-owned
+# code -- a caller's own review (the shim's structural diff) is pre-sudo
+# ORIENTATION, and what the record binds to is what THIS display showed:
+# the hash is taken from the displayed frozen buffer, so record == seen
+# by construction, and a post-freeze swap simply mismatches at the next
+# verify. Multiple --file paths share one authentication (sequential
+# display + confirm per file, each confirmed one recorded) -- under the
+# timestamp_timeout=0 sudoers stance anything else costs one password
+# per file. WHICH files get measured is the calling policy's business
+# (the shim's declared set); pinned is the capability and approves any
+# path -- the old appender's basename allowlist dies here.
+do_approve_files() {
+  algo_hash_cmd "$file_algo" >/dev/null || {
+    echo "unsupported algorithm: $file_algo (use sha256, sha384, sha512, blake2b-256/384/512, blake3)" >&2
+    exit 1
+  }
+  require_hasher "$file_algo" || exit 1
+  ensure_tree "$inv"
+
+  local i=0 n="${#files[@]}" f base path slot line new_digest old_digest old_label
+  local base_ok recorded=0 declined=0 failed=0 answer state_note
+  while [ "$i" -lt "$n" ]; do
+    f="${files[$i]}"; base="${file_base[$i]}"; i=$((i + 1))
+    [ "$i" -eq 1 ] || echo
+    path="$(canon_path "$f")" || { failed=$((failed + 1)); continue; }
+    case "$path" in
+      *"$NL"*)
+        echo "ERROR: refusing a path containing a newline (records are one line per pin)" >&2
+        failed=$((failed + 1)); continue ;;
+    esac
+    if [ ! -f "$path" ]; then
+      echo "ERROR: not a regular file: $path" >&2
+      echo "       (a pinned file that is GONE is retired with: pinned tombstone $path)" >&2
+      failed=$((failed + 1)); continue
+    fi
+    slot="$(slot_dir_for "$inv" "$path")"
+    verify_ancestry "$slot/pin.$file_algo" || exit 1
+
+    old_digest="" old_label="" state_note=""
+    if ! inspect_slot "$slot" 2>/dev/null; then
+      # Malformed is unreadable state, not unapproachable state: the
+      # ceremony is exactly the act that may reassert it. Loudly.
+      state_note="malformed slot -- this approval resets it"
+    else
+      case "$slot_state" in
+        pin)
+          verify_record_file "$slot_file" || exit 1
+          IFS= read -r line <"$slot_file" || line=""
+          old_digest="${line%%  *}"; old_label="$slot_kind" ;;
+        tombstone)
+          IFS= read -r line <"$slot_file" || line=""
+          state_note="tombstoned ($line) -- approving reinstates this path" ;;
+        rev)
+          state_note="slot held a repo pin -- this approval resets it to a file pin" ;;
+      esac
+    fi
+
+    # Freeze ONCE; display, diff, hash and record all derive from the
+    # frozen copy (record == displayed buffer, by construction).
+    freeze_file "$path" || { echo "ERROR: cannot read $path" >&2; failed=$((failed + 1)); continue; }
+    local fro="$FROZEN_COPY"
+    new_digest="$(hash_file "$file_algo" "$fro")" || exit 1
+
+    if [ -n "$old_digest" ] && [ "$old_label" = "$file_algo" ] && [ "$new_digest" = "$old_digest" ]; then
+      printf '%salready approved:%s %s\n' "$C_GRN" "$C_OFF" "$path"
+      continue
+    fi
+
+    printf '%sfile:%s       %s\n' "$C_B" "$C_OFF" "$path"
+    [ -n "$state_note" ] && printf '%snote:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_YEL" "$state_note" "$C_OFF"
+    if [ -n "$old_digest" ]; then
+      printf '%sapproved:%s   %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$old_digest" "$C_OFF" "$C_DIM" "$old_label" "$C_OFF"
+    else
+      printf '%sapproved:%s   (none -- first approval)\n' "$C_B" "$C_OFF"
+    fi
+    printf '%s%s:%s     %s%s%s\n' "$C_B" "$file_algo" "$C_OFF" "$C_CYN" "$new_digest" "$C_OFF"
+    echo
+
+    # Diff only against a VERIFIED baseline: the candidate must re-hash
+    # to the prior recorded digest (the self-verifying trust-cache
+    # trick, root-side). Anything else degrades to the full view --
+    # never to a diff against unverified bytes.
+    base_ok=0
+    if [ -n "$base" ] && [ -n "$old_digest" ] && [ -f "$base" ]; then
+      if freeze_file "$base" 2>/dev/null \
+        && [ "$(hash_file "$old_label" "$FROZEN_COPY")" = "$old_digest" ]; then
+        base_ok=1
+        printf '%s--- diff vs the approved baseline (exactly the bytes being approved) ---%s\n' "$C_B" "$C_OFF"
+        line="$(diff -u "$FROZEN_COPY" "$fro" || true)"
+        printf '%s\n' "$line" | page || true
+      fi
+    fi
+    if [ "$base_ok" -eq 0 ]; then
+      if [ -n "$base" ] && [ -n "$old_digest" ]; then
+        printf '%snote: baseline does not re-hash to the approved record; showing the full file%s\n' "$C_YEL" "$C_OFF"
+      fi
+      printf '%s--- %s (exactly the bytes being approved) ---%s\n' "$C_B" "$path" "$C_OFF"
+      page <"$fro" || true
+    fi
+    echo
+
+    printf '%sapprove %s%s%s? [y/N]%s ' "$C_B" "$C_CYN" "$path" "$C_OFF$C_B" "$C_OFF"
+    read -r answer </dev/tty
+    case "$answer" in
+      y|Y|yes)
+        write_slot_state "$slot" "pin.$file_algo" "$new_digest  $path"
+        printf '%s✓ approved:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$new_digest" "$C_OFF" "$slot/pin.$file_algo"
+        log_action approve-file "$path" "$new_digest"
+        recorded=$((recorded + 1))
+        ;;
+      *)
+        printf '%sdeclined; record unchanged.%s\n' "$C_YEL" "$C_OFF"
+        log_action approve-file "$path" "$new_digest" abort
+        declined=$((declined + 1))
+        ;;
+    esac
+  done
+
+  if [ "$n" -gt 1 ] || [ "$failed" -gt 0 ]; then
+    echo
+    printf '%s%s recorded, %s declined, %s failed%s\n' "$C_DIM" "$recorded" "$declined" "$failed" "$C_OFF"
+  fi
+  [ "$failed" -eq 0 ] || exit 1
+}
+
+# ---- tombstone -------------------------------------------------------------
+
+# Retire a pinned path that is GONE. The tombstone is sentinel SLOT
+# CONTENT, never slot deletion: pin+missing refuses (restore or
+# tombstone), tombstone+absent passes silently, tombstone+present
+# refuses -- retired content resurrected must not read as merely new.
+# Content is one ISO-stamped ASCII line; only its EXISTENCE carries the
+# semantics, the line is forensics.
+do_tombstone() {
+  require_root tombstone
+  [ $# -eq 1 ] || usage
+  local path slot answer line
+  path="$(canon_path "$1")" || exit 1
+  if [ -e "$path" ]; then
+    echo "REFUSE: $path still exists -- you tombstone what's gone, not what's live" >&2
+    echo "        (retire the content first, or approve the current content instead)" >&2
+    exit 1
+  fi
+  ensure_tree "$inv"
+  slot="$(slot_dir_for "$inv" "$path")"
+  inspect_slot "$slot" 2>/dev/null || slot_state=malformed
+  case "$slot_state" in
+    none)
+      echo "no slot: $path was never approved; nothing to tombstone" >&2
+      exit 1 ;;
+    tombstone)
+      IFS= read -r line <"$slot_file" || line=""
+      printf 'already tombstoned: %s %s(%s)%s\n' "$path" "$C_DIM" "$line" "$C_OFF"
+      exit 0 ;;
+  esac
+  printf '%spath:%s       %s %s(gone)%s\n' "$C_B" "$C_OFF" "$path" "$C_DIM" "$C_OFF"
+  printf '%sslot:%s       %s state: %s\n' "$C_B" "$C_OFF" "$slot" "$slot_state"
+  printf '%stombstone %s%s%s? its reappearance will then REFUSE until re-approved [y/N]%s ' \
+    "$C_B" "$C_CYN" "$path" "$C_OFF$C_B" "$C_OFF"
+  read -r answer </dev/tty
+  case "$answer" in
+    y|Y|yes) ;;
+    *) echo "aborted; slot unchanged."; log_action tombstone "$path" "" abort; exit 2 ;;
+  esac
+  write_slot_state "$slot" tombstone "$(date -u +%Y-%m-%dT%H:%M:%SZ) retired by $inv"
+  printf '%s✓ tombstoned:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$path"
+  log_action tombstone "$path"
+}
+
+# ---- verify ----------------------------------------------------------------
+
+# The consumer verdict for file pins -- replaces every consumer's
+# private copy of the state table (writer/reader split: approve records,
+# verify answers). Exit contract, a stable API:
+#   0   state matches the record (pin + match, or tombstone + absent)
+#   10  no slot for this path
+#   11  hash mismatch
+#   12  live pin but the file is missing
+#   13  tombstoned but the path is present (retired content resurrected)
+#   14  mode/ownership invariant violated
+# Anything structural (malformed slot, unknown algorithm, wrong recorded
+# path, unreadable tier) is a hard error: exit 1, fail closed. The
+# common gate stays `if pinned verify <path>; then`.
+#
+# Three forms; the slot key is ALWAYS the original <path>:
+#   verify <path>                 gate/report: freeze internally, verdict only
+#   verify --emit <path>          freeze, verify, print the VERIFIED bytes on
+#                                 stdout; NOTHING on nonzero exit. The "verify
+#                                 and emit the SAME bytes" shape as one call.
+#   verify --frozen <copy> <path> caller-frozen bytes against <path>'s record,
+#                                 for callers that must hold bytes before a
+#                                 verdict exists; digest from the copy, the
+#                                 mode invariant still checks the original.
+# Consumer rule: PARSE content -> --emit or --frozen; gate/display only
+# -> bare form (the verdict refers to one coherent frozen moment; a
+# caller's later live read is the caller's race).
+do_verify() {
+  local emit=0 frozen="" path=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --emit) emit=1; shift ;;
+      --frozen)
+        [ $# -ge 2 ] || { echo "--frozen needs the copy's path" >&2; exit 1; }
+        frozen="$2"; shift 2 ;;
+      -*) echo "unknown verify option: $1" >&2; usage ;;
+      *)  [ -z "$path" ] || { echo "verify takes one path" >&2; usage; }
+          path="$1"; shift ;;
+    esac
+  done
+  [ -n "$path" ] || usage
+  if [ "$emit" -eq 1 ] && [ -n "$frozen" ]; then
+    echo "--emit and --frozen are exclusive" >&2
+    exit 1
+  fi
+  path="$(canon_path "$path")" || exit 1
+
+  local tier slot
+  tier="$(tier_user)"
+  slot="$(slot_dir_for "$tier" "$path")"
+  if [ ! -d "$slot" ]; then
+    # Distinguish "no slot" from "cannot see the slots": an unreadable
+    # tier must never read as unapproved.
+    if [ -d "$PIN_ROOT/$tier" ] && [ ! -r "$PIN_ROOT/$tier" ]; then
+      echo "ERROR: cannot read $PIN_ROOT/$tier -- are you in group $(pin_group "$tier")?" >&2
+      exit 1
+    fi
+    echo "no slot: $path" >&2
+    exit 10
+  fi
+  inspect_slot "$slot" || exit 1
+  local line
+  case "$slot_state" in
+    none)
+      echo "no slot: $path" >&2
+      exit 10 ;;
+    rev)
+      echo "ERROR: $path has a repo slot (rev.$slot_kind); verify covers file pins -- use status" >&2
+      exit 1 ;;
+    tombstone)
+      verify_record_file "$slot_file" || exit 1
+      if [ -e "$path" ]; then
+        IFS= read -r line <"$slot_file" || line=""
+        echo "REFUSE: $path is tombstoned ($line) but PRESENT -- retired content resurrected" >&2
+        exit 13
+      fi
+      exit 0 ;;
+    pin) ;;
+  esac
+
+  verify_record_file "$slot_file" || exit 1
+  local label="$slot_kind" hexlen rec_digest rec_path
+  algo_hash_cmd "$label" >/dev/null 2>&1 || {
+    echo "ERROR: $slot_file declares unknown algorithm '$label'; refusing" >&2
+    exit 1
+  }
+  hexlen="$(algo_hex_len "$label")"
+  IFS= read -r line <"$slot_file" || line=""
+  rec_digest="${line%%  *}"
+  rec_path="${line#*  }"
+  case "$rec_digest" in
+    *[!0-9a-f]*|'')
+      echo "ERROR: record $slot_file is corrupt" >&2
+      exit 1 ;;
+  esac
+  [ "${#rec_digest}" -eq "$hexlen" ] || {
+    echo "ERROR: record $slot_file: digest length ${#rec_digest} does not match $label ($hexlen hex); malformed record" >&2
+    exit 1
+  }
+  [ "$rec_path" = "$path" ] || {
+    echo "ERROR: record $slot_file names path '$rec_path', not '$path'; malformed record" >&2
+    exit 1
+  }
+
+  # Order: existence (12), then the mode invariant (14), then content
+  # (11). With --frozen the copy evidences existence -- absence was the
+  # caller's to catch at its freeze -- so 12 cannot arise there.
+  local subject
+  if [ -n "$frozen" ]; then
+    [ -f "$frozen" ] || { echo "ERROR: frozen copy is not a readable file: $frozen" >&2; exit 1; }
+    subject="$frozen"
+  else
+    if [ ! -e "$path" ]; then
+      echo "REFUSE: $path is pinned but MISSING (restore it, or run: pinned tombstone $path)" >&2
+      exit 12
+    fi
+    [ -f "$path" ] || { echo "ERROR: not a regular file: $path" >&2; exit 1; }
+  fi
+  # The invariant, always on the ORIGINAL path: owned by the tier user,
+  # not group- or world-writable. Deliberately not a pinned VALUE (A7):
+  # verification is per-use and content-addressed, so a rewrite through
+  # a loosened mode is caught by the hash check at the next use, and
+  # against a process running AS the user the mode is irrelevant (the
+  # owner can chmod back). The absolute invariant needs no per-slot
+  # storage and never churns.
+  if [ -e "$path" ]; then
+    local owner mode
+    owner="$(stat_owner "$path")"
+    if [ "${owner%%:*}" != "$tier" ]; then
+      echo "REFUSE: $path is owned by ${owner%%:*}, expected $tier" >&2
+      exit 14
+    fi
+    mode="$(stat_mode "$path")"
+    case "$mode" in
+      *[2367]?|*[2367])
+        echo "REFUSE: $path has mode $mode (group/other-writable); fix: chmod go-w $path" >&2
+        exit 14 ;;
+    esac
+  fi
+
+  if [ -z "$frozen" ]; then
+    freeze_file "$path" || { echo "ERROR: cannot read $path" >&2; exit 1; }
+    subject="$FROZEN_COPY"
+  fi
+  local live_digest
+  live_digest="$(hash_file "$label" "$subject")" || exit 1
+  if [ "$live_digest" != "$rec_digest" ]; then
+    echo "REFUSE: $path does not match its approved record" >&2
+    echo "  approved $label: $rec_digest" >&2
+    echo "  live     $label: $live_digest" >&2
+    exit 11
+  fi
+  if [ "$emit" -eq 1 ]; then
+    cat -- "$subject"
+  else
+    printf '%s✓ verified:%s %s\n' "$C_GRN" "$C_OFF" "$path"
+  fi
+}
+
 # ---- status ----------------------------------------------------------------
 
 do_status() {
   inv="$(id -un)"
+  [ $# -ge 1 ] || usage
+  # A directory is a repo; anything else (present or not) is a file pin.
+  if [ ! -d "$1" ]; then
+    do_status_file "$1"
+    return
+  fi
   resolve_repo "$@"
   local slot="$default_slot" hash head_hash
   hash="$(read_rev "$slot")" || exit 1
@@ -1005,6 +1479,54 @@ do_status() {
   if ! sgit_diff --quiet 2>/dev/null || ! sgit_diff --cached --quiet 2>/dev/null; then
     printf '%swarning: work tree is dirty (uncommitted changes are never approved)%s\n' "$C_YEL" "$C_OFF"
   fi
+}
+
+# File-pin status: the record, and the live path's verdict against it.
+# The verdict is verify's own (subshell), so status can never disagree
+# with the gate.
+do_status_file() {
+  local path slot rc line
+  path="$(canon_path "$1")" || exit 1
+  slot="$(slot_dir_for "$inv" "$path")"
+  printf '%sfile:%s       %s\n' "$C_DIM" "$C_OFF" "$path"
+  printf '%sslot:%s       %s\n' "$C_DIM" "$C_OFF" "$slot"
+  if ! inspect_slot "$slot" 2>/dev/null; then
+    printf '%sstate:%s      %s✗ MALFORMED slot -- inspect it by hand%s\n' "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF"
+    exit 1
+  fi
+  case "$slot_state" in
+    none)
+      printf '%spinned:%s     (none)\n' "$C_DIM" "$C_OFF"
+      printf '%sstate:%s      %s✗ never approved%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF"
+      return ;;
+    rev)
+      IFS= read -r line <"$slot_file" || line=""
+      printf '%spinned:%s     %s%s%s  %s(rev.%s -- a repo pin at a non-directory path)%s\n' \
+        "$C_DIM" "$C_OFF" "$C_CYN" "$line" "$C_OFF" "$C_YEL" "$slot_kind" "$C_OFF"
+      return ;;
+    tombstone)
+      IFS= read -r line <"$slot_file" || line=""
+      printf '%spinned:%s     tombstoned %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_DIM" "$line" "$C_OFF"
+      if [ -e "$path" ]; then
+        printf '%sstate:%s      %s✗ tombstoned but PRESENT (retired content resurrected)%s\n' \
+          "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF"
+      else
+        printf '%sstate:%s      %s✓ tombstoned and absent%s\n' "$C_DIM" "$C_OFF" "$C_GRN" "$C_OFF"
+      fi
+      return ;;
+    pin)
+      IFS= read -r line <"$slot_file" || line=""
+      printf '%spinned:%s     %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "${line%%  *}" "$C_OFF" \
+        "$C_DIM" "$slot_kind" "$C_OFF"
+      rc=0; (do_verify "$path" >/dev/null 2>&1) || rc=$?
+      case "$rc" in
+        0)  printf '%sstate:%s      %s✓ live file matches the record%s\n' "$C_DIM" "$C_OFF" "$C_GRN" "$C_OFF" ;;
+        11) printf '%sstate:%s      %s✗ live file DIFFERS from the record%s\n' "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF" ;;
+        12) printf '%sstate:%s      %s✗ pinned but MISSING (restore, or tombstone)%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF" ;;
+        14) printf '%sstate:%s      %s✗ mode/ownership invariant violated%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF" ;;
+        *)  printf '%sstate:%s      %s✗ verify error (exit %s)%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$rc" "$C_OFF" ;;
+      esac ;;
+  esac
 }
 
 # ---- sign ------------------------------------------------------------------
@@ -1615,13 +2137,15 @@ EOF
 }
 
 case "$action" in
-  approve) do_approve "$@" ;;
-  sign)    do_sign "$@" ;;
-  status)  do_status "$@" ;;
-  list)    do_list "$@" ;;
-  slot)    do_slot "$@" ;;
-  review)  do_review "$@" ;;
-  migrate) do_migrate "$@" ;;
-  deploy)  do_deploy "$@" ;;
-  *)       usage ;;
+  approve)   do_approve "$@" ;;
+  tombstone) do_tombstone "$@" ;;
+  verify)    do_verify "$@" ;;
+  sign)      do_sign "$@" ;;
+  status)    do_status "$@" ;;
+  list)      do_list "$@" ;;
+  slot)      do_slot "$@" ;;
+  review)    do_review "$@" ;;
+  migrate)   do_migrate "$@" ;;
+  deploy)    do_deploy "$@" ;;
+  *)         usage ;;
 esac
