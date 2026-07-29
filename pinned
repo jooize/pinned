@@ -11,13 +11,20 @@
 #                                              (repeat --signed-tag = threshold
 #                                              multisig: all must agree on one commit;
 #                                              --tag: an unsigned name that must agree)
+#   pinned approve --file <path> ...          file-pin ceremony: frozen display
+#                                             root-side -> confirm -> record hash
+#   pinned verify <path>                      consumer verdict for file pins
+#                                             (--emit / --frozen for parsers)
+#   pinned tombstone <path>                   retire a pinned file that is GONE
 #   pinned sign <repo> <tag>                  signed release tag at the PINNED hash
-#   pinned status <repo>                      pinned hash vs HEAD; dirty-tree warning
+#   pinned signer add|list|remove             allowed-signers ceremony
+#   pinned status <repo|file>                 record vs live state
 #   pinned deploy [--dry-run]                 sync flake inputs to approved revs, rebuild
 #   pinned setup [--yes]                      provision sudoers digest pin; self-install
 #
-# approve/setup self-elevate via sudo (re-exec of the installed root-owned
-# binary); sign runs as the user because it needs the SSH agent.
+# approve, setup, migrate, tombstone and signer add/remove self-elevate
+# via sudo (re-exec of the installed root-owned binary); sign runs as
+# the user because it needs the SSH agent.
 #
 # approve runs root-owned code end to end: it resolves the rev to a hash, shows
 # the diff from the OBJECT STORE (scrubbed env, no user git config, no pager,
@@ -30,10 +37,10 @@
 # signs comes from the root-owned pin file -- you read once at approve;
 # nothing is re-read at sign time, so there is nothing to MITM. approve
 # --signed-tag verifies such a tag against root-owned allowed signers
-# (per-repo <pin file>.signers first, global /etc/pinned/allowed_signers
-# as fallback; git's native format) -- that is the
-# second-machine bootstrap: clone anywhere, install the signer key once,
-# approve the release.
+# (per-slot signers/allowed_signers first, the user tier's as fallback;
+# git's native format) -- that is the second-machine bootstrap: clone
+# anywhere, install the signer key once (pinned signer add), approve
+# the release.
 #
 # Storage: /var/db/pinned/<user>/slots/<encoded-path>/ -- one root-owned
 # SLOT DIRECTORY per pinned path, holding exactly one of rev.<vcs> (repo
