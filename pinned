@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # pinned -- review-and-pin a git rev behind a human gate.
 #
-#   pinned approve <repo> [--trust-current]   review diff since last pin -> approve -> pin
-#   pinned approve <repo> --signed-tag <t> [--signed-tag ..]
+#   pinned approve <repo> [--tag <t>] [--trust]
+#                                              review diff since last pin -> approve -> pin
+#                                              (--tag: at the tag's commit, not HEAD;
+#                                              --trust: skip a FIRST approval's
+#                                              full-tree review, loudly)
+#   pinned approve <repo> --signed-tag <t> [--signed-tag ..] [--tag <t>]
 #                                              verify signed tag(s) -> approve -> pin
 #                                              (repeat --signed-tag = threshold
-#                                              multisig: all must agree on one commit)
+#                                              multisig: all must agree on one commit;
+#                                              --tag: an unsigned name that must agree)
 #   pinned sign <repo> <tag>                  signed release tag at the PINNED hash
 #   pinned status <repo>                      pinned hash vs HEAD; dirty-tree warning
 #   pinned deploy [--dry-run]                 sync flake inputs to approved revs, rebuild
@@ -94,13 +99,19 @@ usage() {
   cat >&2 <<EOF
 usage: pinned <action> [args]
 
-  approve <repo> [--trust-current]
-                     (sudo) review diff since last pin, approve, write pin
-  approve <repo> --signed-tag <tag> [--signed-tag <tag> ...]
+  approve <repo> [--tag <tag>] [--trust]
+                     (sudo) review the diff since the last pin (full tree
+                     on a first approval), approve, write pin
+                     --tag reviews and pins the tag's commit, not HEAD
+                     --trust skips a FIRST approval's full-tree review,
+                     loudly; later approves always show the diff
+  approve <repo> --signed-tag <tag> [--signed-tag <tag> ...] [--tag <tag>]
                      (sudo) verify signed tag(s) against root-owned
                      allowed signers (per-repo <pin file>.signers,
                      else global /etc/pinned/allowed_signers); all
                      tags must name the same commit; approve, pin
+                     --tag may add an unsigned name (a clean release
+                     name) that must name the same commit
   sign <repo> <tag>  create signed tag <tag> at the pinned hash -- no sudo
                      (needs your SSH agent, e.g. 1Password)
   status <repo>      pinned hash vs HEAD; warns on dirty tree
@@ -467,18 +478,26 @@ case "$action" in
       # orientation only -- the authoritative review re-derives everything
       # from the object store as root, after sudo.
       if [ "$action" = "approve" ]; then
-        preview_repo="" skip_next=0
+        preview_repo="" preview_tag="" skip_next=0 want_tag=0
         for a in "$@"; do
+          if [ "$want_tag" -eq 1 ]; then preview_tag="$a"; want_tag=0; continue; fi
           if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
           case "$a" in
             --signed-tag) skip_next=1 ;;
+            --tag) want_tag=1 ;;
             -*) ;;
             *) preview_repo="$a" ;;
           esac
         done
         if [ -n "$preview_repo" ]; then
           resolve_repo "$preview_repo"
-          preview_head="$(sgit rev-parse 'HEAD^{commit}')"
+          # A bad --tag name dies HERE, pre-sudo -- failing early is the
+          # point of the preview.
+          if [ -n "$preview_tag" ]; then
+            preview_head="$(sgit rev-parse "refs/tags/${preview_tag}"'^{commit}')"
+          else
+            preview_head="$(sgit rev-parse 'HEAD^{commit}')"
+          fi
           preview_pin="$(read_pin "$default_pin_file")" || preview_pin=""
           # Same short-circuit the privileged side would take -- but here it
           # costs no authentication. The pin is root-owned; HEAD is the
@@ -489,8 +508,14 @@ case "$action" in
             exit 0
           fi
           printf '%srepo:%s       %s\n' "$C_B" "$C_OFF" "$repo"
-          printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_head" "$C_OFF" \
-            "$C_DIM" "$(sgit log -1 --format=%s "$preview_head")" "$C_OFF"
+          if [ -n "$preview_tag" ]; then
+            printf '%stag:%s        %s\n' "$C_B" "$C_OFF" "$preview_tag"
+            printf '%scommit:%s     %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_head" "$C_OFF" \
+              "$C_DIM" "$(sgit log -1 --format=%s "$preview_head")" "$C_OFF"
+          else
+            printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_head" "$C_OFF" \
+              "$C_DIM" "$(sgit log -1 --format=%s "$preview_head")" "$C_OFF"
+          fi
           if [ -n "$preview_pin" ]; then
             printf '%spinned:%s     %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_pin" "$C_OFF"
             if [ "$preview_pin" != "$preview_head" ]; then
@@ -574,20 +599,36 @@ do_approve() {
   inv="${SUDO_USER:-}"
   [ -n "$inv" ] || { echo "approve must be invoked via sudo" >&2; exit 1; }
 
-  # --signed-tag may repeat: threshold multisig. Every named tag must verify
-  # against the allowed signers AND name the same commit, or nothing is
-  # pinned. k-of-n is the caller demanding whichever k tags they trust.
-  local trust_current=0 repo_arg="" tag_args
+  # Orthogonal surface: --tag selects WHICH commit (default HEAD) and, once
+  # slots record names, what deploy declares; the evidence flags say WHY it
+  # is trusted (--signed-tag verifies, --trust vouches, default is content
+  # review). --signed-tag may repeat: threshold multisig. Every named tag
+  # must verify against the allowed signers AND name the same commit, or
+  # nothing is pinned. k-of-n is the caller demanding whichever k tags they
+  # trust.
+  local trust=0 repo_arg="" sel_tag="" tag_args
   tag_args=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      --signed-tag)    tag_args+=("$2"); shift 2 ;;
-      --trust-current) trust_current=1; shift ;;
-      -*)              usage ;;
-      *)               repo_arg="$1"; shift ;;
+      --signed-tag) tag_args+=("$2"); shift 2 ;;
+      --tag)
+        [ -z "$sel_tag" ] || { echo "--tag may be given once (it selects the commit)" >&2; exit 1; }
+        sel_tag="$2"; shift 2 ;;
+      --trust)      trust=1; shift ;;
+      -*)           usage ;;
+      *)            repo_arg="$1"; shift ;;
     esac
   done
   [ -n "$repo_arg" ] || usage
+  case "$sel_tag" in
+    -*) echo "invalid tag name: $sel_tag" >&2; exit 1 ;;
+  esac
+  # A vouch adds nothing to a signature gate; refuse the no-op combination
+  # rather than silently ignoring one flag.
+  if [ "$trust" -eq 1 ] && [ "${#tag_args[@]}" -gt 0 ]; then
+    echo "--trust adds nothing to a signature-gated approve; drop one" >&2
+    exit 1
+  fi
   resolve_repo "$repo_arg"
   local pin_file="$default_pin_file"
 
@@ -654,6 +695,17 @@ do_approve() {
         exit 1
       fi
     done
+    # An unsigned --tag selector (e.g. the clean release name) joins the
+    # agreement rule: it must name the commit the signed set verified.
+    if [ -n "$sel_tag" ]; then
+      t_hash="$(sgit rev-parse "refs/tags/${sel_tag}"'^{commit}')"
+      if [ "$t_hash" != "$hash" ]; then
+        printf '%sERROR: tags disagree: %s is at %s, expected %s; pin unchanged%s\n' \
+          "$C_RED$C_B" "$sel_tag" "$t_hash" "$hash" "$C_OFF" >&2
+        log_action approve "$repo" "$sel_tag" tags-disagree
+        exit 1
+      fi
+    fi
     if [ -n "$old_hash" ] && [ "$old_hash" = "$hash" ]; then
       printf '%salready pinned: %s%s\n' "$C_GRN" "$hash" "$C_OFF"
       exit 0
@@ -662,14 +714,28 @@ do_approve() {
     for t in "${tag_args[@]}"; do
       printf '%stag:%s     %s  %s✓ signature verified against %s%s\n' "$C_DIM" "$C_OFF" "$t" "$C_GRN" "$signers" "$C_OFF"
     done
+    [ -n "$sel_tag" ] \
+      && printf '%stag:%s     %s  %s(unsigned; names the verified commit)%s\n' "$C_DIM" "$C_OFF" "$sel_tag" "$C_DIM" "$C_OFF"
     [ "${#tag_args[@]}" -gt 1 ] \
       && printf '%s%d/%d tags agree on the commit below%s\n' "$C_GRN" "${#tag_args[@]}" "${#tag_args[@]}" "$C_OFF"
     printf '%scommit:%s  %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
       "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
-    [ -n "$old_hash" ] && printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
+    if [ -n "$old_hash" ]; then
+      printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
+      # Free orientation on any machine with the clone (that is, every
+      # machine approve runs on); the signature stays the gate.
+      echo
+      printf '%s--- commits since last approval ---%s\n' "$C_B" "$C_OFF"
+      sgit log --format='%h %s' "${old_hash}..${hash}" || true
+    fi
   else
-    # Human gate: read the diff since the last pin from the object store.
-    hash="$(sgit rev-parse 'HEAD^{commit}')"
+    # Human gate: read the diff since the last pin from the object store,
+    # at HEAD or at the --tag selector's commit.
+    if [ -n "$sel_tag" ]; then
+      hash="$(sgit rev-parse "refs/tags/${sel_tag}"'^{commit}')"
+    else
+      hash="$(sgit rev-parse 'HEAD^{commit}')"
+    fi
 
     if ! sgit_diff --quiet 2>/dev/null || ! sgit_diff --cached --quiet 2>/dev/null; then
       echo "note: work tree is dirty; only COMMITTED content at $hash is being approved" >&2
@@ -681,8 +747,14 @@ do_approve() {
     fi
 
     printf '%srepo:%s       %s\n' "$C_DIM" "$C_OFF" "$repo"
-    printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
-      "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
+    if [ -n "$sel_tag" ]; then
+      printf '%stag:%s        %s\n' "$C_DIM" "$C_OFF" "$sel_tag"
+      printf '%scommit:%s     %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
+        "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
+    else
+      printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
+        "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
+    fi
     if [ -n "$old_hash" ]; then
       printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
       echo
@@ -695,10 +767,10 @@ do_approve() {
       # reviewer's own act -- the diff itself already succeeded.
       diff_out="$(sgit_diff "$old_hash" "$hash")"
       printf '%s\n' "$diff_out" | page || true
-    elif [ "$trust_current" -eq 1 ]; then
+    elif [ "$trust" -eq 1 ]; then
       printf '%spinned:%s     (none)\n' "$C_DIM" "$C_OFF"
       echo
-      printf '%s!!! FIRST APPROVAL WITH --trust-current !!!%s\n' "$C_RED$C_B" "$C_OFF"
+      printf '%s!!! FIRST APPROVAL WITH --trust !!!%s\n' "$C_RED$C_B" "$C_OFF"
       printf '%s!!! The full tree at %s is being approved WITHOUT review. !!!%s\n' "$C_RED$C_B" "$hash" "$C_OFF"
       printf '%s!!! Everything already in this repo becomes trusted as-is. !!!%s\n' "$C_RED$C_B" "$C_OFF"
     else

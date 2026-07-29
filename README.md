@@ -10,11 +10,15 @@ pin file. Deploy tooling builds only `git+file://...?rev=<pinned hash>`.
 ## Commands
 
     pinned setup [--yes]              self-install + digest-pinned sudoers
-    pinned approve <repo> [--trust-current]
+    pinned approve <repo> [--tag <tag>] [--trust]
                                       human gate: review diff -> pin
-    pinned approve <repo> --signed-tag <tag> [--signed-tag <tag> ...]
+                                      (--tag: the tag's commit, not HEAD;
+                                      --trust: skip a first approval's
+                                      full-tree review, loudly)
+    pinned approve <repo> --signed-tag <tag> [--signed-tag <tag> ...] [--tag <tag>]
                                       signature gate: verify signed tag(s),
-                                      all naming one commit -> pin
+                                      all naming one commit -> pin (--tag:
+                                      an unsigned name that must agree)
     pinned sign <repo> <tag>          signed release tag at the PINNED hash
     pinned status <repo>
     pinned read <file> [--algo <name>] [--length <bits>]
@@ -41,7 +45,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   atomically. Consumers that want a friendly path use a root-owned
   symlink: `sudo ln -s "$(pinned slot <repo>)" /etc/nix-darwin/pinned-rev`.
 - First approval of a repo shows the full tree (diff from the empty
-  tree) unless `--trust-current` is passed, loudly.
+  tree) unless `--trust` is passed, loudly.
 - Signing exports the pin. `pinned sign` creates a perfectly normal
   signed release tag, but the hash it signs comes from the root-owned
   pin file: you read once at approve; nothing is re-read at sign time,
@@ -133,7 +137,7 @@ user-space can no longer touch, then run only what you read:
     less /usr/local/sbin/pinned-unverified   # THE read that anchors trust
     sudo mv /usr/local/sbin/pinned-unverified /usr/local/sbin/pinned
     sudo chmod 755 /usr/local/sbin/pinned
-    sudo /usr/local/sbin/pinned setup        # or: approve <repo> --trust-current
+    sudo /usr/local/sbin/pinned setup        # or: approve <repo> --trust
 
 The staging keeps two invariants visible in the filesystem: the final
 name only ever holds bytes a human has read, and the execute bit only
@@ -168,7 +172,7 @@ for that:
 1. Approve the config repo using the bootstrap above -- approve
    creates /etc/pinned itself, so setup never runs:
 
-       sudo /usr/local/sbin/pinned approve <repo> --trust-current
+       sudo /usr/local/sbin/pinned approve <repo> --trust
 
 2. Import the flake module and declare who may run it:
 
