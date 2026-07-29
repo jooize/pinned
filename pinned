@@ -35,9 +35,14 @@
 # second-machine bootstrap: clone anywhere, install the signer key once,
 # approve the release.
 #
-# Consumers read the pin from /etc/pinned/<encoded-repo-path>; for a
-# friendlier path, point a root-owned symlink at the slot, e.g.
-#   ln -s "/etc/pinned/$(pinned slot /path/to/repo)" /etc/nix-darwin/pinned-rev
+# Storage: /var/db/pinned/<user>/slots/<encoded-path>/ -- one root-owned
+# SLOT DIRECTORY per pinned path, holding exactly one of rev.<vcs> (repo
+# pin), pin.<algo> (file pin) or tombstone, plus optional annotations
+# (tag, signers/allowed_signers). The root-owned record DECLARES (which
+# VCS, which algorithm); the live world must CONFORM; anything
+# undeclared REFUSES. Consumers that want a friendly path point a
+# root-owned symlink at the slot dir, e.g.
+#   ln -s "$(pinned slot /path/to/repo)" /etc/nix-darwin/pinned-rev
 
 # Pin PATH to root-owned directories only, before anything runs. This is the
 # ONE place trust in command resolution is established: everything below calls
@@ -56,9 +61,12 @@ export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
 set -euo pipefail
 
-# Override-friendly defaults (handy for testing).
+# Override-friendly defaults (handy for testing). Root ceremonies never
+# inherit these from a caller: self-elevation goes through sudo's
+# env_reset, so the elevated run always sees the defaults.
 : "${INSTALL_TARGET:=/usr/local/sbin/pinned}"
-: "${PIN_ROOT:=/etc/pinned}"
+: "${PIN_ROOT:=/var/db/pinned}"
+: "${OLD_PIN_ROOT:=/etc/pinned}"
 
 # Colour only when stdout is a terminal (piping/redirecting stays clean).
 if [ -t 1 ]; then
@@ -77,7 +85,7 @@ setup_plan() {
 ${C_B}pinned setup will:${C_OFF}
 
   ${C_B}1.${C_OFF} install this script to ${C_CYN}$INSTALL_TARGET${C_OFF} ${C_DIM}(root:wheel 755)${C_OFF}
-  ${C_B}2.${C_OFF} create ${C_CYN}$PIN_ROOT${C_OFF} for root-owned pin files
+  ${C_B}2.${C_OFF} create ${C_CYN}$PIN_ROOT/${1}${C_OFF} for root-owned pin slots
   ${C_B}3.${C_OFF} write ${C_CYN}/etc/sudoers.d/pinned${C_OFF} granting ${C_B}${1}${C_OFF} sudo for the binary,
      digest-pinned to its sha256 ${C_DIM}(a swapped binary makes sudo refuse)${C_OFF};
      ${C_YEL}no NOPASSWD${C_OFF} -- sudo still authenticates every invocation
@@ -121,8 +129,12 @@ usage: pinned <action> [args]
                      names: sha256 sha384 sha512, blake2b-256/-384/-512,
                      blake3 (--length: blake3 only, default 256); blake2b
                      and blake3 need b2sum / b3sum in the trusted PATH
-  list               all pins: hash and repo path
-  slot <repo>        print the repo's pin-file path (for consumer symlinks)
+  list [--under <dir>]
+                     live pins in your tier: kind, digest, decoded path
+                     (--under: only paths below that directory)
+  slot <repo>        print the repo's slot directory (for consumer symlinks)
+  migrate            (sudo) one-shot move of flat /etc/pinned records
+                     into the per-user slot tree
   deploy [--dry-run] [--yes] [--flake <path>]
                      sync every git+file input of the system flake to its
                      approved rev and rebuild; always shows the root
@@ -164,10 +176,11 @@ else
 fi
 
 # Verify a path is root-owned with no group/other write. Refuses to trust
-# binaries or pin files reachable through a user-writable ancestor. Group is
-# root's own (wheel on macOS/BSD, root on Linux); either way the mode
-# allowlist below denies every group-write bit, so group identity carries no
-# write authority.
+# binaries or pin state reachable through a user-writable ancestor. The
+# OWNER must be root; the GROUP may be anything, because every mode the
+# allowlist admits denies group write -- group identity carries no write
+# authority (this is what lets the per-user pin tree run 0750
+# root:_<user>-pinned for group READ without weakening the walk).
 #
 # One carved-out exception: macOS's /run resolves to /private/var/run,
 # root:daemon 775 -- the OS's own home for the /run/current-system link, so
@@ -181,15 +194,15 @@ verify_root_owned_path() {
   owner="$(stat_owner "$path")"
   mode="$(stat_mode "$path")"
   case "$owner" in
-    root:wheel|root:root) ;;
     root:daemon)
       case "$mode" in
         775|755|750|700|555|550|500) return 0 ;;
       esac
       echo "ERROR: $path (root:daemon) has mode $mode, expected 775 or stricter" >&2
       return 1 ;;
+    root:*) ;;
     *)
-      echo "ERROR: $path is owned $owner, expected root:wheel (or root:root)" >&2
+      echo "ERROR: $path is owned $owner, expected owner root" >&2
       echo "       fix manually: sudo chown root:wheel $path && sudo chmod 755 $path" >&2
       return 1 ;;
   esac
@@ -199,6 +212,27 @@ verify_root_owned_path() {
       echo "ERROR: $path has mode $mode, expected 755 or stricter" >&2
       return 1
       ;;
+  esac
+}
+
+# The record-file variant: a slot's state file is authoritative only if
+# root wrote it and nothing non-root can rewrite it -- owner root, no
+# group/other write bit. (Directory modes go through
+# verify_root_owned_path; this one admits plain-file modes like 640.)
+verify_record_file() {
+  local f="$1" owner mode
+  owner="$(stat_owner "$f")" || return 1
+  case "$owner" in
+    root:*) ;;
+    *)
+      echo "ERROR: record $f is owned $owner, expected owner root" >&2
+      return 1 ;;
+  esac
+  mode="$(stat_mode "$f")"
+  case "$mode" in
+    *[2367]?|*[2367])
+      echo "ERROR: record $f has mode $mode (group/other-writable); refusing" >&2
+      return 1 ;;
   esac
 }
 
@@ -215,6 +249,14 @@ verify_ancestry() {
 log_action() {
   # visible via: log show --predicate 'eventMessage CONTAINS "pinned:"' --last 1d
   logger -t pinned "user=${inv:-$(id -un)} action=$1 repo=${2:-} hash=${3:-} result=${4:-ok}"
+}
+
+# Root ceremonies share one entry check: really root, really via sudo
+# (the human behind the ceremony is $SUDO_USER, recorded as $inv).
+require_root() {
+  [ "$EUID" -eq 0 ] || { echo "$1 must run as root (sudo pinned $1 ...)" >&2; exit 1; }
+  inv="${SUDO_USER:-}"
+  [ -n "$inv" ] || { echo "$1 must be invoked via sudo" >&2; exit 1; }
 }
 
 # ---- scrubbed git ----------------------------------------------------------
@@ -324,9 +366,120 @@ sgit() {
     -c core.fsmonitor=false -c core.pager=cat "$@"
 }
 
-# URL-encode % and / so a repo path becomes an unambiguous flat filename.
+# URL-encode % and / so a path becomes an unambiguous flat slot name;
+# decode reverses it (%2F first, then %25 -- the reverse order would
+# corrupt paths containing literal "%2F").
 encode() {
   printf '%s' "$1" | sed -e 's|%|%25|g' -e 's|/|%2F|g'
+}
+decode() {
+  printf '%s' "$1" | sed -e 's|%2F|/|g' -e 's|%25|%|g'
+}
+
+# ---- slot storage ----------------------------------------------------------
+# Layout: $PIN_ROOT/<user>/slots/<encoded-path>/ -- one root-owned dir per
+# pinned path -- and $PIN_ROOT/<user>/signers/allowed_signers. The wrapper
+# subdirs are the mount menu: a lane mounts its own slot dirs (or signers/
+# read-only), never <user>/ itself, which would disclose every pinned path.
+
+# The per-user tier an invocation operates on: the human behind sudo for
+# root ceremonies, the invoking user otherwise.
+tier_user() {
+  if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+    printf '%s\n' "$SUDO_USER"
+  else
+    id -un
+  fi
+}
+
+# One group name on every platform, after the owning tool (the
+# _<user>-locked convention; underscore is both Apple's system-account
+# prefix and Debian policy's). One literal spelling matters: absence
+# fails CLOSED to root-only 0700, so a misported per-platform name would
+# silently degrade, never error.
+pin_group() { printf '_%s-pinned' "$1"; }
+
+group_exists() {
+  if command -v getent >/dev/null 2>&1; then
+    getent group "$1" >/dev/null 2>&1
+  else
+    dscacheutil -q group -a name "$1" 2>/dev/null | grep -q '^name:'
+  fi
+}
+
+slot_dir_for() { printf '%s/%s/slots/%s\n' "$PIN_ROOT" "$1" "$(encode "$2")"; }
+
+# Create/re-assert the per-user subtree (root only). The group is
+# CONSUMED, never created -- the system configuration provisions it;
+# absent means root-only 0700, privacy over availability, and the first
+# root-side ceremony after the group appears re-asserts 0750 tree-wide.
+# Sets TREE_GRP/TREE_DMODE/TREE_FMODE for subsequent slot writes.
+ensure_tree() {
+  local u="$1" udir grp
+  udir="$PIN_ROOT/$u"
+  grp="$(pin_group "$u")"
+  install -d -m 755 -o root -g wheel "$PIN_ROOT"
+  if group_exists "$grp"; then
+    TREE_GRP="$grp" TREE_DMODE=750 TREE_FMODE=640
+  else
+    printf '%swarning: group %s does not exist -- %s stays root-only (0700) until it does%s\n' \
+      "$C_YEL" "$grp" "$udir" "$C_OFF" >&2
+    TREE_GRP=wheel TREE_DMODE=700 TREE_FMODE=600
+  fi
+  install -d -m "$TREE_DMODE" -o root -g "$TREE_GRP" \
+    "$udir" "$udir/slots" "$udir/signers"
+  # Deterministic sweep so a group arriving (or leaving) heals the whole
+  # tree, not just paths the current ceremony touches.
+  chown -R "root:$TREE_GRP" "$udir"
+  if [ "$TREE_DMODE" = 750 ]; then
+    chmod -R u=rwX,g=rX,o= "$udir"
+  else
+    chmod -R u=rwX,g=,o= "$udir"
+  fi
+}
+
+# Classify a slot directory. Sets slot_state (none|rev|pin|tombstone),
+# slot_file, slot_kind (git / sha256 / ... -- the declared verifier).
+# Structure rule: EXACTLY ONE of rev.<vcs> / pin.<algo> / tombstone;
+# more is a malformed slot and every consumer refuses fail-closed.
+inspect_slot() {
+  local d="$1" f n=0
+  slot_state=none slot_file="" slot_kind=""
+  [ -d "$d" ] || return 0
+  for f in "$d"/rev.* "$d"/pin.* "$d"/tombstone; do
+    [ -e "$f" ] || continue
+    n=$((n + 1)); slot_file="$f"
+    case "$f" in
+      */tombstone) slot_state=tombstone; slot_kind="" ;;
+      */rev.*)     slot_state=rev;  slot_kind="${f##*/rev.}" ;;
+      */pin.*)     slot_state=pin;  slot_kind="${f##*/pin.}" ;;
+    esac
+  done
+  if [ "$n" -gt 1 ]; then
+    slot_state=malformed; slot_file=""; slot_kind=""
+    echo "ERROR: malformed slot $d: more than one of rev.*/pin.*/tombstone" >&2
+    return 1
+  fi
+  return 0
+}
+
+# Write a slot's state file atomically and enforce exactly-one state:
+# stage inside the slot dir, remove competing state files, rename into
+# place. The transient stateless moment reads as "no slot" -- a verify
+# racing the rename refuses, i.e. fails closed. Callers run ensure_tree
+# first (it sets TREE_*).
+write_slot_state() {
+  local d="$1" name="$2" content="$3" tmp f
+  install -d -m "$TREE_DMODE" -o root -g "$TREE_GRP" "$d"
+  tmp="$(mktemp "$d/.stage.XXXXXX")"
+  printf '%s\n' "$content" >"$tmp"
+  chown "root:$TREE_GRP" "$tmp"
+  chmod "$TREE_FMODE" "$tmp"
+  for f in "$d"/rev.* "$d"/pin.* "$d"/tombstone; do
+    [ -e "$f" ] || continue
+    [ "$f" = "$d/$name" ] || rm -f "$f"
+  done
+  mv -f "$tmp" "$d/$name"
 }
 
 resolve_repo() {
@@ -337,34 +490,52 @@ resolve_repo() {
   # refusal into a misleading "not a git work tree".
   sgit rev-parse --is-inside-work-tree >/dev/null \
     || { echo "not a usable git work tree: $repo (git error above)" >&2; exit 1; }
-  default_pin_file="$PIN_ROOT/$(encode "$repo")"
+  default_slot="$(slot_dir_for "$(tier_user)" "$repo")"
 }
 
-read_pin() {
-  # Echoes pinned hash or nothing. Validates format so a tampered pin file
-  # can't smuggle arbitrary text into git argv.
-  local f="$1" hash
-  [ -f "$f" ] || return 0
-  hash="$(head -n1 "$f")"
-  case "$hash" in
+read_rev() {
+  # Echoes the slot's pinned rev, or nothing for no slot / no state.
+  # The slot DECLARES the VCS in the filename (rev.git); validation is
+  # exact per declaration -- rev.git is exactly 40 or 64 hex -- and an
+  # undeclared/unknown rev.<vcs> refuses outright. Also refuses
+  # tombstoned, file-pin and malformed slots: the caller asked for a
+  # repo rev, and anything else answering would be a lie.
+  local d="$1" rev
+  inspect_slot "$d" || return 1
+  case "$slot_state" in
+    none) return 0 ;;
+    rev)  ;;
+    tombstone)
+      echo "ERROR: slot $d is tombstoned (retired content); a new approval would reinstate it" >&2
+      return 1 ;;
+    pin)
+      echo "ERROR: slot $d holds a file pin, not a repo rev" >&2
+      return 1 ;;
+  esac
+  case "$slot_kind" in
+    git) ;;
+    *)
+      echo "ERROR: $slot_file declares unsupported VCS '$slot_kind'; refusing" >&2
+      return 1 ;;
+  esac
+  verify_record_file "$slot_file" || return 1
+  IFS= read -r rev <"$slot_file" || true
+  case "$rev" in
     *[!0-9a-f]*|'')
-      echo "ERROR: pin file $f is corrupt: '$hash'" >&2
+      echo "ERROR: rev file $slot_file is corrupt: '$rev'" >&2
       return 1
       ;;
   esac
-  # 40 (SHA-1) through 128 (SHA-512) hex chars: covers current git/hg
-  # hashes and leaves room for future backends (blake3, post-quantum).
-  [ "${#hash}" -ge 40 ] && [ "${#hash}" -le 128 ] \
-    || { echo "ERROR: pin file $f has bad hash length" >&2; return 1; }
-  printf '%s\n' "$hash"
+  # Exactly git's two object formats -- SHA-1 (40) or SHA-256 (64).
+  [ "${#rev}" -eq 40 ] || [ "${#rev}" -eq 64 ] \
+    || { echo "ERROR: rev file $slot_file has bad hash length for rev.git" >&2; return 1; }
+  printf '%s\n' "$rev"
 }
 
 # ---- setup -----------------------------------------------------------------
 
 do_setup() {
-  [ "$EUID" -eq 0 ] || { echo "setup must run as root (sudo $0 setup)" >&2; exit 1; }
-  inv="${SUDO_USER:-}"
-  [ -n "$inv" ] || { echo "setup must be invoked via sudo" >&2; exit 1; }
+  require_root setup
 
   local assume_yes=0
   while [ $# -gt 0 ]; do
@@ -402,9 +573,9 @@ do_setup() {
     echo "binary already at $target"
   fi
 
-  # 2. Pin root
-  install -d -m 755 -o root -g wheel "$PIN_ROOT"
-  echo "pin root: $PIN_ROOT"
+  # 2. Pin tree for the invoking user
+  ensure_tree "$inv"
+  echo "pin tree: $PIN_ROOT/$inv"
 
   # 3. Sudoers entry with binary-digest pin (validated before installing).
   #    sudo recomputes the binary's SHA-256 at every invocation and refuses
@@ -455,7 +626,7 @@ fi
 # back to this script's own path. Sits after the helper definitions so the
 # approve preview below can reuse them.
 case "$action" in
-  approve|setup)
+  approve|setup|migrate)
     if [ "$EUID" -ne 0 ]; then
       # setup: show the plan and confirm BEFORE sudo, so reading what it
       # will do never costs an authentication.
@@ -478,18 +649,20 @@ case "$action" in
       # orientation only -- the authoritative review re-derives everything
       # from the object store as root, after sudo.
       if [ "$action" = "approve" ]; then
-        preview_repo="" preview_tag="" skip_next=0 want_tag=0
+        preview_repo="" preview_tag="" skip_next=0 want_tag=0 file_mode=0
         for a in "$@"; do
           if [ "$want_tag" -eq 1 ]; then preview_tag="$a"; want_tag=0; continue; fi
           if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
           case "$a" in
             --signed-tag) skip_next=1 ;;
+            --file) file_mode=1; skip_next=1 ;;
+            --baseline|--algo) skip_next=1 ;;
             --tag) want_tag=1 ;;
             -*) ;;
             *) preview_repo="$a" ;;
           esac
         done
-        if [ -n "$preview_repo" ]; then
+        if [ -n "$preview_repo" ] && [ "$file_mode" -eq 0 ]; then
           resolve_repo "$preview_repo"
           # A bad --tag name dies HERE, pre-sudo -- failing early is the
           # point of the preview.
@@ -498,7 +671,9 @@ case "$action" in
           else
             preview_head="$(sgit rev-parse 'HEAD^{commit}')"
           fi
-          preview_pin="$(read_pin "$default_pin_file")" || preview_pin=""
+          # Errors silenced: the tree may be root-only pre-group, and the
+          # root-side re-derivation is authoritative anyway.
+          preview_pin="$(read_rev "$default_slot" 2>/dev/null)" || preview_pin=""
           # Same short-circuit the privileged side would take -- but here it
           # costs no authentication. The pin is root-owned; HEAD is the
           # repo the caller is looking at.
@@ -595,9 +770,7 @@ esac
 # ---- approve -----------------------------------------------------------------
 
 do_approve() {
-  [ "$EUID" -eq 0 ] || { echo "approve must run as root (sudo pinned approve <repo>)" >&2; exit 1; }
-  inv="${SUDO_USER:-}"
-  [ -n "$inv" ] || { echo "approve must be invoked via sudo" >&2; exit 1; }
+  require_root approve
 
   # Orthogonal surface: --tag selects WHICH commit (default HEAD) and, once
   # slots record names, what deploy declares; the evidence flags say WHY it
@@ -630,19 +803,23 @@ do_approve() {
     exit 1
   fi
   resolve_repo "$repo_arg"
-  local pin_file="$default_pin_file"
+  local slot="$default_slot"
+  if [ -n "$sel_tag" ]; then
+    sgit check-ref-format "refs/tags/$sel_tag" \
+      || { echo "invalid tag name: $sel_tag" >&2; exit 1; }
+  fi
 
-  # Create the pin root BEFORE the ancestry check -- approve must work on
-  # machines that never ran setup (declarative installs); install -d also
-  # re-asserts root:wheel 755 on an existing dir.
-  install -d -m 755 -o root -g wheel "$PIN_ROOT"
+  # Create the pin tree BEFORE the ancestry check -- approve must work on
+  # machines that never ran setup (declarative installs); ensure_tree also
+  # re-asserts ownership and modes on an existing tree.
+  ensure_tree "$inv"
 
-  # The pin file must live under a root-owned ancestry or the machine gate
+  # The record must live under a root-owned ancestry or the machine gate
   # is only as strong as the weakest writable dir on the way there.
-  verify_ancestry "$pin_file" || exit 1
+  verify_ancestry "$slot/rev.git" || exit 1
 
   local hash old_hash diff_out
-  old_hash="$(read_pin "$pin_file")" || exit 1
+  old_hash="$(read_rev "$slot")" || exit 1
 
   if [ "${#tag_args[@]}" -gt 0 ]; then
     # Signature gate: verify normally-signed release tags (git tag -s;
@@ -655,26 +832,23 @@ do_approve() {
         -*) echo "invalid tag name: $t" >&2; exit 1 ;;
       esac
     done
-    # Per-repo signers take precedence; the global file is the fallback.
-    # A key trusted to vouch for one repo shouldn't implicitly vouch for
-    # every repo on the machine; keep machine-wide keys in the global
-    # file deliberately.
-    local signers="${pin_file}.signers"
-    [ -f "$signers" ] || signers="$PIN_ROOT/allowed_signers"
+    # Per-slot signers take precedence; the user-tier file is the
+    # fallback. A key trusted to vouch for one repo shouldn't implicitly
+    # vouch for every repo on the machine; keep machine-wide keys in the
+    # user-tier file deliberately.
+    local signers="$slot/signers/allowed_signers"
+    [ -f "$signers" ] || signers="$PIN_ROOT/$inv/signers/allowed_signers"
     if [ ! -f "$signers" ]; then
       echo "ERROR: no allowed signers for this repo" >&2
-      echo "  install the signer's public key (git allowed-signers format) root-owned:" >&2
-      echo "    per-repo: sudo install -m 644 -o root -g wheel <file> ${pin_file}.signers" >&2
-      echo "    global:   sudo install -m 644 -o root -g wheel <file> $PIN_ROOT/allowed_signers" >&2
+      echo "  install the signer's public key with the signer ceremony:" >&2
+      echo "    per-repo: pinned signer add --repo $repo --file <pubkey> --principal <id>" >&2
+      echo "    user:     pinned signer add --file <pubkey> --principal <id>" >&2
       echo "  obtain the key OUT OF BAND (printed card, password manager," >&2
       echo "  existing trusted machine) -- never from this repo." >&2
       exit 1
     fi
     verify_root_owned_path "$PIN_ROOT" || exit 1
-    case "$(stat_owner "$signers")" in root:wheel|root:root) ;; *)
-      echo "ERROR: $signers is not root-owned (root:wheel / root:root)" >&2
-      exit 1 ;;
-    esac
+    verify_record_file "$signers" || exit 1
     # Every tag must verify AND name the same commit -- all-or-nothing;
     # a single failure leaves the pin unchanged.
     local t_hash
@@ -796,14 +970,8 @@ do_approve() {
       ;;
   esac
 
-  # Atomic pin write: stage in the (root-owned) pin dir, single rename.
-  local tmp
-  tmp="$(mktemp "$PIN_ROOT/.pin.XXXXXX")"
-  printf '%s\n' "$hash" >"$tmp"
-  chown root:wheel "$tmp"
-  chmod 644 "$tmp"
-  mv -f "$tmp" "$pin_file"
-  printf '%s✓ pinned:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" "$pin_file"
+  write_slot_state "$slot" rev.git "$hash"
+  printf '%s✓ pinned:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" "$slot/rev.git"
   log_action approve "$repo" "$hash"
 }
 
@@ -812,12 +980,12 @@ do_approve() {
 do_status() {
   inv="$(id -un)"
   resolve_repo "$@"
-  local pin_file="$default_pin_file" hash head_hash
-  hash="$(read_pin "$pin_file")" || exit 1
+  local slot="$default_slot" hash head_hash
+  hash="$(read_rev "$slot")" || exit 1
   head_hash="$(sgit rev-parse 'HEAD^{commit}')"
 
   printf '%srepo:%s       %s\n' "$C_DIM" "$C_OFF" "$repo"
-  printf '%spin:%s        %s\n' "$C_DIM" "$C_OFF" "$pin_file"
+  printf '%sslot:%s       %s\n' "$C_DIM" "$C_OFF" "$slot"
   if [ -z "$hash" ]; then
     printf '%spinned:%s     (none)\n' "$C_DIM" "$C_OFF"
   else
@@ -862,7 +1030,7 @@ do_sign() {
     || { echo "invalid tag name: $tag_name" >&2; exit 1; }
 
   local hash
-  hash="$(read_pin "$default_pin_file")" || exit 1
+  hash="$(read_rev "$default_slot")" || exit 1
   [ -n "$hash" ] || { echo "no pin for $repo -- approve first" >&2; exit 1; }
 
   # An existing tag may be signed IF it already points at the pinned rev
@@ -900,22 +1068,72 @@ do_sign() {
 # ---- list ------------------------------------------------------------------
 
 do_list() {
-  # All pins, one per line: short hash + decoded repo path. Unprivileged
-  # (pin files are world-readable). Decode order reverses encode's:
-  # %2F -> / first, then %25 -> %.
+  # Every live (non-tombstoned) pin in the invoking user's tier, one per
+  # line: declared kind (git / sha256 / ...), digest, decoded path.
+  # Unprivileged -- reading needs membership in the tier's group. Slot
+  # names never leave this function: consumers get decoded paths.
   inv="$(id -un)"
-  [ -d "$PIN_ROOT" ] || { echo "no pin root ($PIN_ROOT) -- run setup first" >&2; exit 1; }
-  local f name path hash found=0
-  for f in "$PIN_ROOT"/%2F*; do
-    [ -e "$f" ] || continue
-    found=1
-    name="$(basename "$f")"
-    path="$(printf '%s' "$name" | sed -e 's|%2F|/|g' -e 's|%25|%|g')"
-    if hash="$(read_pin "$f")"; then
-      printf '%s%s%s  %s\n' "$C_CYN" "$hash" "$C_OFF" "$path"
-    else
-      printf '%sCORRUPT%s  %s\n' "$C_RED$C_B" "$C_OFF" "$path"
+  local under=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --under)
+        [ $# -ge 2 ] || { echo "--under needs a directory" >&2; exit 1; }
+        under="$2"; shift 2 ;;
+      *) echo "unknown list option: $1" >&2; usage ;;
+    esac
+  done
+  if [ -n "$under" ]; then
+    # Matching is on DECODED paths at a component boundary (--under /a/b
+    # matches /a/b/c, never /a/bc), so normalize to an absolute path
+    # with no trailing slash.
+    case "$under" in
+      /*) ;;
+      *) under="$(pwd -P)/$under" ;;
+    esac
+    [ -d "$under" ] && under="$(readlink -f "$under")"
+    while [ "${under%/}" != "$under" ]; do under="${under%/}"; done
+    [ -n "$under" ] || under=/
+  fi
+
+  local sroot="$PIN_ROOT/$inv/slots"
+  [ -d "$PIN_ROOT" ] || { echo "no pin root ($PIN_ROOT) -- nothing approved yet" >&2; exit 1; }
+  if [ ! -d "$sroot" ]; then echo "(no pins)"; exit 0; fi
+  [ -r "$sroot" ] || {
+    echo "ERROR: cannot read $sroot -- are you in group $(pin_group "$inv")?" >&2
+    exit 1
+  }
+  local d path line digest found=0
+  for d in "$sroot"/*/; do
+    d="${d%/}"
+    [ -e "$d" ] || continue
+    path="$(decode "${d##*/}")"
+    if [ -n "$under" ]; then
+      case "$path" in
+        "$under"|"$under"/*) ;;
+        *) continue ;;
+      esac
     fi
+    if ! inspect_slot "$d" 2>/dev/null; then
+      printf '%sMALFORMED%s  %s\n' "$C_RED$C_B" "$C_OFF" "$path"
+      found=1; continue
+    fi
+    case "$slot_state" in
+      none|tombstone) continue ;;
+      rev)
+        if digest="$(read_rev "$d" 2>/dev/null)" && [ -n "$digest" ]; then
+          printf '%-11s %s%s%s  %s\n' "$slot_kind" "$C_CYN" "$digest" "$C_OFF" "$path"
+        else
+          printf '%sCORRUPT%s  %s\n' "$C_RED$C_B" "$C_OFF" "$path"
+        fi ;;
+      pin)
+        IFS= read -r line <"$slot_file" || line=""
+        digest="${line%%  *}"
+        case "$digest" in
+          *[!0-9a-f]*|'') printf '%sCORRUPT%s  %s\n' "$C_RED$C_B" "$C_OFF" "$path" ;;
+          *) printf '%-11s %s%s%s  %s\n' "$slot_kind" "$C_CYN" "$digest" "$C_OFF" "$path" ;;
+        esac ;;
+    esac
+    found=1
   done
   [ "$found" -eq 1 ] || echo "(no pins)"
 }
@@ -1114,11 +1332,97 @@ EOF
 # ---- slot ------------------------------------------------------------------
 
 do_slot() {
-  # Print the repo's pin-file path, for consumers and root-owned symlinks:
+  # Print the repo's slot directory, for consumers and root-owned
+  # symlinks (the rev lives at <slot>/rev.git):
   #   sudo ln -s "$(pinned slot <repo>)" /etc/nix-darwin/pinned-rev
   inv="$(id -un)"
   resolve_repo "$@"
-  printf '%s\n' "$default_pin_file"
+  printf '%s\n' "$default_slot"
+}
+
+# ---- migrate ---------------------------------------------------------------
+
+# One-shot move of the flat /etc/pinned records into the per-user slot
+# tree -- no compat shim, the old layout dies here. Old pin files become
+# rev.git slot state (all pre-slot pins were git revs), per-repo
+# <enc>.signers files become slot signers/allowed_signers, the global
+# allowed_signers joins the user tier. Re-points the
+# /etc/nix-darwin/pinned-rev symlink convention if it targets the old
+# root. Leftovers it does not recognize are surfaced, never deleted.
+do_migrate() {
+  require_root migrate
+  local old="$OLD_PIN_ROOT"
+  [ -d "$old" ] || { echo "nothing to migrate: $old does not exist"; exit 0; }
+
+  local f name
+  printf '%smigrating %s -> %s/%s%s\n' "$C_B" "$old" "$PIN_ROOT" "$inv" "$C_OFF"
+  for f in "$old"/%2F* "$old"/allowed_signers; do
+    [ -e "$f" ] || continue
+    printf '  %s\n' "$f"
+  done
+  local answer
+  printf '%sproceed? [y/N]%s ' "$C_B" "$C_OFF"
+  read -r answer </dev/tty
+  case "$answer" in
+    y|Y|yes) ;;
+    *) echo "aborted; nothing moved."; exit 2 ;;
+  esac
+
+  ensure_tree "$inv"
+  local moved=0 rev slotdir
+  for f in "$old"/%2F*; do
+    [ -e "$f" ] || continue
+    name="${f##*/}"
+    case "$name" in *.signers) continue ;; esac
+    IFS= read -r rev <"$f" || rev=""
+    case "$rev" in
+      *[!0-9a-f]*|'')
+        echo "ERROR: $f is corrupt ('$rev'); migration aborted" >&2
+        exit 1 ;;
+    esac
+    [ "${#rev}" -eq 40 ] || [ "${#rev}" -eq 64 ] \
+      || { echo "ERROR: $f has bad hash length for a git rev; migration aborted" >&2; exit 1; }
+    write_slot_state "$PIN_ROOT/$inv/slots/$name" rev.git "$rev"
+    rm -f "$f"
+    moved=$((moved + 1))
+  done
+  for f in "$old"/%2F*.signers; do
+    [ -e "$f" ] || continue
+    name="${f##*/}"; name="${name%.signers}"
+    slotdir="$PIN_ROOT/$inv/slots/$name/signers"
+    install -d -m "$TREE_DMODE" -o root -g "$TREE_GRP" \
+      "$PIN_ROOT/$inv/slots/$name" "$slotdir"
+    mv "$f" "$slotdir/allowed_signers"
+    moved=$((moved + 1))
+  done
+  if [ -f "$old/allowed_signers" ]; then
+    mv "$old/allowed_signers" "$PIN_ROOT/$inv/signers/allowed_signers"
+    moved=$((moved + 1))
+  fi
+  # mv preserves the old modes; one more sweep normalizes everything.
+  ensure_tree "$inv"
+
+  local link=/etc/nix-darwin/pinned-rev tgt
+  if [ -L "$link" ]; then
+    tgt="$(readlink "$link")"
+    case "$tgt" in
+      "$old"/*)
+        name="${tgt##*/}"
+        rm -f "$link"
+        ln -s "$PIN_ROOT/$inv/slots/$name" "$link"
+        printf '  %sre-pointed%s %s -> %s\n' "$C_GRN" "$C_OFF" "$link" "$PIN_ROOT/$inv/slots/$name"
+        ;;
+    esac
+  fi
+
+  if rmdir "$old" 2>/dev/null; then
+    printf '%s✓ migrated %s record(s); %s removed%s\n' "$C_GRN" "$moved" "$old" "$C_OFF"
+  else
+    printf '%s! %s not empty after migrating %s record(s) -- inspect it by hand:%s\n' \
+      "$C_YEL" "$old" "$moved" "$C_OFF"
+    ls -l "$old" || true
+  fi
+  log_action migrate "$old" "" "moved=$moved"
 }
 
 # ---- deploy ----------------------------------------------------------------
@@ -1204,21 +1508,19 @@ EOF
   local SED_I=()
   if sed --version >/dev/null 2>&1; then SED_I=(sed -i); else SED_I=(sed -i ''); fi
 
-  local sed_exprs=() updates=0 unpinned=0 pin_file approved ahead
+  local sed_exprs=() updates=0 unpinned=0 slot approved ahead
   printf '%sgit+file inputs%s %s(%s)%s\n' "$C_B" "$C_OFF" "$C_DIM" "$FLAKE" "$C_OFF"
   while IFS='|' read -r path flake_rev; do
     name="${path##*/}"
-    pin_file="$PIN_ROOT/$(encode "$path")"
-    if [ ! -r "$pin_file" ]; then
+    slot="$(slot_dir_for "$(id -un)" "$path")"
+    # read_rev refuses tombstoned/malformed/unknown-VCS slots -- a
+    # deploy through a retired or undeclared record must not proceed.
+    approved="$(read_rev "$slot")" || exit 1
+    if [ -z "$approved" ]; then
       unpinned=$((unpinned + 1))
       printf '  %-*s  %snix flake %s%s   %s! no pin slot -- deploys as hand-edited%s\n' \
         "$width" "$name" "$C_CYN" "${flake_rev:0:10}" "$C_OFF" "$C_YEL" "$C_OFF"
       continue
-    fi
-    IFS= read -r approved < "$pin_file"
-    if ! printf '%s' "$approved" | grep -qE '^[0-9a-f]{40,128}$'; then
-      printf '%serror: pin file %s is corrupt.%s\n' "$C_RED$C_B" "$pin_file" "$C_OFF" >&2
-      exit 1
     fi
     if [ "$flake_rev" = "$approved" ]; then
       printf '  %-*s  %spinned %s%s = %snix flake%s   %s✓ in sync%s\n' \
@@ -1316,9 +1618,10 @@ case "$action" in
   approve) do_approve "$@" ;;
   sign)    do_sign "$@" ;;
   status)  do_status "$@" ;;
-  list)    do_list ;;
+  list)    do_list "$@" ;;
   slot)    do_slot "$@" ;;
   review)  do_review "$@" ;;
+  migrate) do_migrate "$@" ;;
   deploy)  do_deploy "$@" ;;
   *)       usage ;;
 esac
