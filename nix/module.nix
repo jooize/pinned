@@ -99,20 +99,61 @@ in
 
   };
 
-  config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = cfg.users != [ ];
-        message = "security.pinned.users must name at least one user";
-      }
-      {
-        assertion = lib.all validUser cfg.users;
-        message = "security.pinned.users: user names must match [A-Za-z_][A-Za-z0-9_-]* (they are spliced into sudoers)";
-      }
-    ];
+  config = lib.mkIf cfg.enable (lib.mkMerge [
+    {
+      assertions = [
+        {
+          assertion = cfg.users != [ ];
+          message = "security.pinned.users must name at least one user";
+        }
+        {
+          assertion = lib.all validUser cfg.users;
+          message = "security.pinned.users: user names must match [A-Za-z_][A-Za-z0-9_-]* (they are spliced into sudoers)";
+        }
+      ];
 
-    environment.systemPackages = [ package ];
+      environment.systemPackages = [ package ];
 
-    environment.etc."sudoers.d/pinned".source = sudoersFile;
-  };
+      environment.etc."sudoers.d/pinned".source = sudoersFile;
+    }
+
+    # Per-user read-group `_<user>-pinned`, one per security.pinned.users
+    # entry. pinned chgrp's /var/db/pinned/<user> to it BY NAME during
+    # ceremonies and fails CLOSED to `0700 root` while it is absent (privacy
+    # over availability), so provisioning belongs HERE, with the tool that
+    # owns the tree -- a consumer module cannot be the thing every deployment
+    # depends on for its own records to be readable.
+    #
+    # Per-OS split: NixOS declares the group (auto-allocated system gid);
+    # nix-darwin's users.groups demands an explicit gid and has no allocator,
+    # and an unpinned `dseditgroup -o create` may land a gid >=500 that the
+    # login window would SHOW -- so Darwin scans for the lowest free gid in
+    # the hidden 401..499 service range and creates imperatively (idempotent,
+    # root, activation-time). Membership is asserted on every activation.
+    (lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
+      system.activationScripts.extraActivation.text = lib.mkAfter (lib.concatMapStrings (user: ''
+        if ! /usr/bin/dscl . -read "/Groups/_${user}-pinned" PrimaryGroupID >/dev/null 2>&1; then
+          taken="$(/usr/bin/dscl . -list /Groups PrimaryGroupID | /usr/bin/awk '{print $2}')"
+          pinned_gid=""
+          for c in $(/usr/bin/seq 401 499); do
+            if ! printf '%s\n' "$taken" | /usr/bin/grep -qx "$c"; then pinned_gid="$c"; break; fi
+          done
+          if [ -n "$pinned_gid" ]; then
+            echo "creating group _${user}-pinned (gid $pinned_gid, hidden range)..." >&2
+            /usr/sbin/dseditgroup -o create -i "$pinned_gid" -r ${lib.escapeShellArg "Root-owned pinned approval records ${user} may read"} "_${user}-pinned" || true
+          else
+            echo "creating group _${user}-pinned (no free gid in 401-499; auto)..." >&2
+            /usr/sbin/dseditgroup -o create -r ${lib.escapeShellArg "Root-owned pinned approval records ${user} may read"} "_${user}-pinned" || true
+          fi
+        fi
+        /usr/sbin/dseditgroup -o edit -a "${user}" -t user "_${user}-pinned" 2>/dev/null || true
+      '') cfg.users);
+    })
+    (lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
+      users.groups = lib.listToAttrs (map (user: {
+        name = "_${user}-pinned";
+        value = { members = [ user ]; };
+      }) cfg.users);
+    })
+  ]);
 }
