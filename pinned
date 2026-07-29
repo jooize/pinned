@@ -404,11 +404,51 @@ sgit() {
 # URL-encode % and / so a path becomes an unambiguous flat slot name;
 # decode reverses it (%2F first, then %25 -- the reverse order would
 # corrupt paths containing literal "%2F").
+# Slot names are percent-encoded absolute paths. Encode every byte outside
+# [A-Za-z0-9._-] rather than just % and /: a slot name is a DIRECTORY name,
+# and an unescaped shell or glob metacharacter in one is a hazard waiting for
+# a caller that forgets a quote. A project at /Users/x/foo[1], or the very
+# real /Library/Application Support/..., would otherwise land literally in
+# the name -- the space merely looked ugly in error output, but the bracket
+# would have made `for f in "$d"/pin.*`-style globs match the wrong slot, or
+# nothing at all. An allowlist is the only version of this that stays correct
+# as call sites change.
+#
+# Paths built only of safe bytes and "/" encode exactly as before, so slots
+# created by the previous rule keep their names and need no migration.
+# LC_ALL=C so the walk is over BYTES: a UTF-8 path encodes one byte at a
+# time and round-trips exactly, instead of depending on the locale's idea of
+# a character.
 encode() {
-  printf '%s' "$1" | sed -e 's|%|%25|g' -e 's|/|%2F|g'
+  printf '%s' "$1" | LC_ALL=C awk '
+    BEGIN { for (i = 1; i < 256; i++) ord[sprintf("%c", i)] = i }
+    {
+      out = ""
+      for (i = 1; i <= length($0); i++) {
+        c = substr($0, i, 1)
+        if (c ~ /^[A-Za-z0-9._-]$/) out = out c
+        else out = out sprintf("%%%02X", ord[c])
+      }
+      printf "%s", out
+    }'
 }
 decode() {
-  printf '%s' "$1" | sed -e 's|%2F|/|g' -e 's|%25|%|g'
+  printf '%s' "$1" | LC_ALL=C awk '
+    function unhex(h,   digits, v, j) {
+      digits = "0123456789ABCDEF"; v = 0
+      for (j = 1; j <= 2; j++) v = v * 16 + index(digits, toupper(substr(h, j, 1))) - 1
+      return v
+    }
+    {
+      out = ""; n = length($0)
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1)
+        if (c == "%" && i + 2 <= n && substr($0, i + 1, 2) ~ /^[0-9A-Fa-f][0-9A-Fa-f]$/) {
+          out = out sprintf("%c", unhex(substr($0, i + 1, 2))); i += 2
+        } else out = out c
+      }
+      printf "%s", out
+    }'
 }
 
 # ---- slot storage ----------------------------------------------------------
@@ -1198,6 +1238,12 @@ do_approve() {
   esac
 
   write_slot_state "$slot" rev.git "$hash"
+  # Say so. The --file ceremony has always confirmed each record; the repo
+  # ceremony printed nothing unless a tag happened to be declared, so a plain
+  # approve answered `y` and returned to the prompt in silence -- which reads
+  # exactly like a no-op in the one place a user most needs to know a record
+  # was written.
+  printf '%s✓ approved:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" "$slot/rev.git"
   # The declared release name (optional `tag` annotation, repo slots
   # only): deploy syncs the input's ref= to it after cross-checking the
   # live tag still names the pinned rev. The --tag selector is the
@@ -1269,7 +1315,19 @@ do_approve_files() {
       failed=$((failed + 1)); continue
     fi
     slot="$(slot_dir_for "$inv" "$path")"
-    verify_ancestry "$slot/pin.$file_algo" || exit 1
+    # Ancestry is checked from the deepest component that EXISTS. Checking
+    # from the pin file unconditionally meant the walk included $slot, which
+    # a first-ever approval has not created yet -- stat failed, the empty
+    # owner read as "not root", and every previously unpinned path was
+    # refused with a chown/chmod remediation for a directory that did not
+    # exist. write_slot_state creates the slot root-owned when it records,
+    # so there is nothing to distrust until then; an existing slot is still
+    # walked in full.
+    if [ -d "$slot" ]; then
+      verify_ancestry "$slot/pin.$file_algo" || exit 1
+    else
+      verify_ancestry "$slot" || exit 1
+    fi
 
     old_digest="" old_label="" state_note=""
     if ! inspect_slot "$slot" 2>/dev/null; then
