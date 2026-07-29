@@ -86,6 +86,14 @@ else
 fi
 NL=$'\n'
 
+# Separate gate for the two review-display highlighters ported from the
+# hardening repo's claude-shim.bash (color_diff, highlight_json): they keep
+# their origin's condition -- a tty AND no NO_COLOR (https://no-color.org).
+# pinned's palette above predates that and is tty-gated only, so this is
+# deliberately not folded into it: with NO_COLOR set, the reviewed content
+# stays byte-for-byte what it was before those two existed.
+if [ -n "$C_OFF" ] && [ -z "${NO_COLOR:-}" ]; then HL_ON=1; else HL_ON=''; fi
+
 # What setup would do -- shown BEFORE any sudo prompt, so nobody has to
 # authenticate just to read the plan. $1 = the user the sudoers entry names.
 setup_plan() {
@@ -320,6 +328,99 @@ page() {
   else
     cat
   fi
+}
+
+# ---- review-display highlighters -------------------------------------------
+#
+# Both are ports of the orientation preview's renderers in the hardening
+# repo's nix/claude-shim.bash (color_diff, highlight_json) -- kept close to
+# the originals on purpose, so a future diff between the two copies stays
+# readable. Two deliberate deviations, both about byte fidelity in a display
+# that a trust decision is made from:
+#   * stdin instead of a file argument, so the `review` verb can colour the
+#     ONE buffer it read rather than taking a second look at the file;
+#   * LC_ALL=C, so awk indexes bytes and an invalid multibyte sequence
+#     survives the round trip unchanged.
+# They decorate; they never transform. Colour off (not a tty, or NO_COLOR)
+# means byte-identical passthrough.
+
+# Colorized unified diff. Colour is applied per line-prefix, never inside a
+# line, so the bytes stay greppable; $0 is reprinted verbatim.
+color_diff() {
+  if [ -n "$HL_ON" ]; then
+    LC_ALL=C awk -v R=$'\033[31m' -v G=$'\033[32m' -v C=$'\033[1;36m' -v B=$'\033[1m' -v O=$'\033[0m' '
+      /^(\+\+\+|---) / { print B $0 O; next }
+      /^@@/            { print C $0 O; next }
+      /^\+/            { print G $0 O; next }
+      /^-/             { print R $0 O; next }
+                       { print }
+    '
+  else
+    cat
+  fi
+}
+
+# Byte-preserving JSON syntax highlighter. It inserts ANSI ONLY between the
+# content's original characters -- it never reindents, reorders, or reparses
+# -- so what is displayed is EXACTLY what is hashed. (A trust prompt must not
+# pretty-print: jq -C would collapse duplicate keys, drop trailing junk, and
+# normalise escapes, hiding exactly the tricks a hostile settings file might
+# use.) Colouring is best-effort per line -- a malformed token only
+# mis-colours; the text stays byte-exact. Strings are assumed single-line
+# (true for JSON, which escapes newlines as \n), so it scans line-by-line.
+highlight_json() {
+  if [ -z "$HL_ON" ] || ! command -v awk >/dev/null 2>&1; then
+    cat; return
+  fi
+  LC_ALL=C awk -v K=$'\033[1;36m' -v S=$'\033[0;32m' -v N=$'\033[0;33m' \
+      -v L=$'\033[1;35m' -v P=$'\033[2m' -v O=$'\033[0m' '
+    {
+      line = $0; n = length(line); i = 1; out = ""
+      while (i <= n) {
+        c = substr(line, i, 1)
+        if (c == "\"") {                                  # string -> key if a : follows
+          s = c; i++
+          while (i <= n) {
+            d = substr(line, i, 1); s = s d; i++
+            if (d == "\\") { s = s substr(line, i, 1); i++; continue }
+            if (d == "\"") break
+          }
+          j = i
+          while (j <= n && substr(line, j, 1) ~ /[ \t]/) j++
+          if (substr(line, j, 1) == ":") out = out K s O; else out = out S s O
+        }
+        else if (c ~ /[-0-9]/) {                          # number
+          t = c; i++
+          while (i <= n && substr(line, i, 1) ~ /[-+0-9.eE]/) { t = t substr(line, i, 1); i++ }
+          out = out N t O
+        }
+        else if (substr(line, i, 4) == "true" || substr(line, i, 4) == "null") { out = out L substr(line, i, 4) O; i += 4 }
+        else if (substr(line, i, 5) == "false") { out = out L "false" O; i += 5 }
+        else if (c ~ /[][{}:,]/) { out = out P c O; i++ } # punctuation
+        else { out = out c; i++ }                         # whitespace / other
+      }
+      print out
+    }
+  '
+}
+
+# May this content be routed through highlight_json? Decoration only: a "no"
+# shows the raw bytes, exactly as before these functions existed. Both guards
+# are about fidelity, not taste:
+#   * it must parse as JSON -- the same test the shim's preview uses to decide
+#     a file is JSON, and jq also rejects raw NUL bytes, which awk would
+#     silently drop from the display;
+#   * its last byte must be a newline, because awk terminates a final line
+#     that lacks one, and this display may not invent a byte.
+# The newline is the caller's to report ($1): checking it here would need a
+# second pass over the same stdin. jq absent from the trusted PATH -> no
+# colour, never a guess.
+# $1 = 1 when the content ends in a newline; stdin = the exact bytes.
+highlight_json_ok() {
+  [ -n "$HL_ON" ] || return 1
+  [ "${1:-}" = 1 ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  jq -e . >/dev/null 2>&1
 }
 
 # Review diff. NEVER call `sgit diff` directly for anything a human reads:
@@ -968,11 +1069,22 @@ case "$action" in
       # details separating what was checked here (root ownership) from
       # what the system enforces at exec (the sudoers digest).
       if [ "$action" = "approve" ] && [ "$elev" = "$INSTALL_TARGET" ]; then
-        cmd_disp="sudo -- $elev $action"
+        # Colored by role, the same way deploy renders its command below:
+        # sudo bold, command name cyan, verb and flags plain, file paths
+        # yellow. The color codes go into the DISPLAY string only -- the
+        # exec below builds its argv from the variables, never from this.
+        cmd_disp="${C_B}sudo${C_OFF} -- ${C_CYN}${elev}${C_OFF} $action"
         for a in "$@"; do
+          # Quote first (unchanged: anything outside the safe set gets
+          # single quotes, so the line stays pasteable), then color the
+          # quoted token: flags plain, everything else is a path.
           case "$a" in
-            *[!A-Za-z0-9_/.:=-]*) cmd_disp="$cmd_disp '$a'" ;;
-            *)                    cmd_disp="$cmd_disp $a" ;;
+            *[!A-Za-z0-9_/.:=-]*) a_disp="'$a'" ;;
+            *)                    a_disp="$a" ;;
+          esac
+          case "$a" in
+            -*) cmd_disp="$cmd_disp $a_disp" ;;
+            *)  cmd_disp="$cmd_disp ${C_YEL}${a_disp}${C_OFF}" ;;
           esac
         done
         printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
@@ -1311,7 +1423,7 @@ do_approve_files() {
   ensure_tree "$inv"
 
   local i=0 n="${#files[@]}" f base path slot line new_digest old_digest old_label
-  local base_ok recorded=0 declined=0 failed=0 answer state_note
+  local base_ok recorded=0 declined=0 failed=0 answer state_note nl
   while [ "$i" -lt "$n" ]; do
     f="${files[$i]}"; base="${file_base[$i]}"; i=$((i + 1))
     [ "$i" -eq 1 ] || echo
@@ -1392,7 +1504,7 @@ do_approve_files() {
         base_ok=1
         printf '%s--- diff vs the approved baseline (exactly the bytes being approved) ---%s\n' "$C_B" "$C_OFF"
         line="$(diff -u "$FROZEN_COPY" "$fro" || true)"
-        printf '%s\n' "$line" | page || true
+        printf '%s\n' "$line" | color_diff | page || true
       fi
     fi
     if [ "$base_ok" -eq 0 ]; then
@@ -1400,7 +1512,17 @@ do_approve_files() {
         printf '%snote: baseline does not re-hash to the approved record; showing the full file%s\n' "$C_YEL" "$C_OFF"
       fi
       printf '%s--- %s (exactly the bytes being approved) ---%s\n' "$C_B" "$path" "$C_OFF"
-      page <"$fro" || true
+      # Syntax colour only when the frozen copy is JSON that awk can carry
+      # through unchanged; the digest above came from the file, not from
+      # this stream, and highlight_json only inserts SGR codes between the
+      # bytes it is given.
+      nl=''
+      [ "$(tail -c1 -- "$fro" | wc -l)" -eq 1 ] && nl=1
+      if highlight_json_ok "$nl" <"$fro"; then
+        highlight_json <"$fro" | page || true
+      else
+        page <"$fro" || true
+      fi
     fi
     echo
 
@@ -1996,12 +2118,21 @@ do_review() {
   # newlines, which plain $(cat) strips -- so $content is the file's bytes
   # EXACTLY, and the digest below equals `shasum -a <algo> <file>`. Matching
   # the ordinary check matters: you can verify this tool with any other tool.
-  local content hash
+  local content hash nl
   content="$(cat -- "$file"; printf x)" || { echo "cannot read: $file" >&2; exit 1; }
   content="${content%x}"
 
   printf '%s--- %s (exactly the bytes being hashed) ---%s\n' "$C_B" "$file" "$C_OFF"
-  printf '%s' "$content" | page || true
+  # Both the guard and the highlighter are fed $content, not the file, so the
+  # single-read rule holds; the digest below still comes from $content too,
+  # never from the coloured stream.
+  nl=''
+  [ "${content%"$NL"}" != "$content" ] && nl=1
+  if printf '%s' "$content" | highlight_json_ok "$nl"; then
+    printf '%s' "$content" | highlight_json | page || true
+  else
+    printf '%s' "$content" | page || true
+  fi
 
   # Digest and the command that recomputes it, kept in lockstep: $hash_cmd is
   # emitted into the wrapper verbatim, so the two sides cannot drift.
