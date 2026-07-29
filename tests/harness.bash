@@ -34,7 +34,7 @@
 #
 # KNOWN COVERAGE GAPS (deliberate):
 #   - no real sudo, so the self-elevation preview, the sudoers digest pin,
-#     `setup`, `migrate` and `deploy` are untested here
+#     `setup` and `deploy` are untested here
 #   - signed-tag approval / `signer` / `sign` need an SSH agent and keys
 #   - the group-read tier (0750 root:_<user>-pinned) cannot be built without
 #     root: the stub always takes ensure_tree's no-group 0700 branch
@@ -114,11 +114,11 @@ need '^  inv="\${SUDO_USER:-}"$'                            1 'require_root SUDO
 need '^  \[ -n "\$inv" \] ||'                               1 'require_root sudo check'
 need '^    root:\*) ;;$'                                    2 'owner allowlists'
 need '^  install -d -m 755 -o root -g wheel "\$PIN_ROOT"$'  1 'pin-root install'
-need '-o root -g "\$TREE_GRP" '                             4 'slot-tree installs'
+need '-o root -g "\$TREE_GRP" '                             3 'slot-tree installs'
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              4 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
-need '</dev/tty'                                           10 'ceremony tty reads'
+need '</dev/tty'                                            9 'ceremony tty reads'
 need '^# ---- setup ---'                                    1 'library cut marker'
 
 sed -e 's/if \[ "\$EUID" -ne 0 \]; then/if false; then/' \

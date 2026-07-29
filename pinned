@@ -22,7 +22,7 @@
 #   pinned deploy [--dry-run]                 sync flake inputs to approved revs, rebuild
 #   pinned setup [--yes]                      provision sudoers digest pin; self-install
 #
-# approve, setup, migrate, tombstone and signer add/remove self-elevate
+# approve, setup, tombstone and signer add/remove self-elevate
 # via sudo (re-exec of the installed root-owned binary); sign runs as
 # the user because it needs the SSH agent.
 #
@@ -73,7 +73,6 @@ set -euo pipefail
 # env_reset, so the elevated run always sees the defaults.
 : "${INSTALL_TARGET:=/usr/local/sbin/pinned}"
 : "${PIN_ROOT:=/var/db/pinned}"
-: "${OLD_PIN_ROOT:=/etc/pinned}"
 
 # Colour only when stdout is a terminal (piping/redirecting stays clean).
 if [ -t 1 ]; then
@@ -176,8 +175,6 @@ usage: pinned <action> [args]
                      live pins in your tier: kind, digest, decoded path
                      (--under: only paths below that directory)
   slot <repo>        print the repo's slot directory (for consumer symlinks)
-  migrate            (sudo) one-shot move of flat /etc/pinned records
-                     into the per-user slot tree
   deploy [--dry-run] [--yes] [--flake <path>]
                      sync every git+file input of the system flake to its
                      approved rev and rebuild; always shows the root
@@ -949,7 +946,7 @@ fi
 # back to this script's own path. Sits after the helper definitions so the
 # approve preview below can reuse them.
 case "$action" in
-  approve|setup|migrate|tombstone)
+  approve|setup|tombstone)
     if [ "$EUID" -ne 0 ]; then
       # setup: show the plan and confirm BEFORE sudo, so reading what it
       # will do never costs an authentication.
@@ -2423,91 +2420,6 @@ EOF
   [ "$found" -eq 1 ] || echo "(no signers)"
 }
 
-# ---- migrate ---------------------------------------------------------------
-
-# One-shot move of the flat /etc/pinned records into the per-user slot
-# tree -- no compat shim, the old layout dies here. Old pin files become
-# rev.git slot state (all pre-slot pins were git revs), per-repo
-# <enc>.signers files become slot signers/allowed_signers, the global
-# allowed_signers joins the user tier. Re-points the
-# /etc/nix-darwin/pinned-rev symlink convention if it targets the old
-# root. Leftovers it does not recognize are surfaced, never deleted.
-do_migrate() {
-  require_root migrate
-  local old="$OLD_PIN_ROOT"
-  [ -d "$old" ] || { echo "nothing to migrate: $old does not exist"; exit 0; }
-
-  local f name
-  printf '%smigrating %s -> %s/%s%s\n' "$C_B" "$old" "$PIN_ROOT" "$inv" "$C_OFF"
-  for f in "$old"/%2F* "$old"/allowed_signers; do
-    [ -e "$f" ] || continue
-    printf '  %s\n' "$f"
-  done
-  local answer
-  printf '%sproceed? [y/N]%s ' "$C_B" "$C_OFF"
-  read -r answer </dev/tty
-  case "$answer" in
-    y|Y|yes) ;;
-    *) echo "aborted; nothing moved."; exit 2 ;;
-  esac
-
-  ensure_tree "$inv"
-  local moved=0 rev slotdir
-  for f in "$old"/%2F*; do
-    [ -e "$f" ] || continue
-    name="${f##*/}"
-    case "$name" in *.signers) continue ;; esac
-    IFS= read -r rev <"$f" || rev=""
-    case "$rev" in
-      *[!0-9a-f]*|'')
-        echo "ERROR: $f is corrupt ('$rev'); migration aborted" >&2
-        exit 1 ;;
-    esac
-    [ "${#rev}" -eq 40 ] || [ "${#rev}" -eq 64 ] \
-      || { echo "ERROR: $f has bad hash length for a git rev; migration aborted" >&2; exit 1; }
-    write_slot_state "$PIN_ROOT/$inv/slots/$name" rev.git "$rev"
-    rm -f "$f"
-    moved=$((moved + 1))
-  done
-  for f in "$old"/%2F*.signers; do
-    [ -e "$f" ] || continue
-    name="${f##*/}"; name="${name%.signers}"
-    slotdir="$PIN_ROOT/$inv/slots/$name/signers"
-    install -d -m "$TREE_DMODE" -o root -g "$TREE_GRP" \
-      "$PIN_ROOT/$inv/slots/$name" "$slotdir"
-    mv "$f" "$slotdir/allowed_signers"
-    moved=$((moved + 1))
-  done
-  if [ -f "$old/allowed_signers" ]; then
-    mv "$old/allowed_signers" "$PIN_ROOT/$inv/signers/allowed_signers"
-    moved=$((moved + 1))
-  fi
-  # mv preserves the old modes; one more sweep normalizes everything.
-  ensure_tree "$inv"
-
-  local link=/etc/nix-darwin/pinned-rev tgt
-  if [ -L "$link" ]; then
-    tgt="$(readlink "$link")"
-    case "$tgt" in
-      "$old"/*)
-        name="${tgt##*/}"
-        rm -f "$link"
-        ln -s "$PIN_ROOT/$inv/slots/$name" "$link"
-        printf '  %sre-pointed%s %s -> %s\n' "$C_GRN" "$C_OFF" "$link" "$PIN_ROOT/$inv/slots/$name"
-        ;;
-    esac
-  fi
-
-  if rmdir "$old" 2>/dev/null; then
-    printf '%s✓ migrated %s record(s); %s removed%s\n' "$C_GRN" "$moved" "$old" "$C_OFF"
-  else
-    printf '%s! %s not empty after migrating %s record(s) -- inspect it by hand:%s\n' \
-      "$C_YEL" "$old" "$moved" "$C_OFF"
-    ls -l "$old" || true
-  fi
-  log_action migrate "$old" "" "moved=$moved"
-}
-
 # ---- deploy ----------------------------------------------------------------
 # The acting consumer, merged into this binary (user decision 2026-07-28):
 # one file to hand-read at bootstrap, and the sudoers digest attests the
@@ -2753,7 +2665,6 @@ case "$action" in
   list)      do_list "$@" ;;
   slot)      do_slot "$@" ;;
   review)    do_review "$@" ;;
-  migrate)   do_migrate "$@" ;;
   deploy)    do_deploy "$@" ;;
   *)         usage ;;
 esac

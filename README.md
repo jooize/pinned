@@ -50,7 +50,6 @@ unknown declarations refuse outright.
                                       one read, shown and hashed; no record
     pinned list [--under <dir>]       live pins: kind, digest, path
     pinned slot <repo>                print the repo's slot directory
-    pinned migrate                    one-shot port of flat /etc/pinned
 
     pinned deploy [--dry-run] [--yes] [--flake <path>]
                                       sync every git+file input of the
@@ -59,7 +58,7 @@ unknown declarations refuse outright.
                                       shows the root commands first,
                                       never self-elevates
 
-approve, setup, migrate, tombstone and signer add/remove self-elevate
+approve, setup, tombstone and signer add/remove self-elevate
 via sudo (re-exec of the installed root-owned binary). sign and review
 run as you: sign needs your SSH agent, review writes nothing. The verb
 triple: `review` rehearses (no record), `approve` records, `verify`
