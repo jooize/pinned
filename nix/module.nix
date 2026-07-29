@@ -97,6 +97,27 @@ in
       '';
     };
 
+    package = lib.mkOption {
+      type = lib.types.package;
+      readOnly = true;
+      default = package;
+      defaultText = lib.literalMD "the script this module installs";
+      description = ''
+        The pinned package this module builds and installs, exposed so a
+        consumer can hand the SAME derivation to something that needs its
+        own copy -- a container image, a VM guest flake -- without
+        rebuilding it from source.
+
+        Read-only on purpose: these are the bytes the sudoers Digest_Spec
+        commits to, so a consumer's copy is byte-identical to the
+        installed one by construction rather than by convention. Rebuilding
+        it independently would reintroduce exactly the drift window this
+        module's single-scriptText design exists to close, and a copy whose
+        `installPath` anchor disagreed would re-exec a path that does not
+        exist when it self-elevates.
+      '';
+    };
+
   };
 
   config = lib.mkIf cfg.enable (lib.mkMerge [
