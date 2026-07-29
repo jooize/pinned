@@ -357,6 +357,22 @@ color_diff() {
   fi
 }
 
+# Display-only shape line for a captured diff: hunk count and +/- line counts,
+# so a trimmed-context view still states how many places changed. Read from the
+# SAME buffer that is about to be shown, and structurally unable to change it --
+# every changed line prints regardless of this count. The "---"/"+++" header
+# lines are excluded; a removed line whose own text starts with "--" collides
+# with that prefix and is undercounted (cosmetic, same as color_diff's).
+diff_shape() {
+  LC_ALL=C awk '
+    /^@@/     { h++; next }
+    /^\+\+\+/ { next }
+    /^---/    { next }
+    /^\+/     { a++; next }
+    /^-/      { d++; next }
+    END { printf "%d hunks, +%d/-%d lines\n", h+0, a+0, d+0 }'
+}
+
 # Byte-preserving JSON syntax highlighter. It inserts ANSI ONLY between the
 # content's original characters -- it never reindents, reorders, or reparses
 # -- so what is displayed is EXACTLY what is hashed. (A trust prompt must not
@@ -1431,6 +1447,34 @@ do_approve_files() {
 
   local i=0 n="${#files[@]}" f base path slot line new_digest old_digest old_label
   local base_ok recorded=0 declined=0 failed=0 answer state_note nl
+  local -a hdr_opt=()
+
+  # Hunk-header orientation for the baseline diff: diff's OWN -F prints the
+  # nearest preceding line matching the regex after each "@@ ... @@", so a
+  # hunk announces the section it sits in. '^  "' matches only the
+  # two-space-indented keys of conventionally formatted JSON, i.e. TOP-LEVEL
+  # keys -- a depth-agnostic regex could name a nested sibling and mislead.
+  # Content that never matches (non-JSON, reindented JSON) just keeps plain
+  # headers. This is diff reading its own input; nothing external is
+  # consulted or run (git's textconv/ext-diff drivers, which DO run
+  # repo-controlled code, stay banned in this display).
+  #
+  # ORIENTATION, NOT AUTHORITY: JSON whitespace is free-form, so the anchor is
+  # accurate only for honestly formatted files -- a hostile file can indent a
+  # NESTED key at two spaces (still valid JSON) and thereby plant a misleading
+  # section label. A spoofed label can lie about WHERE a change sits, never
+  # about WHAT changed: every changed line prints regardless, and the recorded
+  # digest is taken from the frozen bytes, not from any header. The label is a
+  # reading aid; the changed lines are the record.
+  #
+  # -F is not POSIX (it is in BSD/macOS diff and GNU diffutils). Probe it on
+  # two empty files: rc 0 means accepted, rc >=2 means unknown option -- and
+  # an unknown option would exit 2 into the `|| true` below and render the
+  # review diff as EMPTY. Fail closed to plain headers instead.
+  if diff -F '^x' /dev/null /dev/null >/dev/null 2>&1; then
+    hdr_opt=(-F '^  "')
+  fi
+
   while [ "$i" -lt "$n" ]; do
     f="${files[$i]}"; base="${file_base[$i]}"; i=$((i + 1))
     [ "$i" -eq 1 ] || echo
@@ -1510,7 +1554,12 @@ do_approve_files() {
         && [ "$(hash_file "$old_label" "$FROZEN_COPY")" = "$old_digest" ]; then
         base_ok=1
         printf '%s--- diff vs the approved baseline (exactly the bytes being approved) ---%s\n' "$C_B" "$C_OFF"
-        line="$(diff -u "$FROZEN_COPY" "$fro" || true)"
+        # -U1: unified context lines are UNCHANGED content by definition, and
+        # diff prints every changed line at any -U level, so trimming context
+        # shortens the read without ever hiding an edit.
+        printf '%scontext trimmed to 1 line; every changed line is always shown; @@ section labels are orientation, not authority.%s\n' "$C_DIM" "$C_OFF"
+        line="$(diff -U1 ${hdr_opt[@]+"${hdr_opt[@]}"} "$FROZEN_COPY" "$fro" || true)"
+        printf '%s%s%s\n' "$C_DIM" "$(printf '%s\n' "$line" | diff_shape)" "$C_OFF"
         printf '%s\n' "$line" | color_diff | page || true
       fi
     fi
