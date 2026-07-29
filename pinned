@@ -1492,18 +1492,23 @@ do_verify() {
     fi
     [ -f "$path" ] || { echo "ERROR: not a regular file: $path" >&2; exit 1; }
   fi
-  # The invariant, always on the ORIGINAL path: owned by the tier user,
-  # not group- or world-writable. Deliberately not a pinned VALUE (A7):
-  # verification is per-use and content-addressed, so a rewrite through
+  # The invariant, always on the ORIGINAL path: owned by the tier user OR
+  # root, and not group- or world-writable. Deliberately not a pinned VALUE
+  # (A7): verification is per-use and content-addressed, so a rewrite through
   # a loosened mode is caught by the hash check at the next use, and
   # against a process running AS the user the mode is irrelevant (the
   # owner can chmod back). The absolute invariant needs no per-slot
-  # storage and never churns.
+  # storage and never churns. Root ownership is admitted because it is
+  # STRICTLY STRONGER than tier ownership -- the tier user cannot rewrite a
+  # root-owned file at all -- and root-owned configs are exactly the files a
+  # user most wants pinned (e.g. a managed settings floor: root-owned by
+  # design as the raceless anchor, yet still worth a content record so a
+  # root-side change re-enters review).
   if [ -e "$path" ]; then
     local owner mode
     owner="$(stat_owner "$path")"
-    if [ "${owner%%:*}" != "$tier" ]; then
-      echo "REFUSE: $path is owned by ${owner%%:*}, expected $tier" >&2
+    if [ "${owner%%:*}" != "$tier" ] && [ "${owner%%:*}" != root ]; then
+      echo "REFUSE: $path is owned by ${owner%%:*}, expected $tier (or root)" >&2
       exit 14
     fi
     mode="$(stat_mode "$path")"
