@@ -419,6 +419,18 @@ sgit() {
 # LC_ALL=C so the walk is over BYTES: a UTF-8 path encodes one byte at a
 # time and round-trips exactly, instead of depending on the locale's idea of
 # a character.
+#
+# Deliberately NO Unicode normalization here, and do not add any. Byte-exact
+# keying is what keeps distinct files distinct: on a normalization-SENSITIVE
+# filesystem (case-sensitive APFS, or ext4 on the NixOS side) the NFC and NFD
+# spellings of a name are two different files, and folding them to one key
+# would hand one file's pin to the other. Where two spellings really are one
+# file -- the normalization-insensitive default macOS volume -- canon_path
+# has already resolved it: readlink -f returns the spelling the filesystem
+# stores, whichever spelling it was given, and every recorded key goes
+# through it (approve --file refuses a path that is not a regular file). The
+# filesystem is the authority on whether two names are one file; this
+# function must not second-guess it.
 encode() {
   printf '%s' "$1" | LC_ALL=C awk '
     BEGIN { for (i = 1; i < 256; i++) ord[sprintf("%c", i)] = i }
