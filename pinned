@@ -540,15 +540,26 @@ case "$action" in
           esac
         fi
       fi
-      # Say what the authentication buys BEFORE sudo asks for it: one
-      # highlighted headline carrying the whole story, details dimmed.
+      # Say what the authentication buys BEFORE sudo asks for it, in
+      # deploy's shape: the exact command, one highlighted headline, dim
+      # details separating what was checked here (root ownership) from
+      # what the system enforces at exec (the sudoers digest).
       if [ "$action" = "approve" ] && [ "$elev" = "$INSTALL_TARGET" ]; then
-        printf '\n%ssudo will now ask: it re-runs this approve as root, which shows the\n' "$C_YEL$C_B"
-        printf 'authoritative review -- nothing is pinned until you answer y there.%s\n' "$C_OFF"
-        printf '%s  runs:    %s  (installed, root-owned, digest-pinned)\n' "$C_DIM" "$elev"
-        printf '  preview: the output above was orientation only\n'
-        printf '  check:   if the sudo prompt shows the command, it must name exactly\n'
-        printf '           that binary%s\n\n' "$C_OFF"
+        cmd_disp="sudo -- $elev $action"
+        for a in "$@"; do
+          case "$a" in
+            *[!A-Za-z0-9_/.:=-]*) cmd_disp="$cmd_disp '$a'" ;;
+            *)                    cmd_disp="$cmd_disp $a" ;;
+          esac
+        done
+        printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
+        printf '  %s\n\n' "$cmd_disp"
+        printf '%ssudo asks for your password; the root-side re-run shows the authoritative\n' "$C_YEL$C_B"
+        printf 'review -- nothing is pinned until you answer y after it.%s\n\n' "$C_OFF"
+        printf '%s  The preview above was orientation only.\n' "$C_DIM"
+        printf '  The binary is root-owned (path and ancestry verified just now) and\n'
+        printf '  digest-pinned in sudoers (a swapped binary makes sudo refuse).\n'
+        printf '  If your sudo prompt shows the command, it must name exactly that binary.%s\n\n' "$C_OFF"
       fi
       exec sudo -- "$elev" "$action" "$@"
     fi
