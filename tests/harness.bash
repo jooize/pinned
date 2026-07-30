@@ -24,7 +24,7 @@
 #      land in the machine's real approval history
 # Every anchor is counted in the source BEFORE the sed (see need()), so a
 # drifting script aborts the harness loudly instead of silently testing a
-# no-op stub. PIN_ROOT and INSTALL_TARGET are honest environment overrides
+# no-op stub. PINNED_ROOT and INSTALL_TARGET are honest environment overrides
 # the script already supports; nothing here touches /var/db/pinned, /etc, or
 # any live system state.
 #
@@ -95,13 +95,13 @@ ANS=""
 RC=0
 POUT=""
 
-export PIN_ROOT="$FIX/pinroot"
+export PINNED_ROOT="$FIX/pinroot"
 export INSTALL_TARGET="$FIX/no-such-install"
 # The OPTIONAL machine tier of the ignorable policy, pointed at the fixture
 # instead of /etc/pinned so the harness never reads (or needs) machine state.
 # Absent by default: most sections want "no machine constraint".
-export MACHINE_POLICY="$FIX/etc-pinned/ignorable.json"
-POLICY_USER="$PIN_ROOT/$USERNAME/policy/ignorable.json"
+export PINNED_MACHINE_POLICY="$FIX/etc-pinned/ignorable.json"
+POLICY_USER="$PINNED_ROOT/$USERNAME/policy/ignorable.json"
 
 need() { # regex count label -- the sed anchors must still exist, exactly
   local n
@@ -118,7 +118,7 @@ need '^  \[ "\$EUID" -eq 0 \] ||'                           1 'require_root EUID
 need '^  inv="\${SUDO_USER:-}"$'                            1 'require_root SUDO_USER read'
 need '^  \[ -n "\$inv" \] ||'                               1 'require_root sudo check'
 need '^    root:\*) ;;$'                                    2 'owner allowlists'
-need '^  install -d -m 755 -o root -g wheel "\$PIN_ROOT"$'  1 'pin-root install'
+need '^  install -d -m 755 -o root -g wheel "\$PINNED_ROOT"$'  1 'pin-root install'
 need '-o root -g "\$TREE_GRP" '                             3 'slot-tree installs'
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
@@ -131,7 +131,7 @@ sed -e 's/if \[ "\$EUID" -ne 0 \]; then/if false; then/' \
     -e 's/^  inv="\${SUDO_USER:-}"$/  inv="$(id -un)"/' \
     -e 's/^  \[ -n "\$inv" \] ||.*/  :/' \
     -e "s/^    root:\\*) ;;\$/    root:*|${USERNAME}:*) ;;/" \
-    -e 's/^  install -d -m 755 -o root -g wheel "\$PIN_ROOT"$/  install -d -m 755 "$PIN_ROOT"/' \
+    -e 's/^  install -d -m 755 -o root -g wheel "\$PINNED_ROOT"$/  install -d -m 755 "$PINNED_ROOT"/' \
     -e 's/-o root -g "\$TREE_GRP" //g' \
     -e 's/^\( *\)chown -R "root:\$TREE_GRP".*/\1:/' \
     -e 's/^\( *\)chown "root:\$TREE_GRP".*/\1:/' \
@@ -204,9 +204,9 @@ seed_policy_user() { # policy-json -- the user tier, as a root ceremony would wr
   chmod 640 "$POLICY_USER"
 }
 seed_policy_machine() { # policy-json -- the optional machine tier
-  mkdir -p "$(dirname "$MACHINE_POLICY")"
-  printf '%s\n' "$1" > "$MACHINE_POLICY"
-  chmod 644 "$MACHINE_POLICY"
+  mkdir -p "$(dirname "$PINNED_MACHINE_POLICY")"
+  printf '%s\n' "$1" > "$PINNED_MACHINE_POLICY"
+  chmod 644 "$PINNED_MACHINE_POLICY"
 }
 
 count_state() { # slot-dir -> how many of rev.* / pin.* / tombstone exist
@@ -829,7 +829,7 @@ printf '%s\n' "$JSON_IN" > "$SUB/pol/inx/s.json"
 # An absent user tier grants nothing: the ceremony refuses, and says exactly
 # which command grants it. This is also the first-deploy state, so a refusal
 # here must never read as breakage.
-rm -f "$POLICY_USER" "$MACHINE_POLICY"
+rm -f "$POLICY_USER" "$PINNED_MACHINE_POLICY"
 ANS='y
 '
 run_pinned approve --file "$SUB/pol/in/s.json" --ignore-json-key model
@@ -960,24 +960,24 @@ seed_policy_machine "[{\"path\":[\"model\"],\"under\":\"relative\"}]"
 ANS=""
 run_pinned ignorable list
 assert_exit "$RC" 1 "a non-absolute under is refused"
-rm -f "$MACHINE_POLICY"
+rm -f "$PINNED_MACHINE_POLICY"
 
 # ensure_tree SELF-HEALS the allowed_signers move, loudly, at the next root
 # ceremony -- and leaves the old directory behind only if something else is
 # still in it.
-mkdir -p "$PIN_ROOT/$USERNAME/signers"
-printf 'harness ssh-ed25519 AAAAfake\n' > "$PIN_ROOT/$USERNAME/signers/allowed_signers"
-chmod 640 "$PIN_ROOT/$USERNAME/signers/allowed_signers"
+mkdir -p "$PINNED_ROOT/$USERNAME/signers"
+printf 'harness ssh-ed25519 AAAAfake\n' > "$PINNED_ROOT/$USERNAME/signers/allowed_signers"
+chmod 640 "$PINNED_ROOT/$USERNAME/signers/allowed_signers"
 printf '%s\n' "$JSON_IN" > "$SUB/pol/heal.json"
 ANS='y
 '
 run_pinned approve --file "$SUB/pol/heal.json"
 assert_exit "$RC" 0 "a root ceremony runs with a legacy signers/ dir present"
 assert_contains "$OUT" "moved allowed_signers into the policy dir" "the move is announced"
-assert_file "$PIN_ROOT/$USERNAME/policy/allowed_signers" "allowed_signers now lives in policy/"
-assert_eq "$(cat "$PIN_ROOT/$USERNAME/policy/allowed_signers")" "harness ssh-ed25519 AAAAfake" \
+assert_file "$PINNED_ROOT/$USERNAME/policy/allowed_signers" "allowed_signers now lives in policy/"
+assert_eq "$(cat "$PINNED_ROOT/$USERNAME/policy/allowed_signers")" "harness ssh-ed25519 AAAAfake" \
           "the moved file keeps its content"
-assert_absent "$PIN_ROOT/$USERNAME/signers" "the emptied legacy dir is removed"
+assert_absent "$PINNED_ROOT/$USERNAME/signers" "the emptied legacy dir is removed"
 fi
 
 # ---------------------------------------------------------------------------

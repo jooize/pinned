@@ -110,12 +110,12 @@ set -euo pipefail
 # inherit these from a caller: self-elevation goes through sudo's
 # env_reset, so the elevated run always sees the defaults.
 : "${INSTALL_TARGET:=/usr/local/sbin/pinned}"
-: "${PIN_ROOT:=/var/db/pinned}"
+: "${PINNED_ROOT:=/var/db/pinned}"
 # The OPTIONAL machine tier of the ignorable policy. Absent = no machine
 # constraint (the user tier stands alone); the FILE is the interface, so a
 # configuration manager can declare it (nix: environment.etc) without this
 # script knowing anything about the tool that wrote it.
-: "${MACHINE_POLICY:=/etc/pinned/ignorable.json}"
+: "${PINNED_MACHINE_POLICY:=/etc/pinned/ignorable.json}"
 
 # Colour only when stdout is a terminal (piping/redirecting stays clean).
 if [ -t 1 ]; then
@@ -143,7 +143,7 @@ setup_plan() {
 ${C_B}pinned setup will:${C_OFF}
 
   ${C_B}1.${C_OFF} install this script to ${C_CYN}$INSTALL_TARGET${C_OFF} ${C_DIM}(root:wheel 755)${C_OFF}
-  ${C_B}2.${C_OFF} create ${C_CYN}$PIN_ROOT/${1}${C_OFF} for root-owned pin slots
+  ${C_B}2.${C_OFF} create ${C_CYN}$PINNED_ROOT/${1}${C_OFF} for root-owned pin slots
   ${C_B}3.${C_OFF} write ${C_CYN}/etc/sudoers.d/pinned${C_OFF} granting ${C_B}${1}${C_OFF} sudo for the binary,
      digest-pinned to its sha256 ${C_DIM}(a swapped binary makes sudo refuse)${C_OFF};
      ${C_YEL}no NOPASSWD${C_OFF} -- sudo still authenticates every invocation
@@ -660,7 +660,7 @@ decode() {
 }
 
 # ---- slot storage ----------------------------------------------------------
-# Layout: $PIN_ROOT/<user>/ holds exactly two wrapper dirs --
+# Layout: $PINNED_ROOT/<user>/ holds exactly two wrapper dirs --
 #   slots/<encoded-path>/   one root-owned dir per pinned path
 #   policy/                 allowed_signers + ignorable.json
 #
@@ -705,8 +705,8 @@ group_exists() {
   fi
 }
 
-slot_dir_for()   { printf '%s/%s/slots/%s\n' "$PIN_ROOT" "$1" "$(encode "$2")"; }
-policy_dir_for() { printf '%s/%s/policy\n' "$PIN_ROOT" "$1"; }
+slot_dir_for()   { printf '%s/%s/slots/%s\n' "$PINNED_ROOT" "$1" "$(encode "$2")"; }
+policy_dir_for() { printf '%s/%s/policy\n' "$PINNED_ROOT" "$1"; }
 
 # Create/re-assert the per-user subtree (root only). The group is
 # CONSUMED, never created -- the system configuration provisions it;
@@ -715,9 +715,9 @@ policy_dir_for() { printf '%s/%s/policy\n' "$PIN_ROOT" "$1"; }
 # Sets TREE_GRP/TREE_DMODE/TREE_FMODE for subsequent slot writes.
 ensure_tree() {
   local u="$1" udir grp
-  udir="$PIN_ROOT/$u"
+  udir="$PINNED_ROOT/$u"
   grp="$(pin_group "$u")"
-  install -d -m 755 -o root -g wheel "$PIN_ROOT"
+  install -d -m 755 -o root -g wheel "$PINNED_ROOT"
   if group_exists "$grp"; then
     TREE_GRP="$grp" TREE_DMODE=750 TREE_FMODE=640
   else
@@ -1223,7 +1223,7 @@ POL_MACHINE="" POL_USER="[]" POL_EFF="[]"
 load_policy() {
   local u="$1" rc=0
   POL_MACHINE="" POL_USER="[]" POL_EFF="[]"
-  read_policy_file "$MACHINE_POLICY" "machine policy" || rc=$?
+  read_policy_file "$PINNED_MACHINE_POLICY" "machine policy" || rc=$?
   case "$rc" in
     0) POL_MACHINE="$POLICY_JSON" ;;
     1) ;;
@@ -1538,7 +1538,7 @@ do_setup() {
 
   # 2. Pin tree for the invoking user
   ensure_tree "$inv"
-  echo "pin tree: $PIN_ROOT/$inv"
+  echo "pin tree: $PINNED_ROOT/$inv"
 
   # 3. Sudoers entry with binary-digest pin (validated before installing).
   #    sudo recomputes the binary's SHA-256 at every invocation and refuses
@@ -1922,7 +1922,7 @@ do_approve() {
       echo "  existing trusted machine) -- never from this repo." >&2
       exit 1
     fi
-    verify_root_owned_path "$PIN_ROOT" || exit 1
+    verify_root_owned_path "$PINNED_ROOT" || exit 1
     verify_record_file "$signers" || exit 1
     # Every tag must verify AND name the same commit -- all-or-nothing;
     # a single failure leaves the pin unchanged.
@@ -2286,7 +2286,7 @@ do_approve_files() {
 $(policy_grants "$POL_EFF" "$ign_json" "$path")
 EOF
       [ -z "$POL_MACHINE" ] \
-        || printf '            %s(and within the machine policy at %s)%s\n' "$C_DIM" "$MACHINE_POLICY" "$C_OFF"
+        || printf '            %s(and within the machine policy at %s)%s\n' "$C_DIM" "$PINNED_MACHINE_POLICY" "$C_OFF"
       if [ "$store" -eq 1 ]; then
         printf '            %sa copy of these bytes is kept in the slot -- readable by anything%s\n' "$C_DIM" "$C_OFF"
         printf '            %sthat mounts it, including every lane (--store)%s\n' "$C_DIM" "$C_OFF"
@@ -2496,8 +2496,8 @@ do_verify() {
   if [ ! -d "$slot" ]; then
     # Distinguish "no slot" from "cannot see the slots": an unreadable
     # tier must never read as unapproved.
-    if [ -d "$PIN_ROOT/$tier" ] && [ ! -r "$PIN_ROOT/$tier" ]; then
-      echo "ERROR: cannot read $PIN_ROOT/$tier -- are you in group $(pin_group "$tier")?" >&2
+    if [ -d "$PINNED_ROOT/$tier" ] && [ ! -r "$PINNED_ROOT/$tier" ]; then
+      echo "ERROR: cannot read $PINNED_ROOT/$tier -- are you in group $(pin_group "$tier")?" >&2
       exit 1
     fi
     echo "no slot: $path" >&2
@@ -2832,8 +2832,8 @@ do_list() {
     [ -n "$under" ] || under=/
   fi
 
-  local sroot="$PIN_ROOT/$inv/slots"
-  [ -d "$PIN_ROOT" ] || { echo "no pin root ($PIN_ROOT) -- nothing approved yet" >&2; exit 1; }
+  local sroot="$PINNED_ROOT/$inv/slots"
+  [ -d "$PINNED_ROOT" ] || { echo "no pin root ($PINNED_ROOT) -- nothing approved yet" >&2; exit 1; }
   if [ ! -d "$sroot" ]; then echo "(no pins)"; exit 0; fi
   [ -r "$sroot" ] || {
     echo "ERROR: cannot read $sroot -- are you in group $(pin_group "$inv")?" >&2
@@ -3441,7 +3441,7 @@ do_ignorable() {
     printf '            %sscope; verify answers 15 instead of 11 when only it drifts%s\n' "$C_DIM" "$C_OFF"
     if [ "$covered" -eq 0 ]; then
       printf '%snote:%s        %sthe machine policy (%s) does not cover this scope --\n' \
-        "$C_B" "$C_OFF" "$C_YEL" "$MACHINE_POLICY"
+        "$C_B" "$C_OFF" "$C_YEL" "$PINNED_MACHINE_POLICY"
       printf '            the entry will be recorded but will NOT be effective%s\n' "$C_OFF"
     fi
   else
@@ -3491,11 +3491,11 @@ EOF
 do_ignorable_list() {
   local u="$1" pf mach_present=0 user_present=0
   pf="$(policy_dir_for "$u")/ignorable.json"
-  [ -e "$MACHINE_POLICY" ] && mach_present=1
+  [ -e "$PINNED_MACHINE_POLICY" ] && mach_present=1
   [ -e "$pf" ] && user_present=1
   load_policy "$u" || exit 1
 
-  printf '%smachine tier:%s %s\n' "$C_B" "$C_OFF" "$MACHINE_POLICY"
+  printf '%smachine tier:%s %s\n' "$C_B" "$C_OFF" "$PINNED_MACHINE_POLICY"
   if [ "$mach_present" -eq 0 ]; then
     printf '  %s(absent -- no machine constraint; the user tier stands alone)%s\n' "$C_DIM" "$C_OFF"
   else
