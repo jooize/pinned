@@ -317,14 +317,28 @@ command -v git >/dev/null 2>&1 || {
 # neutralized where it matters (-c overrides, no pager, no fsmonitor daemon).
 # show/diff/rev-parse/log run no hooks; aliases can't shadow builtins.
 # Trusted pager for review output: absolute system less, -R passes the
-# diff colors through. cat when non-interactive or less is absent. Never
-# $PAGER/user config -- the pager sits between reviewed bytes and eyes.
+# diff colors through, -F quits immediately when the content already fits
+# one screen -- so a short diff stays on the normal screen (nothing to
+# page, nothing to dismiss) while long content still gets the alternate
+# screen and real scrollback. No -X: the alternate screen is wanted.
+# cat when non-interactive or less is absent. Never $PAGER/user config --
+# the pager sits between reviewed bytes and eyes.
 page() {
   if [ -t 1 ] && command -v less >/dev/null 2>&1; then
-    less -R
+    less -RF
   else
     cat
   fi
+}
+
+# The root-side ceremony announces itself: everything below this line is
+# pinned's own authoritative display, not a caller's orientation preview.
+# Printed only after the self-elevation, never in the pre-sudo handoff, and
+# with NO leading blank -- a direct `pinned approve` must not open with a
+# stray empty line, so the separator before the handoff belongs to whoever
+# called us (see the hardening shim's claude wrapper).
+ceremony_banner() {
+  printf '%s=== pinned: approve (authoritative) ===%s\n' "$C_B" "$C_OFF"
 }
 
 # ---- review-display highlighters -------------------------------------------
@@ -1084,8 +1098,10 @@ case "$action" in
       if [ "$action" = "approve" ] && [ "$elev" = "$INSTALL_TARGET" ]; then
         # Colored by role, the same way deploy renders its command below:
         # sudo bold, command name cyan, verb and flags plain, file paths
-        # yellow. The color codes go into the DISPLAY string only -- the
-        # exec below builds its argv from the variables, never from this.
+        # cyan (identifiers and paths are cyan everywhere; yellow stays
+        # reserved for attention text). The color codes go into the DISPLAY
+        # string only -- the exec below builds its argv from the variables,
+        # never from this.
         cmd_disp="${C_B}sudo${C_OFF} -- ${C_CYN}${elev}${C_OFF} $action"
         for a in "$@"; do
           # Quote first (unchanged: anything outside the safe set gets
@@ -1097,7 +1113,7 @@ case "$action" in
           esac
           case "$a" in
             -*) cmd_disp="$cmd_disp $a_disp" ;;
-            *)  cmd_disp="$cmd_disp ${C_YEL}${a_disp}${C_OFF}" ;;
+            *)  cmd_disp="$cmd_disp ${C_CYN}${a_disp}${C_OFF}" ;;
           esac
         done
         printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
@@ -1234,6 +1250,8 @@ do_approve() {
 
   local hash old_hash diff_out
   old_hash="$(read_rev "$slot")" || exit 1
+
+  ceremony_banner
 
   if [ "${#tag_args[@]}" -gt 0 ]; then
     # Signature gate: verify normally-signed release tags (git tag -s;
@@ -1474,6 +1492,8 @@ do_approve_files() {
   if diff -F '^x' /dev/null /dev/null >/dev/null 2>&1; then
     hdr_opt=(-F '^  "')
   fi
+
+  ceremony_banner
 
   while [ "$i" -lt "$n" ]; do
     f="${files[$i]}"; base="${file_base[$i]}"; i=$((i + 1))
@@ -2656,7 +2676,8 @@ EOF
   # argv that runs (expressions hold no quotes -- hex revs, fixed template
   # -- so single-quoting them is their pasteable form). Parts are colored
   # by role so the command reads at a glance: sudo bold, command name
-  # cyan, expressions plain, file paths yellow.
+  # cyan, expressions plain, file paths cyan (identifiers and paths are
+  # cyan everywhere; yellow stays reserved for attention text).
   local PIN_CMD=() REBUILD_CMD=() expr_disp="" e
   REBUILD_CMD=("$REBUILD" switch --flake "$(dirname "$FLAKE")")
   printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
@@ -2667,14 +2688,14 @@ EOF
     done
     if [ "${#SED_I[@]}" -eq 3 ]; then
       printf "  %ssudo%s %ssed%s -i '' %s%s%s%s\n" \
-        "$C_B" "$C_OFF" "$C_CYN" "$C_OFF" "$expr_disp" "$C_YEL" "$FLAKE" "$C_OFF"
+        "$C_B" "$C_OFF" "$C_CYN" "$C_OFF" "$expr_disp" "$C_CYN" "$FLAKE" "$C_OFF"
     else
       printf '  %ssudo%s %ssed%s -i %s%s%s%s\n' \
-        "$C_B" "$C_OFF" "$C_CYN" "$C_OFF" "$expr_disp" "$C_YEL" "$FLAKE" "$C_OFF"
+        "$C_B" "$C_OFF" "$C_CYN" "$C_OFF" "$expr_disp" "$C_CYN" "$FLAKE" "$C_OFF"
     fi
   fi
   printf '  %ssudo%s %s%s%s switch --flake %s%s%s\n' \
-    "$C_B" "$C_OFF" "$C_CYN" "$REBUILD" "$C_OFF" "$C_YEL" "$(dirname "$FLAKE")" "$C_OFF"
+    "$C_B" "$C_OFF" "$C_CYN" "$REBUILD" "$C_OFF" "$C_CYN" "$(dirname "$FLAKE")" "$C_OFF"
   printf '\n'
 
   if [ "$DRY" -eq 1 ]; then
