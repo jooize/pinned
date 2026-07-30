@@ -13,6 +13,8 @@
 #                                              --tag: an unsigned name that must agree)
 #   pinned approve --file <path> ...          file-pin ceremony: frozen display
 #                                             root-side -> confirm -> record hash
+#                                             (--ignore-json-key <key>: keys
+#                                             whose later drift needs no ceremony)
 #   pinned verify <path>                      consumer verdict for file pins
 #                                             (--emit / --frozen for parsers)
 #   pinned tombstone <path>                   retire a pinned file that is GONE
@@ -45,11 +47,23 @@
 # Storage: /var/db/pinned/<user>/slots/<encoded-path>/ -- one root-owned
 # SLOT DIRECTORY per pinned path, holding exactly one of rev.<vcs> (repo
 # pin), pin.<algo> (file pin) or tombstone, plus optional annotations
-# (tag, signers/allowed_signers). The root-owned record DECLARES (which
-# VCS, which algorithm); the live world must CONFORM; anything
-# undeclared REFUSES. Consumers that want a friendly path point a
-# root-owned symlink at the slot dir, e.g.
+# (tag, ignore.<format>, approved, signers/allowed_signers). The root-owned
+# record DECLARES (which VCS, which algorithm, which key format); the live
+# world must CONFORM; anything undeclared REFUSES. Consumers that want a
+# friendly path point a root-owned symlink at the slot dir, e.g.
 #   ln -s "$(pinned slot /path/to/repo)" /etc/nix-darwin/pinned-rev
+#
+# IGNORED KEYS: a file slot may additionally declare `ignore.json` (one
+# dotted JSON key path per line) and, only when the ceremony was asked for
+# it, `approved` (a copy of the approved bytes) -- both written ONLY by the
+# approve ceremony. The PIN stays byte-exact -- `shasum -c pin.sha256`
+# still verifies -- and ignoring is a VERIFY-side tolerance: when the live
+# bytes differ, verify may compare the two sides with those keys projected
+# out and answer 15 instead of 11. Every step of that path fails CLOSED to
+# the stricter verdict. The `approved` copy is OPT-IN (--store) because slot
+# dirs get read-only mounted into container and vm lanes: a copy turns a
+# slot that discloses only a hash into one that discloses the file's
+# CONTENT, which is a per-slot human decision, not a default.
 
 # Pin PATH to root-owned directories only, before anything runs. This is the
 # ONE place trust in command resolution is established: everything below calls
@@ -135,22 +149,35 @@ usage: pinned <action> [args]
                      tags must name the same commit; approve, pin
                      --tag may add an unsigned name (a clean release
                      name) that must name the same commit
-  approve --file <path> [--baseline <copy>] [--file <path> ...] [--algo <name>]
+  approve --file <path> [--baseline <copy>] [--ignore-json-key <key> ...]
+          [--file <path> ...] [--algo <name>] [--store]
                      (sudo) file-pin ceremony: each file is frozen,
                      displayed ROOT-SIDE, confirmed, and its hash
                      recorded; multiple --file share one authentication;
                      --baseline (after its --file) diffs against a copy
                      that re-hashes to the prior record
+                     --ignore-json-key (after its --file, repeatable)
+                     declares a dotted JSON key whose later drift verify
+                     tolerates, answering 15; --store additionally keeps
+                     the approved bytes in the slot so verify needs no
+                     caller baseline (opt-in: slot dirs are mounted into
+                     lanes, so a copy discloses the content there). An
+                     approve WITHOUT --ignore-json-key clears both again.
   tombstone <path>   (sudo) retire a pinned file that is GONE; if it
                      reappears, verify refuses until re-approved
   verify <path>      file-pin verdict, quiet contract for gates:
                      0 ok, 10 no slot, 11 mismatch, 12 pinned-but-
-                     missing, 13 tombstoned-but-present, 14 mode/owner
+                     missing, 13 tombstoned-but-present, 14 mode/owner,
+                     15 differs ONLY in declared ignored keys
   verify --emit <path>
                      verify, then print the VERIFIED bytes on stdout
                      (nothing on failure) -- the parse-safely form
+                     (byte-exact only: never answers 15)
   verify --frozen <copy> <path>
                      verify caller-frozen bytes against <path>'s record
+  verify [--baseline <copy>] <path>
+                     supply the last-approved bytes for the ignored-key
+                     comparison when the slot keeps no approved copy
   sign <repo> <tag>  create signed tag <tag> at the pinned hash -- no sudo
                      (needs your SSH agent, e.g. 1Password)
   signer add [--repo <path>] (--file <pubkey> | --key '<line>') [--principal <id>]
@@ -697,6 +724,39 @@ write_slot_state() {
   mv -f "$tmp" "$d/$name"
 }
 
+# The ANNOTATION writers (tag / ignore / approved). Same atomic
+# stage-chown-chmod-rename discipline and the same ownership as the state
+# file, but annotations take no part in the exactly-one-state rule, so
+# nothing is removed here. The slot dir always exists by the time these
+# run (the state write creates it root-owned), which is why neither
+# re-asserts it.
+#   write_slot_note  content from a string (one trailing newline added)
+#   write_slot_copy  content copied from a file, byte for byte
+write_slot_note() {
+  local d="$1" name="$2" tmp
+  tmp="$(mktemp "$d/.stage.XXXXXX")"
+  printf '%s\n' "$3" >"$tmp"
+  chown "root:$TREE_GRP" "$tmp"
+  chmod "$TREE_FMODE" "$tmp"
+  mv -f "$tmp" "$d/$name"
+}
+write_slot_copy() {
+  local d="$1" name="$2" src="$3" tmp
+  tmp="$(mktemp "$d/.stage.XXXXXX")"
+  cat -- "$src" >"$tmp"
+  chown "root:$TREE_GRP" "$tmp"
+  chmod "$TREE_FMODE" "$tmp"
+  mv -f "$tmp" "$d/$name"
+}
+
+# Drop the ignored-keys annotations. Called wherever a slot's declaration
+# is re-stated without them: a plain approve (the ceremony re-declares
+# slot extras every time, exactly like `tag`), a repo approval taking the
+# slot over, and a tombstone (retired content has no keys to tolerate).
+# The glob clears ANY declared format, including one this version does not
+# recognize -- re-approving is the documented way out of such a slot.
+clear_slot_ignore() { rm -f "$1"/ignore.* "$1/approved"; }
+
 # ---- hash algorithms (file pins) -------------------------------------------
 # Labels are EXACT function names -- the shipped --algo vocabulary and the
 # pin.<algo> filename suffixes; verbatim lookup tokens, never parsed on
@@ -840,6 +900,243 @@ validate_tag_name() {
     ''|-*|/*|*/|*..*|*.lock|*.lock/*) return 1 ;;
     *[!A-Za-z0-9._/+-]*) return 1 ;;
   esac
+  return 0
+}
+
+# ---- ignored keys (verify-side tolerance) ----------------------------------
+#
+# A file slot may declare `ignore.<format>`: keys whose later drift verify
+# tolerates. ONE format ships -- `ignore.json`, one dotted JSON key path per
+# line:
+#     model
+#     effortLevel
+#     statusLine.command
+# The SUFFIX is the declaration, exactly like rev.<vcs> and pin.<algo>: the
+# record says which grammar its content is written in, and an unrecognized
+# suffix (ignore.toml, ignore.yaml, ...) REFUSES rather than being guessed
+# at -- which is also the extension point, should another format ever be
+# worth implementing.
+#
+# The pin stays byte-exact -- the declaration changes only what VERIFY does
+# with a mismatch, and only when it can prove the difference is confined to
+# those keys. The key grammar is deliberately narrow and validated
+# fail-closed on WRITE and on READ: [A-Za-z0-9_.-] with no leading,
+# trailing or doubled dot. KEYS ONLY -- no array subscripts -- because an
+# index is a position, not a name, and a tolerated position would silently
+# move with an insertion.
+
+validate_ignore_key() {
+  case "$1" in
+    ''|.*|*.|*..*) return 1 ;;
+    *[!A-Za-z0-9_.-]*) return 1 ;;
+  esac
+  return 0
+}
+
+# Read + validate a slot's ignored-key declaration into IGN_KEYS (one
+# space-separated list; the grammar admits neither spaces nor newlines, so
+# the flat string is unambiguous). Exit status is three-valued, because
+# "nothing declared" and "declared but unusable" are different answers:
+#   0  a valid ignore.json; IGN_KEYS holds its keys
+#   1  no ignore.* at all -- the feature is simply not declared here
+#   2  a declaration that cannot be honoured (unknown format, more than
+#      one, not root-owned, empty, or a line outside the grammar). Loud,
+#      and every caller falls back to the STRICTER verdict.
+IGN_KEYS=""
+read_ignore_keys() {
+  local d="$1" f line n=0 found="" fmt
+  IGN_KEYS=""
+  for f in "$d"/ignore.*; do
+    [ -e "$f" ] || continue
+    if [ -n "$found" ]; then
+      echo "REFUSE: slot $d declares more than one ignore.<format>; refusing all of them" >&2
+      return 2
+    fi
+    found="$f"
+  done
+  [ -n "$found" ] || return 1
+  fmt="${found##*/ignore.}"
+  case "$fmt" in
+    json) ;;
+    *)
+      echo "REFUSE: $found declares unsupported ignored-key format '$fmt'; refusing" >&2
+      echo "        (the shipped format is ignore.json -- dotted JSON key paths, one per line)" >&2
+      return 2 ;;
+  esac
+  verify_record_file "$found" || return 2
+  # `|| [ -n "$line" ]` so a final line without a newline is still read --
+  # and still validated, rather than silently dropped.
+  while IFS= read -r line || [ -n "$line" ]; do
+    if ! validate_ignore_key "$line"; then
+      echo "REFUSE: $found holds '$line', outside the ignored-key grammar (dotted [A-Za-z0-9_.-])" >&2
+      IGN_KEYS=""
+      return 2
+    fi
+    IGN_KEYS="${IGN_KEYS:+$IGN_KEYS }$line"
+    n=$((n + 1))
+  done <"$found"
+  [ "$n" -gt 0 ] || {
+    echo "REFUSE: $found declares no keys; an empty declaration tolerates nothing" >&2
+    return 2
+  }
+  return 0
+}
+
+# Does this slot declare ignored keys at all (in any format)? Cheap
+# existence test, used to decide whether the tolerance path is even in
+# play before spending anything on it.
+slot_declares_ignore() {
+  local f
+  for f in "$1"/ignore.*; do
+    [ -e "$f" ] && return 0
+  done
+  return 1
+}
+
+# Space-separated keys -> the comma-separated form humans read.
+ign_display() {
+  local k out=""
+  # shellcheck disable=SC2086  # deliberate split: the key grammar has no spaces or globs
+  for k in $1; do out="${out:+$out, }$k"; done
+  printf '%s' "$out"
+}
+
+# Dotted keys -> the JSON array-of-paths jq's delpaths/getpath want:
+#   "model effortLevel statusLine.command"
+#     -> [["model"],["effortLevel"],["statusLine","command"]]
+# Interpolating the segments raw is safe ONLY because the grammar above
+# has already excluded quotes, backslashes and every other byte that would
+# need escaping -- validate first, build second.
+ign_paths_json() {
+  printf '%s\n' "$1" | LC_ALL=C awk '
+    {
+      out = ""
+      for (i = 1; i <= NF; i++) {
+        n = split($i, seg, ".")
+        p = ""
+        for (j = 1; j <= n; j++) p = p (j > 1 ? "," : "") "\"" seg[j] "\""
+        out = out (i > 1 ? "," : "") "[" p "]"
+      }
+      printf "[%s]\n", out
+    }'
+}
+
+# May these bytes be PROJECTED (parsed, keys deleted, re-serialized) as a
+# stand-in for themselves? Three refusals, all of them parser-differential
+# hazards -- a "yes" here is what lets verify answer 15 instead of 11, so
+# each one fails closed. $1 = file, $2 = which side, for the note.
+#
+#   NUL bytes: jq accepts a trailing NUL and treats the file as one
+#   document; other JSON parsers do not. The difference would be invisible
+#   to a structural comparison, so it must not reach one.
+#
+#   Exactly one document: jq reads a CONCATENATED STREAM of values, every
+#   other parser reads one value and stops. A two-document file is a
+#   disagreement, not a document.
+#
+#   DUPLICATE OBJECT KEYS: jq keeps the LAST occurrence, JavaScript's
+#   JSON.parse keeps the last, Python's json keeps the last, but Go's
+#   encoding/json and several others differ, and the file's actual
+#   consumer is not this tool's to assume. Uncertainty -> abort.
+#
+# The duplicate test, measured on jq-1.7.1 (2026-07-30):
+#   `jq --stream` emits one event per value occurrence, so a duplicated
+#   key emits BOTH occurrences ({"a":1,"a":2} -> [["a"],1] / [["a"],2] /
+#   [["a"]]), while re-serializing through jq (`jq -c .`) collapses them
+#   to the last. Comparing the two event COUNTS therefore detects a
+#   duplicate anywhere at any depth -- including duplicates whose values
+#   are themselves objects, where the leaf PATHS differ and a path-multiset
+#   comparison would miss them ({"a":{"x":1},"a":{"y":2}} -> 5 events raw,
+#   3 canonical). Verified against duplicates of every value shape
+#   (scalar/object/array/empty-object, nested, inside arrays, byte-identical
+#   values) and against duplicate-free documents carrying big integers,
+#   1e1000, 1.0, escapes, astral-plane strings, empty containers and
+#   five-deep nesting -- counts equal in every duplicate-free case, strictly
+#   greater in every duplicated one. It cannot false-negative: every dropped
+#   occurrence costs at least one event (even `{}` emits one).
+json_projectable() {
+  local f="$1" side="$2" n_raw n_canon
+  if [ "$(LC_ALL=C tr -d '\000' <"$f" | wc -c)" -ne "$(wc -c <"$f")" ]; then
+    echo "note: $side contains NUL bytes; not comparable as JSON (byte-exact verdict stands)" >&2
+    return 1
+  fi
+  if [ "$(jq -s 'length' <"$f" 2>/dev/null)" != 1 ]; then
+    echo "note: $side is not exactly one JSON document (byte-exact verdict stands)" >&2
+    return 1
+  fi
+  n_raw="$(jq --stream -c . <"$f" 2>/dev/null | wc -l)"
+  n_canon="$(jq -c . <"$f" 2>/dev/null | jq --stream -c . 2>/dev/null | wc -l)"
+  if [ "$n_raw" -lt 1 ] || [ "$n_raw" -ne "$n_canon" ]; then
+    echo "REFUSE: $side contains DUPLICATE object keys -- parsers disagree on which one wins," >&2
+    echo "        so no structural comparison of it can be trusted (byte-exact verdict stands)" >&2
+    return 1
+  fi
+  return 0
+}
+
+# The tolerance path itself: is the live content the approved content with
+# only the declared keys changed? Prints the per-key drift report and the
+# verdict line on success (stdout, the machine contract); every failure
+# returns 1 so the caller falls back to the byte-exact refusal.
+#   $1 slot  $2 algo label  $3 recorded digest  $4 live (frozen) copy
+#   $5 caller --baseline (may be empty)  $6 the path, for the verdict line
+ignored_keys_match() {
+  local slot="$1" label="$2" rec_digest="$3" live="$4" base="$5" path="$6"
+  local approved="" paths pa pb rc=0
+  command -v jq >/dev/null 2>&1 || {
+    echo "note: $slot declares ignored keys but jq is not in the trusted PATH ($PATH);" >&2
+    echo "      the byte-exact verdict stands (install jq system-wide to enable the comparison)" >&2
+    return 1
+  }
+  read_ignore_keys "$slot" || rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  # The last-approved bytes. The slot's own copy is preferred and has
+  # already been re-hashed against the record (the slot invariant in
+  # do_verify); a caller baseline must prove itself here, by the same
+  # self-verifying trick the ceremony's diff uses.
+  if [ -f "$slot/approved" ]; then
+    approved="$slot/approved"
+  elif [ -n "$base" ]; then
+    if [ ! -f "$base" ]; then
+      echo "note: --baseline $base is not a readable file (byte-exact verdict stands)" >&2
+      return 1
+    fi
+    if [ "$(hash_file "$label" "$base")" != "$rec_digest" ]; then
+      echo "note: --baseline $base does not re-hash to the approved record (byte-exact verdict stands)" >&2
+      return 1
+    fi
+    approved="$base"
+  else
+    echo "note: $slot declares ignored keys but holds no approved copy, and no --baseline was" >&2
+    echo "      given; there is nothing to compare against (byte-exact verdict stands)" >&2
+    return 1
+  fi
+  json_projectable "$approved" "the approved bytes" || return 1
+  json_projectable "$live" "$path" || return 1
+  paths="$(ign_paths_json "$IGN_KEYS")"
+  # Project and canonicalize IDENTICALLY on both sides (-S sorts keys, -c
+  # compacts), then compare bytes: key order and whitespace are not what
+  # this comparison is about, the remaining VALUES are.
+  pa="$(jq -S -c --argjson p "$paths" 'delpaths($p)' <"$approved" 2>/dev/null)" || return 1
+  pb="$(jq -S -c --argjson p "$paths" 'delpaths($p)' <"$live" 2>/dev/null)" || return 1
+  if [ -z "$pa" ] || [ "$pa" != "$pb" ]; then
+    echo "note: differences remain OUTSIDE the declared ignored keys ($IGN_KEYS)" >&2
+    return 1
+  fi
+  # Report which declared keys actually moved -- the caller's whole reason
+  # to care. A key whose value is unchanged is not reported; a key missing
+  # on one side and present on the other IS a difference. getpath refuses
+  # to index a non-object, so both reads are guarded.
+  jq -n -r --argjson p "$paths" \
+     --slurpfile a "$approved" --slurpfile b "$live" '
+    $p[] as $path
+    | (try ($a[0] | getpath($path)) catch "unreadable") as $va
+    | (try ($b[0] | getpath($path)) catch "unreadable") as $vb
+    | if $va == $vb then empty else ($path | join(".")) end
+  ' 2>/dev/null | while IFS= read -r line; do
+    [ -n "$line" ] && printf 'ignored-drift: %s\n' "$line"
+  done
+  printf '%s~ matches modulo declared ignored keys:%s %s\n' "$C_YEL" "$C_OFF" "$path"
   return 0
 }
 
@@ -1167,8 +1464,9 @@ do_approve() {
   # must verify against the allowed signers AND name the same commit, or
   # nothing is pinned. k-of-n is the caller demanding whichever k tags they
   # trust.
-  local trust=0 repo_arg="" sel_tag="" tag_args files file_base file_algo=sha256 algo_given=0
-  tag_args=(); files=(); file_base=()
+  local trust=0 repo_arg="" sel_tag="" tag_args files file_base file_ign file_algo=sha256 algo_given=0
+  local store=0 ign_given=0 last
+  tag_args=(); files=(); file_base=(); file_ign=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --signed-tag) tag_args+=("$2"); shift 2 ;;
@@ -1178,7 +1476,7 @@ do_approve() {
       --trust)      trust=1; shift ;;
       --file)
         [ $# -ge 2 ] || { echo "--file needs a path" >&2; exit 1; }
-        files+=("$2"); file_base+=(""); shift 2 ;;
+        files+=("$2"); file_base+=(""); file_ign+=(""); shift 2 ;;
       --baseline)
         [ $# -ge 2 ] || { echo "--baseline needs a path" >&2; exit 1; }
         [ "${#files[@]}" -gt 0 ] \
@@ -1186,6 +1484,23 @@ do_approve() {
         [ -z "${file_base[$((${#files[@]} - 1))]}" ] \
           || { echo "one --baseline per --file" >&2; exit 1; }
         file_base[$((${#files[@]} - 1))]="$2"; shift 2 ;;
+      --ignore-json-key)
+        # Repeatable, and attaches to the preceding --file exactly like
+        # --baseline: WHICH keys may drift is a per-path declaration. The
+        # flag names its FORMAT because the slot file does (ignore.json);
+        # another format would be another flag, never a guess.
+        [ $# -ge 2 ] || { echo "--ignore-json-key needs a key" >&2; exit 1; }
+        [ "${#files[@]}" -gt 0 ] \
+          || { echo "--ignore-json-key must follow the --file it belongs to" >&2; exit 1; }
+        validate_ignore_key "$2" || {
+          echo "ERROR: ignored key '$2' is outside the key grammar: dotted [A-Za-z0-9_.-]," >&2
+          echo "       no leading/trailing/doubled dot, no array subscripts" >&2
+          exit 1
+        }
+        last=$((${#files[@]} - 1))
+        file_ign[last]="${file_ign[last]:+${file_ign[last]} }$2"
+        ign_given=1; shift 2 ;;
+      --store)     store=1; shift ;;
       --algo)
         [ $# -ge 2 ] || { echo "--algo needs a value" >&2; exit 1; }
         file_algo="$2"; algo_given=1; shift 2 ;;
@@ -1200,10 +1515,18 @@ do_approve() {
       echo "--file is its own ceremony; repo arguments and evidence flags do not combine with it" >&2
       exit 1
     fi
+    # --store keeps the approved bytes to SERVE the ignored-key comparison;
+    # without a declaration it serves nothing. Refuse the no-op rather than
+    # let it read as meaningful.
+    if [ "$store" -eq 1 ] && [ "$ign_given" -eq 0 ]; then
+      echo "--store applies to a ceremony that declares --ignore-json-key (the copy exists to serve it)" >&2
+      exit 1
+    fi
     do_approve_files
     return
   fi
   [ "$algo_given" -eq 0 ] || { echo "--algo applies to the --file ceremony only" >&2; exit 1; }
+  [ "$store" -eq 0 ] || { echo "--store applies to the --file ceremony only" >&2; exit 1; }
   [ -n "$repo_arg" ] || usage
   case "$sel_tag" in
     -*) echo "invalid tag name: $sel_tag" >&2; exit 1 ;;
@@ -1403,6 +1726,9 @@ do_approve() {
   esac
 
   write_slot_state "$slot" rev.git "$hash"
+  # A repo pin has no JSON keys to tolerate: taking the slot over from a
+  # file pin drops any ignored-key declaration with it.
+  clear_slot_ignore "$slot"
   # Say so. The --file ceremony has always confirmed each record; the repo
   # ceremony printed nothing unless a tag happened to be declared, so a plain
   # approve answered `y` and returned to the prompt in silence -- which reads
@@ -1425,12 +1751,7 @@ do_approve() {
         "$C_YEL" "$decl_tag" "$C_OFF"
       rm -f "$slot/tag"
     else
-      local ttmp
-      ttmp="$(mktemp "$slot/.stage.XXXXXX")"
-      printf '%s\n' "$decl_tag" >"$ttmp"
-      chown "root:$TREE_GRP" "$ttmp"
-      chmod "$TREE_FMODE" "$ttmp"
-      mv -f "$ttmp" "$slot/tag"
+      write_slot_note "$slot" tag "$decl_tag"
       printf '%s✓ declared:%s %s -> %s\n' "$C_GRN" "$C_OFF" "$decl_tag" "$slot/tag"
     fi
   else
@@ -1465,6 +1786,7 @@ do_approve_files() {
 
   local i=0 n="${#files[@]}" f base path slot line new_digest old_digest old_label
   local base_ok recorded=0 declined=0 failed=0 answer state_note nl
+  local ign old_ign had_copy ign_note decl_changed
   local -a hdr_opt=()
 
   # Hunk-header orientation for the baseline diff: diff's OWN -F prints the
@@ -1496,7 +1818,7 @@ do_approve_files() {
   ceremony_banner
 
   while [ "$i" -lt "$n" ]; do
-    f="${files[$i]}"; base="${file_base[$i]}"; i=$((i + 1))
+    f="${files[$i]}"; base="${file_base[$i]}"; ign="${file_ign[$i]}"; i=$((i + 1))
     [ "$i" -eq 1 ] || echo
     path="$(canon_path "$f")" || { failed=$((failed + 1)); continue; }
     case "$path" in
@@ -1524,7 +1846,19 @@ do_approve_files() {
       verify_ancestry "$slot" || exit 1
     fi
 
-    old_digest="" old_label="" state_note=""
+    old_digest="" old_label="" state_note="" ign_note="" decl_changed=0
+    old_ign=""; had_copy=0
+    if slot_declares_ignore "$slot"; then
+      # Quiet read: a broken declaration is reported by the note below and
+      # replaced by this ceremony, so read_ignore_keys' own refusal text
+      # would only be noise here.
+      if read_ignore_keys "$slot" 2>/dev/null; then
+        old_ign="$IGN_KEYS"
+      else
+        old_ign="(unreadable declaration)"
+      fi
+    fi
+    [ -e "$slot/approved" ] && had_copy=1
     if ! inspect_slot "$slot" 2>/dev/null; then
       # Malformed is unreadable state, not unapproachable state: the
       # ceremony is exactly the act that may reassert it. Loudly.
@@ -1549,19 +1883,55 @@ do_approve_files() {
     local fro="$FROZEN_COPY"
     new_digest="$(hash_file "$file_algo" "$fro")" || exit 1
 
-    if [ -n "$old_digest" ] && [ "$old_label" = "$file_algo" ] && [ "$new_digest" = "$old_digest" ]; then
+    # The ceremony re-declares a slot's extras EVERY time (the `tag` rule):
+    # an approve carrying no --ignore clears both the declaration and the
+    # approved copy. So identical bytes are only a no-op when the
+    # declaration is identical too -- otherwise the human still has a
+    # narrowing or widening to confirm.
+    if [ "$ign" != "$old_ign" ]; then
+      decl_changed=1
+      if [ -z "$ign" ]; then
+        ign_note="clearing the ignored keys ($(ign_display "$old_ign")) -- every key returns to byte-exact"
+      elif [ -n "$old_ign" ]; then
+        ign_note="ignored keys change: $(ign_display "$old_ign") -> $(ign_display "$ign")"
+      fi
+    fi
+    if [ -n "$ign" ] && [ "$had_copy" -ne "$store" ]; then
+      decl_changed=1
+    fi
+    if [ -z "$ign" ] && [ "$had_copy" -eq 1 ]; then
+      decl_changed=1
+      [ -n "$ign_note" ] || ign_note="removing the approved-bytes copy"
+    fi
+
+    if [ -n "$old_digest" ] && [ "$old_label" = "$file_algo" ] && [ "$new_digest" = "$old_digest" ] \
+       && [ "$decl_changed" -eq 0 ]; then
       printf '%salready approved:%s %s\n' "$C_GRN" "$C_OFF" "$path"
       continue
     fi
 
     printf '%sfile:%s       %s\n' "$C_B" "$C_OFF" "$path"
     [ -n "$state_note" ] && printf '%snote:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_YEL" "$state_note" "$C_OFF"
+    [ -n "$ign_note" ] && printf '%snote:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_YEL" "$ign_note" "$C_OFF"
     if [ -n "$old_digest" ]; then
       printf '%sapproved:%s   %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$old_digest" "$C_OFF" "$C_DIM" "$old_label" "$C_OFF"
     else
       printf '%sapproved:%s   (none -- first approval)\n' "$C_B" "$C_OFF"
     fi
     printf '%s%s:%s     %s%s%s\n' "$C_B" "$file_algo" "$C_OFF" "$C_CYN" "$new_digest" "$C_OFF"
+    # The declaration, stated before the confirm and not after it: answering
+    # y approves the CONTENT and the tolerance in one act, so the tolerance
+    # has to be on screen while the question is being asked.
+    if [ -n "$ign" ]; then
+      printf '%signored:%s    %s%s%s  %s(these keys may drift without re-approval)%s\n' \
+        "$C_B" "$C_OFF" "$C_CYN" "$(ign_display "$ign")" "$C_OFF" "$C_YEL" "$C_OFF"
+      if [ "$store" -eq 1 ]; then
+        printf '            %sa copy of these bytes is kept in the slot -- readable by anything%s\n' "$C_DIM" "$C_OFF"
+        printf '            %sthat mounts it, including every lane (--store)%s\n' "$C_DIM" "$C_OFF"
+      else
+        printf '            %sno copy is kept: a consumer compares against its own baseline%s\n' "$C_DIM" "$C_OFF"
+      fi
+    fi
     echo
 
     # Diff only against a VERIFIED baseline: the candidate must re-hash
@@ -1608,6 +1978,29 @@ do_approve_files() {
       y|Y|yes)
         write_slot_state "$slot" "pin.$file_algo" "$new_digest  $path"
         printf '%s✓ approved:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$new_digest" "$C_OFF" "$slot/pin.$file_algo"
+        # Extras are re-declared from THIS ceremony every time, so the
+        # absence of --ignore is itself a declaration: it clears both.
+        if [ -n "$ign" ]; then
+          # Any previously declared format goes first, so a slot never ends
+          # up holding two of them.
+          rm -f "$slot"/ignore.*
+          # shellcheck disable=SC2086  # deliberate split: one key per printf argument, one per line
+          write_slot_note "$slot" ignore.json "$(printf '%s\n' $ign)"
+          if [ "$store" -eq 1 ]; then
+            # The copy is the frozen buffer this ceremony displayed and
+            # hashed -- the same single read the record binds to, so the
+            # copy can never carry bytes the human did not see.
+            write_slot_copy "$slot" approved "$fro"
+            printf '%s✓ ignoring:%s %s -> %s %s(approved copy kept)%s\n' \
+              "$C_GRN" "$C_OFF" "$(ign_display "$ign")" "$slot/ignore.json" "$C_DIM" "$C_OFF"
+          else
+            rm -f "$slot/approved"
+            printf '%s✓ ignoring:%s %s -> %s %s(no copy kept)%s\n' \
+              "$C_GRN" "$C_OFF" "$(ign_display "$ign")" "$slot/ignore.json" "$C_DIM" "$C_OFF"
+          fi
+        else
+          clear_slot_ignore "$slot"
+        fi
         log_action approve-file "$path" "$new_digest"
         recorded=$((recorded + 1))
         ;;
@@ -1667,6 +2060,7 @@ do_tombstone() {
   esac
   write_slot_state "$slot" tombstone "$(date -u +%Y-%m-%dT%H:%M:%SZ) retired by $inv"
   rm -f "$slot/tag"   # a declared release name has no meaning on a tombstone
+  clear_slot_ignore "$slot"   # nor do tolerated keys, or a copy of what is gone
   printf '%s✓ tombstoned:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$path"
   log_action tombstone "$path"
 }
@@ -1682,30 +2076,46 @@ do_tombstone() {
 #   12  live pin but the file is missing
 #   13  tombstoned but the path is present (retired content resurrected)
 #   14  mode/ownership invariant violated
+#   15  the bytes differ, but ONLY in keys the slot declared ignorable
+#       (see ignore.<format> above) -- and the differing keys are named on
+#       stdout, one `ignored-drift: <key>` line each
 # Anything structural (malformed slot, unknown algorithm, wrong recorded
 # path, unreadable tier) is a hard error: exit 1, fail closed. The
 # common gate stays `if pinned verify <path>; then`.
 #
-# Three forms; the slot key is ALWAYS the original <path>:
+# Four forms; the slot key is ALWAYS the original <path>:
 #   verify <path>                 gate/report: freeze internally, verdict only
 #   verify --emit <path>          freeze, verify, print the VERIFIED bytes on
 #                                 stdout; NOTHING on nonzero exit. The "verify
 #                                 and emit the SAME bytes" shape as one call.
+#                                 BYTE-EXACT ONLY: --emit never answers 15,
+#                                 because bytes that merely match modulo
+#                                 ignored keys are not the verified bytes.
 #   verify --frozen <copy> <path> caller-frozen bytes against <path>'s record,
 #                                 for callers that must hold bytes before a
 #                                 verdict exists; digest from the copy, the
 #                                 mode invariant still checks the original.
+#   verify --baseline <copy> <path>
+#                                 offer the LAST-APPROVED bytes for the
+#                                 ignored-key comparison, for slots that keep
+#                                 no `approved` copy of their own. The copy
+#                                 must re-hash to the record or it is ignored;
+#                                 a forged one can only ever make verify
+#                                 STRICTER (the projection then differs).
 # Consumer rule: PARSE content -> --emit or --frozen; gate/display only
 # -> bare form (the verdict refers to one coherent frozen moment; a
 # caller's later live read is the caller's race).
 do_verify() {
-  local emit=0 frozen="" path=""
+  local emit=0 frozen="" baseline="" path=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --emit) emit=1; shift ;;
       --frozen)
         [ $# -ge 2 ] || { echo "--frozen needs the copy's path" >&2; exit 1; }
         frozen="$2"; shift 2 ;;
+      --baseline)
+        [ $# -ge 2 ] || { echo "--baseline needs the copy's path" >&2; exit 1; }
+        baseline="$2"; shift 2 ;;
       -*) echo "unknown verify option: $1" >&2; usage ;;
       *)  [ -z "$path" ] || { echo "verify takes one path" >&2; usage; }
           path="$1"; shift ;;
@@ -1775,6 +2185,31 @@ do_verify() {
     exit 1
   }
 
+  # SLOT INVARIANT, checked before anything about the live file: if the
+  # slot keeps an `approved` copy, that copy MUST re-hash to the record it
+  # sits beside. The copy exists to stand in for the approved bytes in the
+  # ignored-key comparison, so a copy that is not those bytes is a
+  # malformed slot, not a degraded comparison -- hard error, loudly,
+  # remediation is the ceremony. Checked eagerly (even when the live file
+  # matches byte for byte) because a slot either holds coherent state or it
+  # does not, and the moment to say so is the next time anyone looks.
+  if [ -e "$slot/approved" ]; then
+    [ -f "$slot/approved" ] || {
+      echo "ERROR: $slot/approved is not a regular file; malformed slot" >&2
+      exit 1
+    }
+    verify_record_file "$slot/approved" || exit 1
+    local copy_digest
+    copy_digest="$(hash_file "$label" "$slot/approved")" || exit 1
+    [ "$copy_digest" = "$rec_digest" ] || {
+      echo "ERROR: $slot/approved does not re-hash to its own record; malformed slot" >&2
+      echo "  record $label: $rec_digest" >&2
+      echo "  copy   $label: $copy_digest" >&2
+      echo "  re-approve the path to reset the slot: pinned approve --file $path ..." >&2
+      exit 1
+    }
+  fi
+
   # Order: existence (12), then the mode invariant (14), then content
   # (11). With --frozen the copy evidences existence -- absence was the
   # caller's to catch at its freeze -- so 12 cannot arise there.
@@ -1823,6 +2258,16 @@ do_verify() {
   local live_digest
   live_digest="$(hash_file "$label" "$subject")" || exit 1
   if [ "$live_digest" != "$rec_digest" ]; then
+    # The byte-exact answer is 11. A slot that declares ignored keys gets
+    # one chance to prove the difference is confined to them; anything that
+    # cannot be proven -- no declaration, no last-approved bytes, no jq, an
+    # unparseable or ambiguous side, a difference elsewhere -- lands right
+    # back here. --emit is excluded on purpose: what it prints must be the
+    # verified bytes, and these are not.
+    if [ "$emit" -eq 0 ] && slot_declares_ignore "$slot" \
+       && ignored_keys_match "$slot" "$label" "$rec_digest" "$subject" "$baseline" "$path"; then
+      exit 15
+    fi
     echo "REFUSE: $path does not match its approved record" >&2
     echo "  approved $label: $rec_digest" >&2
     echo "  live     $label: $live_digest" >&2
@@ -1910,9 +2355,25 @@ do_status_file() {
       IFS= read -r line <"$slot_file" || line=""
       printf '%spinned:%s     %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "${line%%  *}" "$C_OFF" \
         "$C_DIM" "$slot_kind" "$C_OFF"
+      # The slot's extras, when it has them: WHICH keys may drift is part
+      # of what this record says, so it belongs in the record's report.
+      if slot_declares_ignore "$slot"; then
+        if read_ignore_keys "$slot" 2>/dev/null; then
+          printf '%signored:%s    %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$(ign_display "$IGN_KEYS")" "$C_OFF"
+        else
+          printf '%signored:%s    %s✗ unusable declaration (re-approve to reset)%s\n' \
+            "$C_DIM" "$C_OFF" "$C_YEL" "$C_OFF"
+        fi
+        if [ -e "$slot/approved" ]; then
+          printf '%scopy:%s       approved bytes kept in the slot\n' "$C_DIM" "$C_OFF"
+        else
+          printf '%scopy:%s       %snone -- a consumer supplies --baseline%s\n' "$C_DIM" "$C_OFF" "$C_DIM" "$C_OFF"
+        fi
+      fi
       rc=0; (do_verify "$path" >/dev/null 2>&1) || rc=$?
       case "$rc" in
         0)  printf '%sstate:%s      %s✓ live file matches the record%s\n' "$C_DIM" "$C_OFF" "$C_GRN" "$C_OFF" ;;
+        15) printf '%sstate:%s      %s~ live file matches except in the ignored keys%s\n' "$C_DIM" "$C_OFF" "$C_YEL" "$C_OFF" ;;
         11) printf '%sstate:%s      %s✗ live file DIFFERS from the record%s\n' "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF" ;;
         12) printf '%sstate:%s      %s✗ pinned but MISSING (restore, or tombstone)%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF" ;;
         14) printf '%sstate:%s      %s✗ mode/ownership invariant violated%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF" ;;
@@ -2044,7 +2505,22 @@ do_list() {
         digest="${line%%  *}"
         case "$digest" in
           *[!0-9a-f]*|'') printf '%sCORRUPT%s  %s\n' "$C_RED$C_B" "$C_OFF" "$path" ;;
-          *) printf '%-11s %s%s%s  %s\n' "$slot_kind" "$C_CYN" "$digest" "$C_OFF" "$path" ;;
+          *)
+            printf '%-11s %s%s%s  %s\n' "$slot_kind" "$C_CYN" "$digest" "$C_OFF" "$path"
+            # Extras ride an INDENTED continuation line, never the row
+            # itself: the row is a parsed contract (`<kind> <digest>  <abs
+            # path>`, and a decoded path may contain spaces), so a marker
+            # inside it would have to be teased back out by every consumer.
+            # A line that cannot match the row shape is skipped by all of
+            # them and read by humans.
+            if slot_declares_ignore "$d"; then
+              if read_ignore_keys "$d" 2>/dev/null; then
+                printf '%s            ignored: %s%s%s\n' "$C_DIM" "$(ign_display "$IGN_KEYS")" \
+                  "$([ -e "$d/approved" ] && printf ' (+approved copy)')" "$C_OFF"
+              else
+                printf '%s            ignored: unusable declaration%s\n' "$C_YEL" "$C_OFF"
+              fi
+            fi ;;
         esac ;;
     esac
     found=1

@@ -116,7 +116,7 @@ need '^    root:\*) ;;$'                                    2 'owner allowlists'
 need '^  install -d -m 755 -o root -g wheel "\$PIN_ROOT"$'  1 'pin-root install'
 need '-o root -g "\$TREE_GRP" '                             3 'slot-tree installs'
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
-need 'chown "root:\$TREE_GRP"'                              4 'record chowns'
+need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
 need '</dev/tty'                                            9 'ceremony tty reads'
 need '^# ---- setup ---'                                    1 'library cut marker'
@@ -188,6 +188,10 @@ seed_state() { # path state-file content
 }
 seed_pin()       { seed_state "$1" pin.sha256 "$2  $1"; }
 seed_tombstone() { seed_state "$1" tombstone "1970-01-01T00:00:00Z retired by $USERNAME"; }
+
+slot_file_of() { # subject-path slot-file-name -> absolute path inside the slot
+  printf '%s/%s\n' "$(slot_of "$1")" "$2"
+}
 
 count_state() { # slot-dir -> how many of rev.* / pin.* / tombstone exist
   local d="$1" f n=0
@@ -559,6 +563,221 @@ ANS=""
 run_pinned list
 assert_exit "$RC" 0 "list survives a corrupt rev slot"
 assert_contains "$OUT" "CORRUPT" "list flags a corrupt rev slot instead of printing a digest"
+
+# ---------------------------------------------------------------------------
+say "S9: ignored keys (ignore.json / approved / exit 15)"
+# ---------------------------------------------------------------------------
+# The tolerance path is jq-driven by construction (structural comparison of
+# two JSON documents), so without jq there is nothing to exercise -- the
+# no-jq behaviour itself is the loud fallback tested at the end of S9.
+if ! command -v jq >/dev/null 2>&1; then
+  say "S9: SKIPPED (no jq in the trusted PATH)"
+else
+mkdir -p "$SUB/ig"
+
+# The declaration is recorded ONLY by the ceremony, one key per line, and
+# WITHOUT an approved copy unless --store asks for one (slot dirs are mounted
+# into lanes: a copy discloses content there).
+printf '{\n  "model": "opus",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/nocopy.json"
+ANS='y
+'
+run_pinned approve --file "$SUB/ig/nocopy.json" --ignore-json-key model --ignore-json-key effortLevel
+assert_exit "$RC" 0 "approve with --ignore-json-key succeeds"
+assert_contains "$OUT" "ignored:" "ceremony displays the proposed ignored keys"
+assert_contains "$OUT" "model, effortLevel" "ceremony names them before the confirm"
+assert_contains "$OUT" "may drift without re-approval" "ceremony states what ignoring means"
+assert_file "$(slot_file_of "$SUB/ig/nocopy.json" ignore.json)" "ignore.json recorded"
+assert_eq "$(cat "$(slot_file_of "$SUB/ig/nocopy.json" ignore.json)")" "$(printf 'model\neffortLevel')" \
+          "ignore.json holds one key per line, in declaration order"
+assert_absent "$(slot_file_of "$SUB/ig/nocopy.json" approved)" "no approved copy without --store"
+
+# --store is what keeps the bytes, and it keeps exactly the approved ones.
+printf '{\n  "model": "opus",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/copy.json"
+COPY_SLOT="$(slot_of "$SUB/ig/copy.json")"
+ANS='y
+'
+run_pinned approve --file "$SUB/ig/copy.json" --ignore-json-key model --store
+assert_exit "$RC" 0 "approve with --store succeeds"
+assert_file "$COPY_SLOT/approved" "--store keeps the approved bytes"
+if cmp -s "$COPY_SLOT/approved" "$SUB/ig/copy.json"; then
+  ok "the stored copy is byte-identical to what was approved"
+else
+  fail "the stored copy differs from the approved file"
+fi
+run_pinned verify "$SUB/ig/copy.json"
+assert_exit "$RC" 0 "an unchanged file with a copy still verifies byte-exact"
+
+# The pin stays byte-exact: `shasum -c` must keep working on a slot that
+# declares ignored keys.
+if (cd / && shasum -a 256 -c "$COPY_SLOT/pin.sha256" >/dev/null 2>&1); then
+  ok "shasum -c still verifies the pin of an ignore-declaring slot"
+else
+  fail "shasum -c cross-check broke on an ignore-declaring slot"
+fi
+
+# Exit 15 via the slot's own copy, naming the key that actually moved.
+printf '{\n  "model": "sonnet",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/copy.json"
+run_pinned verify "$SUB/ig/copy.json"
+assert_exit "$RC" 15 "drift confined to an ignored key -> 15"
+assert_contains "$OUT" "ignored-drift: model" "15 names the drifted key on stdout"
+assert_missing  "$OUT" "ignored-drift: effortLevel" "an unchanged declared key is not reported"
+
+# --emit is byte-exact only: it must never hand a parser unapproved bytes.
+run_pinned verify --emit "$SUB/ig/copy.json"
+assert_exit "$RC" 11 "--emit never answers 15"
+assert_missing "$OUT" "sonnet" "--emit prints nothing on a mismatch"
+
+# A difference OUTSIDE the declared keys is a plain mismatch again.
+printf '{\n  "model": "sonnet",\n  "effortLevel": "high",\n  "permissions": {"deny": []}\n}\n' > "$SUB/ig/copy.json"
+run_pinned verify "$SUB/ig/copy.json"
+assert_exit "$RC" 11 "drift outside the ignored keys -> 11"
+assert_contains "$OUT" "differences remain OUTSIDE" "the refusal says where the difference is"
+
+# The no-copy slot needs a caller baseline; without one it stays strict.
+printf '{\n  "model": "sonnet",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/nocopy.json"
+run_pinned verify "$SUB/ig/nocopy.json"
+assert_exit "$RC" 11 "no approved copy and no --baseline -> 11"
+assert_contains "$OUT" "no --baseline" "the note says what is missing"
+printf '{\n  "model": "opus",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$FIX/baseline.json"
+run_pinned verify --baseline "$FIX/baseline.json" "$SUB/ig/nocopy.json"
+assert_exit "$RC" 15 "a caller baseline that re-hashes to the record enables 15"
+assert_contains "$OUT" "ignored-drift: model" "the baseline path names the drifted key"
+printf 'not the approved bytes\n' > "$FIX/forged.json"
+run_pinned verify --baseline "$FIX/forged.json" "$SUB/ig/nocopy.json"
+assert_exit "$RC" 11 "a baseline that does not re-hash to the record is refused"
+assert_contains "$OUT" "does not re-hash" "the refusal names the failed self-check"
+
+# Duplicate object keys anywhere on either side: abort, never guess which
+# occurrence a consumer's parser keeps.
+printf '{"model": "sonnet", "effortLevel": "high", "effortLevel": "low", "permissions": {"deny": ["Bash"]}}\n' \
+  > "$SUB/ig/copy.json"
+run_pinned verify "$SUB/ig/copy.json"
+assert_exit "$RC" 11 "duplicate object keys refuse the tolerance path -> 11"
+assert_contains "$OUT" "DUPLICATE object keys" "the refusal names the duplication"
+
+# A non-JSON file simply never parses, so it always falls back to strict.
+printf 'container\n' > "$SUB/ig/lane"
+ANS='y
+'
+run_pinned approve --file "$SUB/ig/lane" --ignore-json-key model --store
+assert_exit "$RC" 0 "pinned does not restrict WHICH paths may declare ignored keys"
+printf 'vm\n' > "$SUB/ig/lane"
+run_pinned verify "$SUB/ig/lane"
+assert_exit "$RC" 11 "a non-JSON file falls back to the byte-exact verdict"
+assert_contains "$OUT" "not exactly one JSON document" "the note says why it could not be compared"
+
+# A declaration outside the grammar disables the feature loudly -- it never
+# silently tolerates more than it says.
+printf '{"model": "sonnet", "permissions": {"deny": ["Bash"]}}\n' > "$SUB/ig/bad.json"
+ANS='y
+'
+run_pinned approve --file "$SUB/ig/bad.json" --ignore-json-key model --store
+assert_exit "$RC" 0 "fixture: bad.json approved with a declaration"
+seed_state "$SUB/ig/bad.json" ignore.json 'permissions.deny[0]'
+printf '{"model": "opus", "permissions": {"deny": ["Bash"]}}\n' > "$SUB/ig/bad.json"
+run_pinned verify "$SUB/ig/bad.json"
+assert_exit "$RC" 11 "a line outside the key grammar refuses the tolerance path"
+assert_contains "$OUT" "outside the ignored-key grammar" "the refusal names the grammar"
+
+# An UNDECLARED format refuses exactly like an unknown rev.<vcs>.
+rm -f "$(slot_file_of "$SUB/ig/bad.json" ignore.json)"
+seed_state "$SUB/ig/bad.json" ignore.toml 'model = true'
+run_pinned verify "$SUB/ig/bad.json"
+assert_exit "$RC" 11 "an unrecognized ignore.<format> refuses the tolerance path"
+assert_contains "$OUT" "unsupported ignored-key format" "the refusal names the undeclared format"
+seed_state "$SUB/ig/bad.json" ignore.json 'model'
+run_pinned verify "$SUB/ig/bad.json"
+assert_exit "$RC" 11 "two ignore.<format> files at once refuse"
+assert_contains "$OUT" "more than one ignore" "the refusal names the ambiguity"
+rm -f "$(slot_file_of "$SUB/ig/bad.json" ignore.toml)"
+
+# The approved copy is a slot INVARIANT: if it exists it must re-hash to the
+# record beside it. A violation is malformed state, not a degraded compare.
+BAD_SLOT="$(slot_of "$SUB/ig/bad.json")"
+printf 'tampered copy\n' > "$BAD_SLOT/approved"
+chmod 640 "$BAD_SLOT/approved"
+run_pinned verify "$SUB/ig/bad.json"
+assert_exit "$RC" 1 "an approved copy that does not re-hash is a malformed slot (exit 1)"
+assert_contains "$OUT" "malformed slot" "the error names the malformation"
+assert_contains "$OUT" "re-approve" "the error names the remediation"
+
+# Re-approving the same bytes with a DIFFERENT declaration is not a no-op,
+# and clearing is loud.
+printf '{"model": "opus", "keep": 1}\n' > "$SUB/ig/clear.json"
+CLEAR_SLOT="$(slot_of "$SUB/ig/clear.json")"
+ANS='y
+'
+run_pinned approve --file "$SUB/ig/clear.json" --ignore-json-key model --store
+assert_exit "$RC" 0 "fixture: clear.json approved with a declaration + stored copy"
+ANS='y
+'
+run_pinned approve --file "$SUB/ig/clear.json"
+assert_exit "$RC" 0 "re-approving identical bytes without a declaration still runs"
+assert_missing  "$OUT" "already approved" "a changed declaration defeats the no-op short-circuit"
+assert_contains "$OUT" "clearing the ignored keys" "the ceremony says the tolerance is being withdrawn"
+assert_absent "$CLEAR_SLOT/ignore.json" "a plain approve clears the declaration"
+assert_absent "$CLEAR_SLOT/approved" "a plain approve clears the approved copy"
+printf '{"model": "sonnet", "keep": 1}\n' > "$SUB/ig/clear.json"
+run_pinned verify "$SUB/ig/clear.json"
+assert_exit "$RC" 11 "after clearing, the same drift is a plain mismatch again"
+
+# Tombstoning retires the extras with the record.
+printf '{"model": "opus"}\n' > "$SUB/ig/doomed.json"
+DOOM_SLOT="$(slot_of "$SUB/ig/doomed.json")"
+ANS='y
+'
+run_pinned approve --file "$SUB/ig/doomed.json" --ignore-json-key model --store
+assert_exit "$RC" 0 "fixture: doomed.json approved with extras"
+rm -f "$SUB/ig/doomed.json"
+ANS='y
+'
+run_pinned tombstone "$SUB/ig/doomed.json"
+assert_exit "$RC" 0 "tombstone succeeds"
+assert_absent "$DOOM_SLOT/ignore.json" "tombstone drops the declaration"
+assert_absent "$DOOM_SLOT/approved" "tombstone drops the approved copy"
+
+# Surfaces: list annotates, status reports the declaration and the ~ state.
+run_pinned list
+assert_exit "$RC" 0 "list exits 0 with ignore-declaring slots present"
+assert_contains "$OUT" "ignored: model" "list annotates a slot that declares ignored keys"
+assert_contains "$OUT" "$SUB/ig/nocopy.json" "list still prints the parseable row"
+ANS=""
+run_pinned status "$SUB/ig/nocopy.json"
+assert_exit "$RC" 0 "status exits 0"
+assert_contains "$OUT" "model, effortLevel" "status reports the declared keys"
+assert_contains "$OUT" "a consumer supplies --baseline" "status says the slot keeps no copy"
+run_pinned status "$SUB/ig/copy.json"
+assert_contains "$OUT" "live file DIFFERS" "status agrees with verify on a real mismatch"
+
+# Argument surface.
+ANS=""
+run_pinned approve --file "$SUB/ig/nocopy.json" --ignore-json-key 'permissions.deny[0]'
+assert_exit "$RC" 1 "an out-of-grammar --ignore-json-key is refused up front"
+assert_contains "$OUT" "outside the key grammar" "the refusal names the grammar"
+run_pinned approve --file "$SUB/ig/nocopy.json" --store
+assert_exit "$RC" 1 "--store without a declaration is refused as a no-op"
+assert_contains "$OUT" "--store applies to a ceremony" "the refusal explains the pairing"
+run_pinned approve --ignore-json-key model --file "$SUB/ig/nocopy.json"
+assert_exit "$RC" 1 "--ignore-json-key before any --file is refused"
+assert_contains "$OUT" "must follow the --file" "the refusal names the ordering rule"
+
+# Unit-level: the projection guard and the path builder, through the probe.
+run_probe ign_paths_json "model effortLevel statusLine.command"
+assert_eq "$POUT" '[["model"],["effortLevel"],["statusLine","command"]]' \
+          "ign_paths_json builds the jq path array"
+printf '{"a":{"x":1},"a":{"y":2}}\n' > "$FIX/dup.json"
+run_probe json_projectable "$FIX/dup.json" side
+assert_exit "$RC" 1 "json_projectable refuses object-valued duplicate keys"
+printf '{"a":{"x":1},"b":{"y":2}}\n' > "$FIX/clean.json"
+run_probe json_projectable "$FIX/clean.json" side
+assert_exit "$RC" 0 "json_projectable accepts a duplicate-free document"
+printf '{"a":1}{"b":2}\n' > "$FIX/two.json"
+run_probe json_projectable "$FIX/two.json" side
+assert_exit "$RC" 1 "json_projectable refuses a concatenated document stream"
+printf '{"a":1}\000' > "$FIX/nul.json"
+run_probe json_projectable "$FIX/nul.json" side
+assert_exit "$RC" 1 "json_projectable refuses NUL bytes jq would tolerate"
+fi
 
 # ---------------------------------------------------------------------------
 say ""

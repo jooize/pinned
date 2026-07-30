@@ -30,15 +30,22 @@ unknown declarations refuse outright.
                                       signature gate: verify signed tag(s),
                                       all naming one commit -> pin (--tag:
                                       an unsigned name that must agree)
-    pinned approve --file <path> [--baseline <copy>] [--file <path> ...] [--algo <name>]
+    pinned approve --file <path> [--baseline <copy>] [--ignore-json-key <key> ...]
+                   [--file <path> ...] [--algo <name>] [--store]
                                       file-pin ceremony: freeze, display
                                       ROOT-SIDE, confirm, record the hash;
                                       several --file share one sudo
+                                      (--ignore-json-key: keys whose later
+                                      drift verify tolerates; --store also
+                                      keeps the approved bytes in the slot)
     pinned verify <path>              file-pin verdict for gates: 0 ok,
                                       10 no slot, 11 mismatch, 12 missing,
-                                      13 tombstoned-but-present, 14 mode
+                                      13 tombstoned-but-present, 14 mode,
+                                      15 differs only in ignored keys
                                       (--emit prints the verified bytes;
-                                      --frozen <copy> checks held bytes)
+                                      --frozen <copy> checks held bytes;
+                                      --baseline <copy> offers the last
+                                      approved bytes for the 15 comparison)
     pinned tombstone <path>           retire a pinned file that is GONE
     pinned sign <repo> <tag>          signed release tag at the PINNED hash
     pinned signer add|list|remove [--repo <path>] (--file <pubkey> | --key '<line>')
@@ -75,8 +82,8 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   line carrying the live absolute path -- `shasum -a 256 -c pin.sha256`
   verifies with no pinned involved) or `tombstone` (one ISO line;
   existence is the semantics), plus optional annotations (`tag`,
-  `signers/allowed_signers`). Two state files at once is a malformed
-  slot: every consumer refuses. `ls` reads a slot's whole state at a
+  `ignore.<format>`, `approved`, `signers/allowed_signers`). Two state
+  files at once is a malformed slot: every consumer refuses. `ls` reads a slot's whole state at a
   glance. `<user>/` is 0750 root:`_<user>-pinned` -- the group is
   consumed from the system config, never created, and its absence fails
   closed to root-only 0700. The wrapper subdirs are the mount menu: a
@@ -96,13 +103,74 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   `--baseline <copy>` shows a diff instead of the full file, but only
   when the copy re-hashes to the previously recorded digest.
 - `verify` is the one state table. Consumers never re-derive slot
-  semantics; they read verify's exit code (0/10/11/12/13/14, stable
+  semantics; they read verify's exit code (0/10/11/12/13/14/15, stable
   API). Parsers use `--emit` (print the VERIFIED bytes, nothing on
   failure) or `--frozen <copy>` (verdict on caller-held bytes) so the
   bytes acted on are the bytes verified -- never verify-path-then-
   read-path. File modes are CHECKED as an invariant (owner is the tier
   user, no group/other write), not pinned as a value: content
   addressing catches rewrites; the owner can always chmod back.
+- IGNORED KEYS: a settings file whose `model` and `effortLevel` churn
+  hourly should not summon a ceremony hourly, and those keys carry no
+  hardening. A slot may therefore declare `ignore.json` -- one dotted JSON
+  key path per line, written ONLY by the ceremony (`approve --file <path>
+  --ignore-json-key model --ignore-json-key effortLevel`). Semantics, in
+  one sentence: **the pin stays byte-exact and ignoring is a VERIFY-side
+  tolerance.** `pin.<algo>` is still the hash of the approved bytes,
+  `shasum -a 256 -c pin.sha256` still cross-checks it with stock tools, and
+  nothing about what gets hashed changes. What changes is the answer to a
+  MISMATCH: verify may compare the two documents with the declared keys
+  projected out, and, if everything else is identical, answer **15**
+  ("matches modulo declared ignored keys") instead of 11, naming each key
+  that actually moved on stdout as `ignored-drift: <key>`. Consumers treat
+  15 as permitted and unknown codes as refusal, exactly as before.
+  - The FORMAT is declared by the suffix, like `rev.<vcs>` and
+    `pin.<algo>`: `ignore.json` is the shipped grammar, and an
+    `ignore.toml` / `ignore.yaml` / anything else REFUSES rather than
+    being guessed at. That refusal is also the extension point -- adding a
+    format means adding a reader and a flag, never inferring one.
+  - Key grammar: dotted `[A-Za-z0-9_.-]`, no leading/trailing/doubled dot,
+    KEYS ONLY. No array subscripts: an index is a position, not a name,
+    and a tolerated position silently moves when something is inserted
+    before it.
+  - Comparing needs the LAST-APPROVED bytes. `--store` keeps them in the
+    slot as `approved`; otherwise the caller passes
+    `verify --baseline <copy> <path>` and the copy must re-hash to the
+    record before it is used (the same self-verifying trick the ceremony's
+    baseline diff uses -- a forged baseline can only make verify
+    STRICTER). The copy is OPT-IN because the lanes read-only mount slot
+    directories into containers and VMs: a slot that today discloses one
+    hash would then disclose the file's whole CONTENT there. That is a
+    per-slot human decision at the ceremony, not a default.
+  - If `approved` exists it MUST re-hash to the record beside it. A
+    violation is a MALFORMED SLOT (hard error, exit 1) rather than a
+    degraded comparison -- a slot either holds coherent state or it does
+    not; re-approve to reset it.
+  - PARSER DIFFERENTIALS are the reason this path is so suspicious of its
+    input. A structural comparison is only as honest as the agreement
+    between the parser doing the comparing and the parser that will
+    actually read the file. So the tolerance path refuses -- loudly, back
+    to the byte-exact 11 -- on: DUPLICATE object keys anywhere on either
+    side (jq keeps the last, other parsers differ, and guessing which one
+    a consumer keeps is exactly the uncertainty this tool exists to
+    avoid); more than one top-level JSON document (jq reads a concatenated
+    stream, everything else reads one value); NUL bytes (jq tolerates a
+    trailing one, other parsers do not); an unparseable side; a missing
+    baseline; a missing jq; and of course any difference outside the
+    declared keys. Duplicate detection is empirical, not assumed:
+    `jq --stream` emits one event per value OCCURRENCE while re-serializing
+    through jq collapses duplicates to the last, so a differing event count
+    proves a duplicate anywhere at any depth -- including duplicates whose
+    values are objects, where the leaf paths differ and a path-multiset
+    comparison would miss them.
+  - The ceremony states the declaration prominently before the y/N, and an
+    approve WITHOUT `--ignore-json-key` CLEARS both the declaration and the
+    copy -- extras are re-declared every time, exactly like `tag` -- with a
+    loud note whenever that narrows or widens what was there.
+  - pinned does not restrict WHICH paths may carry a declaration: policy
+    belongs to the human at the ceremony (and to the calling tool's
+    proposal), capability belongs here. A non-JSON file simply fails the
+    parse step and always gets the byte-exact verdict.
 - Tombstones are sentinel slot CONTENT, never slot deletion: a pinned
   file that vanished refuses until restored or ceremonially tombstoned,
   and a tombstoned path that REAPPEARS refuses until re-approved --
@@ -191,6 +259,47 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   survives a lying shell is out-of-band: the sudo authentication
   dialog names the exact command it will run as root -- read it there.
   Given a trusted shell config, invoking bare `pinned` is fine.
+
+## Display conventions
+
+A trust ceremony is mostly a display, so the display has rules. They are
+recorded here because consumers print around pinned's output (the
+hardening repo's claude shim shows an orientation preview immediately
+before handing off), and two speakers sharing a screen must not read as
+one.
+
+- **Banners name the program and bracket authority.** The ceremony opens
+  with `=== pinned: approve (authoritative) ===`; a caller's own preview
+  opens with its own name and says `(orientation preview)`. Everything
+  between a banner and the next one belongs to that speaker. ONE speaker
+  per banner region -- pinned never prints inside a caller's block, and a
+  caller never annotates inside pinned's.
+- **A caller's display is orientation; pinned's is authority.** The
+  ceremony's hash comes from the buffer the ceremony itself displayed, so
+  a caller's richer preview (structural diffs, changed-key summaries) is a
+  reading aid that no record binds to.
+- **Field lines are lowercase `label:` + value**, padded to one column
+  (`file:`, `approved:`, `sha256:`, `ignored:`, `state:`). Stage-boundary
+  statements are Sentence case sentences. Full caps only for a deliberate
+  alarm (`!!! FIRST APPROVAL WITH --trust !!!`) -- never as generic
+  emphasis.
+- **Colour roles** are fixed: red = failure, green = success, yellow =
+  attention, cyan = identifiers (paths, hashes, keys, tags), dim =
+  secondary detail, bold = structure and authority. Colour is decoration
+  only: with a non-tty stdout (or `NO_COLOR` for the two content
+  highlighters) every display degrades to byte-identical plain text.
+- **Glyphs**: `✓` recorded/verified, `✗` refused, `~` matched with a
+  declared tolerance.
+- **Paging** is `less -RF` through a fixed trusted path -- never `$PAGER`
+  or user config, since the pager sits between reviewed bytes and eyes.
+  `-F` means one-screen content prints inline and never takes over the
+  alternate screen; longer content gets the alternate screen and real
+  scrollback.
+- **Structural views are derived; the raw byte diff is authoritative.**
+  Section labels, changed-key summaries and shape lines (`3 hunks,
+  +12/-4 lines`) orient a reader; they can lie about WHERE a change sits
+  and never about WHAT changed, because every changed line prints
+  regardless and the digest comes from the bytes, not the view.
 
 ## Bootstrap without executing unverified code
 
