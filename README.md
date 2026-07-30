@@ -36,8 +36,10 @@ unknown declarations refuse outright.
                                       ROOT-SIDE, confirm, record the hash;
                                       several --file share one sudo
                                       (--ignore-json-key: keys whose later
-                                      drift verify tolerates; --store also
-                                      keeps the approved bytes in the slot)
+                                      drift verify tolerates, each of which
+                                      the ignorable policy must grant for
+                                      that path; --store also keeps the
+                                      approved bytes in the slot)
     pinned verify <path>              file-pin verdict for gates: 0 ok,
                                       10 no slot, 11 mismatch, 12 missing,
                                       13 tombstoned-but-present, 14 mode,
@@ -51,6 +53,13 @@ unknown declarations refuse outright.
     pinned signer add|list|remove [--repo <path>] (--file <pubkey> | --key '<line>')
                                       allowed-signers ceremony:
                                       fingerprint, confirm, write
+    pinned ignorable add|remove <key> [--under <dir>]
+                                      grant/withdraw a key that a ceremony
+                                      may declare ignored; --under scopes
+                                      the grant to a directory's subtree,
+                                      omitted means everywhere
+    pinned ignorable list             machine tier, user tier, and the
+                                      effective intersection, with scopes
     pinned status <repo|file>         record vs live state
     pinned review <file> [--algo <name>] [--length <bits>]
                                       trusted review of a non-repo file:
@@ -65,8 +74,9 @@ unknown declarations refuse outright.
                                       shows the root commands first,
                                       never self-elevates
 
-approve, setup, tombstone and signer add/remove self-elevate
-via sudo (re-exec of the installed root-owned binary). sign and review
+approve, setup, tombstone, signer add/remove and ignorable add/remove
+self-elevate via sudo (re-exec of the installed root-owned binary).
+sign and review
 run as you: sign needs your SSH agent, review writes nothing. The verb
 triple: `review` rehearses (no record), `approve` records, `verify`
 answers -- humans review, machines verify, records happen only in
@@ -82,13 +92,25 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   line carrying the live absolute path -- `shasum -a 256 -c pin.sha256`
   verifies with no pinned involved) or `tombstone` (one ISO line;
   existence is the semantics), plus optional annotations (`tag`,
-  `ignore.<format>`, `approved`, `signers/allowed_signers`). Two state
+  `ignored.<format>`, `approved`, `signers/allowed_signers`). Two state
   files at once is a malformed slot: every consumer refuses. `ls` reads a slot's whole state at a
   glance. `<user>/` is 0750 root:`_<user>-pinned` -- the group is
   consumed from the system config, never created, and its absence fails
-  closed to root-only 0700. The wrapper subdirs are the mount menu: a
-  lane mounts its own slot dirs (or `signers/` read-only), never
-  `<user>/` itself, which would disclose every pinned path name.
+  closed to root-only 0700.
+- The tier has exactly TWO wrapper dirs, and they are the MOUNT MENU:
+  `slots/` (what IS pinned) and `policy/` (what MAY be trusted:
+  `allowed_signers` and `ignorable.json`). A lane mounts its own slot
+  dirs and `policy/` read-only, never `<user>/` itself, which would
+  disclose every pinned path name. Two rules produced this shape, and
+  both rule out loose files directly under `<user>/`:
+  - **Directories are mounted, never files.** Every write here is an
+    atomic rename over a staged temp file, so the name gets a NEW inode
+    -- and a bind-mounted (or virtiofs-shared) FILE pins the inode it
+    was mounted from, so a guest would keep reading pre-ceremony bytes
+    forever. Sharing the enclosing dir re-reads the name every time.
+  - **One dir per disclosure class.** Policy is small, boring and safe
+    to expose; the slot LIST is itself information. Flat files would
+    force a lane that needs the policy to mount the slot list with it.
   Consumers that want a friendly path use a root-owned symlink:
   `sudo ln -s "$(pinned slot <repo>)" /etc/nix-darwin/pinned-rev`.
 - First approval of a repo shows the full tree (diff from the empty
@@ -112,9 +134,10 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   addressing catches rewrites; the owner can always chmod back.
 - IGNORED KEYS: a settings file whose `model` and `effortLevel` churn
   hourly should not summon a ceremony hourly, and those keys carry no
-  hardening. A slot may therefore declare `ignore.json` -- one dotted JSON
-  key path per line, written ONLY by the ceremony (`approve --file <path>
-  --ignore-json-key model --ignore-json-key effortLevel`). Semantics, in
+  hardening. A slot may therefore declare `ignored.json` -- a JSON array of
+  jq key paths, e.g. `[["model"],["statusLine","command"]]` -- written ONLY
+  by the ceremony (`approve --file <path> --ignore-json-key model
+  --ignore-json-key effortLevel`). Semantics, in
   one sentence: **the pin stays byte-exact and ignoring is a VERIFY-side
   tolerance.** `pin.<algo>` is still the hash of the approved bytes,
   `shasum -a 256 -c pin.sha256` still cross-checks it with stock tools, and
@@ -125,14 +148,25 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   that actually moved on stdout as `ignored-drift: <key>`. Consumers treat
   15 as permitted and unknown codes as refusal, exactly as before.
   - The FORMAT is declared by the suffix, like `rev.<vcs>` and
-    `pin.<algo>`: `ignore.json` is the shipped grammar, and an
-    `ignore.toml` / `ignore.yaml` / anything else REFUSES rather than
+    `pin.<algo>`: `ignored.json` is the shipped grammar, and an
+    `ignored.toml` / `ignored.yaml` / anything else REFUSES rather than
     being guessed at. That refusal is also the extension point -- adding a
-    format means adding a reader and a flag, never inferring one.
-  - Key grammar: dotted `[A-Za-z0-9_.-]`, no leading/trailing/doubled dot,
-    KEYS ONLY. No array subscripts: an index is a position, not a name,
-    and a tolerated position silently moves when something is inserted
-    before it.
+    format means adding a reader and a flag, never inferring one. The
+    content must be an array of nonempty arrays of strings; anything else
+    (including an empty array, which would tolerate nothing) refuses.
+  - The record is REAL JSON because the `.json` suffix has to be truthful,
+    because that array is exactly what jq's `delpaths` takes (so the
+    comparison consumes the record with no translation step), and because
+    a JSON object key may contain any character at all -- dots, spaces,
+    parentheses (`"Bash(git status:*)"` is a real settings key). A dotted
+    line cannot spell those. GENERALITY LIVES IN THE STORAGE, CONVENIENCE
+    IN THE HUMAN SURFACE: the CLI still takes `--ignore-json-key model` (or
+    `a.b.c`), displays join paths back with dots, and dot-splitting happens
+    only at that surface.
+  - CLI key grammar: dotted `[A-Za-z0-9_.-]`, no leading/trailing/doubled
+    dot, KEYS ONLY. No array subscripts: an index is a position, not a
+    name, and a tolerated position silently moves when something is
+    inserted before it.
   - Comparing needs the LAST-APPROVED bytes. `--store` keeps them in the
     slot as `approved`; otherwise the caller passes
     `verify --baseline <copy> <path>` and the copy must re-hash to the
@@ -167,10 +201,52 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
     approve WITHOUT `--ignore-json-key` CLEARS both the declaration and the
     copy -- extras are re-declared every time, exactly like `tag` -- with a
     loud note whenever that narrows or widens what was there.
-  - pinned does not restrict WHICH paths may carry a declaration: policy
-    belongs to the human at the ceremony (and to the calling tool's
-    proposal), capability belongs here. A non-JSON file simply fails the
-    parse step and always gets the byte-exact verdict.
+  - A non-JSON file simply fails the parse step and always gets the
+    byte-exact verdict; pinned never restricts which KINDS of path may
+    carry a declaration, only which keys (below).
+- THE IGNORABLE LADDER. What a slot may declare is itself gated, because
+  "which keys may drift" is exactly the decision an attacker would like to
+  make for you. Two root-owned policy tiers sit above the declaration, and
+  every rung is checked at approve AND at verify:
+
+      machine policy  >=  user policy     >=  slot declaration  >=  drift
+      /etc/pinned/        <user>/policy/      slots/<enc>/          tolerated
+      ignorable.json      ignorable.json      ignored.json          by verify
+
+  - Both tiers are arrays of entries:
+    `[{"path":["model"],"under":"/Users/x/.config"},{"path":["effortLevel"]}]`.
+    `"under"` is optional and means EVERYWHERE when omitted; present, it is
+    an absolute prefix matched at a COMPONENT BOUNDARY, so `/a/b` covers
+    `/a/b` and `/a/b/c` and never `/a/bb` -- the same rule `list --under`
+    uses. No other object keys are accepted: one this version does not
+    understand could be a narrowing constraint written by a newer one, and
+    ignoring it would silently widen the grant.
+  - The MACHINE tier is optional (absent = no machine constraint) and is
+    the file a configuration manager declares (nix: `environment.etc`).
+    The USER tier is the operative allow-list, managed by the `ignorable`
+    ceremony. Absent or empty grants NOTHING, and an unreadable tier of
+    either kind grants nothing either -- fail closed, in the direction that
+    costs a ceremony rather than a tolerance.
+  - EFFECTIVE = the intersection: a user entry counts only if the machine
+    tier has the same path with a scope covering it (a user entry with no
+    scope is covered only by a machine entry with no scope). `pinned
+    ignorable list` prints all three -- machine, user, effective -- with
+    each entry's scope, so "why was this key dropped" is answerable from
+    one unprivileged command.
+  - `approve --file --ignore-json-key <key>` REFUSES a key the effective
+    policy does not grant for that path, loudly, and names the exact
+    remediation (`sudo pinned ignorable add <key> --under <dir>`). The
+    semantics are UNIFORM: pinned cannot tell a human's argv from a calling
+    tool's, so "a human typed it" is never a reason to allow it. The
+    ceremony display then states each declared key's grant PROVENANCE
+    (`model -- user policy, under /Users/x/.config`), so the ladder is
+    audited on screen while the y/N is asked.
+  - VERIFY re-checks at use time: every key recorded in `ignored.json` must
+    still be within the effective policy FOR THAT PATH, or the tolerance is
+    refused and the answer is a plain 11 (with a note naming the key that
+    lost its grant). Narrowing the policy therefore bites at the very next
+    verify -- no re-ceremony, no stale grant surviving in a slot nobody
+    revisits.
 - Tombstones are sentinel slot CONTENT, never slot deletion: a pinned
   file that vanished refuses until restored or ceremonially tombstoned,
   and a tombstoned path that REAPPEARS refuses until re-approved --
@@ -181,7 +257,8 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   so a compromised environment has nothing to MITM (SSH-agent signing
   is blind -- the binding to content is this code path). `approve --signed-tag`
   verifies such a tag against root-owned allowed signers -- the slot's
-  `signers/allowed_signers` first, the user tier's as fallback, so a key
+  `signers/allowed_signers` first, the user tier's
+  `policy/allowed_signers` as fallback, so a key
   trusted for one repo doesn't implicitly vouch for every repo (OpenSSH's
   SSHSIG allowed_signers format, git's native SSH signing end to end --
   stock `ssh-keygen -Y` verification, nothing pinned-specific); any repo

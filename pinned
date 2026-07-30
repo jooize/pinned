@@ -20,13 +20,15 @@
 #   pinned tombstone <path>                   retire a pinned file that is GONE
 #   pinned sign <repo> <tag>                  signed release tag at the PINNED hash
 #   pinned signer add|list|remove             allowed-signers ceremony
+#   pinned ignorable add|remove|list          which keys a ceremony may declare
+#                                             ignored, and where (the policy)
 #   pinned status <repo|file>                 record vs live state
 #   pinned deploy [--dry-run]                 sync flake inputs to approved revs, rebuild
 #   pinned setup [--yes]                      provision sudoers digest pin; self-install
 #
-# approve, setup, tombstone and signer add/remove self-elevate
-# via sudo (re-exec of the installed root-owned binary); sign runs as
-# the user because it needs the SSH agent.
+# approve, setup, tombstone, signer add/remove and ignorable add/remove
+# self-elevate via sudo (re-exec of the installed root-owned binary);
+# sign runs as the user because it needs the SSH agent.
 #
 # approve runs root-owned code end to end: it resolves the rev to a hash, shows
 # the diff from the OBJECT STORE (scrubbed env, no user git config, no pager,
@@ -39,31 +41,53 @@
 # signs comes from the root-owned pin file -- you read once at approve;
 # nothing is re-read at sign time, so there is nothing to MITM. approve
 # --signed-tag verifies such a tag against root-owned allowed signers
-# (per-slot signers/allowed_signers first, the user tier's as fallback;
-# git's native format) -- that is the second-machine bootstrap: clone
-# anywhere, install the signer key once (pinned signer add), approve
-# the release.
+# (per-slot signers/allowed_signers first, the user tier's
+# policy/allowed_signers as fallback; git's native format) -- that is the
+# second-machine bootstrap: clone anywhere, install the signer key once
+# (pinned signer add), approve the release.
 #
-# Storage: /var/db/pinned/<user>/slots/<encoded-path>/ -- one root-owned
-# SLOT DIRECTORY per pinned path, holding exactly one of rev.<vcs> (repo
-# pin), pin.<algo> (file pin) or tombstone, plus optional annotations
-# (tag, ignore.<format>, approved, signers/allowed_signers). The root-owned
-# record DECLARES (which VCS, which algorithm, which key format); the live
-# world must CONFORM; anything undeclared REFUSES. Consumers that want a
-# friendly path point a root-owned symlink at the slot dir, e.g.
+# Storage: /var/db/pinned/<user>/ -- two root-owned wrapper dirs:
+#   slots/<encoded-path>/  one SLOT DIRECTORY per pinned path, holding
+#                          exactly one of rev.<vcs> (repo pin), pin.<algo>
+#                          (file pin) or tombstone, plus optional
+#                          annotations (tag, ignored.<format>, approved,
+#                          signers/allowed_signers)
+#   policy/                what this tier is ALLOWED to record:
+#                          allowed_signers (who may vouch) and
+#                          ignorable.json (which keys a ceremony may
+#                          declare ignored, and where)
+# The root-owned record DECLARES (which VCS, which algorithm, which key
+# format); the live world must CONFORM; anything undeclared REFUSES.
+# Consumers that want a friendly path point a root-owned symlink at the
+# slot dir, e.g.
 #   ln -s "$(pinned slot /path/to/repo)" /etc/nix-darwin/pinned-rev
 #
-# IGNORED KEYS: a file slot may additionally declare `ignore.json` (one
-# dotted JSON key path per line) and, only when the ceremony was asked for
-# it, `approved` (a copy of the approved bytes) -- both written ONLY by the
-# approve ceremony. The PIN stays byte-exact -- `shasum -c pin.sha256`
-# still verifies -- and ignoring is a VERIFY-side tolerance: when the live
-# bytes differ, verify may compare the two sides with those keys projected
-# out and answer 15 instead of 11. Every step of that path fails CLOSED to
-# the stricter verdict. The `approved` copy is OPT-IN (--store) because slot
-# dirs get read-only mounted into container and vm lanes: a copy turns a
-# slot that discloses only a hash into one that discloses the file's
-# CONTENT, which is a per-slot human decision, not a default.
+# IGNORED KEYS: a file slot may additionally declare `ignored.json` (a JSON
+# array of jq key paths, e.g. [["model"],["statusLine","command"]]) and,
+# only when the ceremony was asked for it, `approved` (a copy of the
+# approved bytes) -- both written ONLY by the approve ceremony. The PIN
+# stays byte-exact -- `shasum -c pin.sha256` still verifies -- and ignoring
+# is a VERIFY-side tolerance: when the live bytes differ, verify may
+# compare the two sides with those keys projected out and answer 15 instead
+# of 11. Every step of that path fails CLOSED to the stricter verdict. The
+# `approved` copy is OPT-IN (--store) because slot dirs get read-only
+# mounted into container and vm lanes: a copy turns a slot that discloses
+# only a hash into one that discloses the file's CONTENT, which is a
+# per-slot human decision, not a default.
+#
+# THE IGNORABLE LADDER. What a slot may declare is itself gated, by two
+# root-owned policy tiers, and every rung is checked at approve AND at
+# verify -- narrowing the policy bites at the next verify, with no
+# re-ceremony:
+#
+#   machine policy   >=  user policy      >=  slot declaration  >=  drift
+#   /etc/pinned/         <user>/policy/       slots/<enc>/          tolerated
+#   ignorable.json       ignorable.json       ignored.json          by verify
+#
+# The machine tier is OPTIONAL (absent = no machine constraint); the user
+# tier is the operative allow-list (absent or empty = nothing is ignorable,
+# fail closed). Both are arrays of {"path":[...],"under":"/abs/prefix"}
+# entries whose "under" is optional and means everywhere when omitted.
 
 # Pin PATH to root-owned directories only, before anything runs. This is the
 # ONE place trust in command resolution is established: everything below calls
@@ -87,6 +111,11 @@ set -euo pipefail
 # env_reset, so the elevated run always sees the defaults.
 : "${INSTALL_TARGET:=/usr/local/sbin/pinned}"
 : "${PIN_ROOT:=/var/db/pinned}"
+# The OPTIONAL machine tier of the ignorable policy. Absent = no machine
+# constraint (the user tier stands alone); the FILE is the interface, so a
+# configuration manager can declare it (nix: environment.etc) without this
+# script knowing anything about the tool that wrote it.
+: "${MACHINE_POLICY:=/etc/pinned/ignorable.json}"
 
 # Colour only when stdout is a terminal (piping/redirecting stays clean).
 if [ -t 1 ]; then
@@ -97,7 +126,7 @@ else
   C_OFF='' C_B='' C_DIM='' C_RED='' C_GRN='' C_YEL='' C_CYN=''
   DIFF_COLOR=never
 fi
-NL=$'\n'
+NL=$'\n' TAB=$'\t'
 
 # Separate gate for the two review-display highlighters ported from the
 # hardening repo's claude-shim.bash (color_diff, highlight_json): they keep
@@ -144,9 +173,10 @@ usage: pinned <action> [args]
                      loudly; later approves always show the diff
   approve <repo> --signed-tag <tag> [--signed-tag <tag> ...] [--tag <tag>]
                      (sudo) verify signed tag(s) against root-owned
-                     allowed signers (per-repo <pin file>.signers,
-                     else global /etc/pinned/allowed_signers); all
-                     tags must name the same commit; approve, pin
+                     allowed signers (the slot's own
+                     signers/allowed_signers, else the user tier's
+                     policy/allowed_signers); all tags must name the
+                     same commit; approve, pin
                      --tag may add an unsigned name (a clean release
                      name) that must name the same commit
   approve --file <path> [--baseline <copy>] [--ignore-json-key <key> ...]
@@ -158,9 +188,11 @@ usage: pinned <action> [args]
                      that re-hashes to the prior record
                      --ignore-json-key (after its --file, repeatable)
                      declares a dotted JSON key whose later drift verify
-                     tolerates, answering 15; --store additionally keeps
-                     the approved bytes in the slot so verify needs no
-                     caller baseline (opt-in: slot dirs are mounted into
+                     tolerates, answering 15; the key must be granted for
+                     that path by the ignorable policy or the ceremony
+                     REFUSES (see: pinned ignorable); --store additionally
+                     keeps the approved bytes in the slot so verify needs
+                     no caller baseline (opt-in: slot dirs are mounted into
                      lanes, so a copy discloses the content there). An
                      approve WITHOUT --ignore-json-key clears both again.
   tombstone <path>   (sudo) retire a pinned file that is GONE; if it
@@ -190,6 +222,15 @@ usage: pinned <action> [args]
                      must not be the hand-edited path)
   signer list [--repo <path>]
                      principals, key types, fingerprints
+  ignorable add <key> [--under <dir>]
+                     (sudo) grant a dotted JSON key that approve --file
+                     may then declare ignored; --under scopes the grant
+                     to that directory's subtree, omitted means everywhere
+  ignorable remove <key> [--under <dir>]
+                     (sudo) withdraw exactly that grant (same key, same
+                     scope); slots recording it fall back to byte-exact
+  ignorable list     machine tier, user tier and the effective
+                     intersection, each entry with its scope
   status <repo|file> repo: pinned hash vs HEAD, dirty-tree warning
                      file: record vs live state
   review <file> [--algo <name>] [--length <bits>]
@@ -619,10 +660,25 @@ decode() {
 }
 
 # ---- slot storage ----------------------------------------------------------
-# Layout: $PIN_ROOT/<user>/slots/<encoded-path>/ -- one root-owned dir per
-# pinned path -- and $PIN_ROOT/<user>/signers/allowed_signers. The wrapper
-# subdirs are the mount menu: a lane mounts its own slot dirs (or signers/
-# read-only), never <user>/ itself, which would disclose every pinned path.
+# Layout: $PIN_ROOT/<user>/ holds exactly two wrapper dirs --
+#   slots/<encoded-path>/   one root-owned dir per pinned path
+#   policy/                 allowed_signers + ignorable.json
+#
+# The wrapper dirs are the MOUNT MENU: a lane mounts its own slot dirs and
+# policy/ read-only, never <user>/ itself, which would disclose every
+# pinned path name. Two rules shaped this layout, and both are the reason
+# a flat <user>/ignorable.json + <user>/allowed_signers was rejected:
+#
+#   * DIRECTORIES ARE MOUNTED, NEVER FILES. Every write here is an atomic
+#     rename over a staged temp file, so the name gets a NEW inode -- and a
+#     bind-mounted (or virtiofs-shared) FILE pins the inode it was mounted
+#     from, which means a guest would keep reading the pre-ceremony bytes
+#     forever. Sharing the enclosing dir re-reads the name every time.
+#   * SELECTIVE DISCLOSURE. One dir per disclosure class: policy says what
+#     MAY be trusted (small, boring, safe to expose to a lane), slots say
+#     WHAT IS pinned (the list of paths is itself information). Loose files
+#     directly under <user>/ would force a lane that needs the policy to
+#     mount the slot list with it.
 
 # The per-user tier an invocation operates on: the human behind sudo for
 # root ceremonies, the invoking user otherwise.
@@ -649,7 +705,8 @@ group_exists() {
   fi
 }
 
-slot_dir_for() { printf '%s/%s/slots/%s\n' "$PIN_ROOT" "$1" "$(encode "$2")"; }
+slot_dir_for()   { printf '%s/%s/slots/%s\n' "$PIN_ROOT" "$1" "$(encode "$2")"; }
+policy_dir_for() { printf '%s/%s/policy\n' "$PIN_ROOT" "$1"; }
 
 # Create/re-assert the per-user subtree (root only). The group is
 # CONSUMED, never created -- the system configuration provisions it;
@@ -669,7 +726,39 @@ ensure_tree() {
     TREE_GRP=wheel TREE_DMODE=700 TREE_FMODE=600
   fi
   install -d -m "$TREE_DMODE" -o root -g "$TREE_GRP" \
-    "$udir" "$udir/slots" "$udir/signers"
+    "$udir" "$udir/slots" "$udir/policy"
+  # SELF-HEAL: allowed_signers used to live in <user>/signers/. It is
+  # policy -- what MAY be trusted -- so it belongs with the rest of the
+  # policy class, in the one dir a lane can be handed without also being
+  # handed the slot list. Moved here rather than by a migration script,
+  # because ensure_tree already runs at the start of every root ceremony
+  # and is the one place that owns this tree's shape. Loud: a trust file
+  # changing location is not a detail to discover later. (The per-slot
+  # override stays at slots/<enc>/signers/ -- slot contents are one
+  # disclosure class and ride the slot's own mount.)
+  local old_signers="$udir/signers"
+  if [ -f "$old_signers/allowed_signers" ]; then
+    if [ -e "$udir/policy/allowed_signers" ]; then
+      printf '%swarning: both %s/allowed_signers and %s/policy/allowed_signers exist;\n' \
+        "$C_YEL" "$old_signers" "$udir" >&2
+      printf '         policy/ is the one that is read -- inspect and remove the old file by hand%s\n' \
+        "$C_OFF" >&2
+    else
+      mv -f "$old_signers/allowed_signers" "$udir/policy/allowed_signers"
+      printf '%snote: moved allowed_signers into the policy dir:%s\n' "$C_YEL" "$C_OFF" >&2
+      printf '      %s/allowed_signers -> %s/policy/allowed_signers\n' "$old_signers" "$udir" >&2
+    fi
+  fi
+  if [ -d "$old_signers" ]; then
+    # Only an EMPTY leftover goes; anything still in there is unexplained
+    # state that a trust tool must not delete on a hunch.
+    if rmdir "$old_signers" 2>/dev/null; then
+      printf '%s      removed the now-empty %s%s\n' "$C_YEL" "$old_signers" "$C_OFF" >&2
+    else
+      printf '%swarning: %s is not empty; left in place (nothing reads it any more)%s\n' \
+        "$C_YEL" "$old_signers" "$C_OFF" >&2
+    fi
+  fi
   # Deterministic sweep so a group arriving (or leaving) heals the whole
   # tree, not just paths the current ceremony touches.
   chown -R "root:$TREE_GRP" "$udir"
@@ -724,15 +813,16 @@ write_slot_state() {
   mv -f "$tmp" "$d/$name"
 }
 
-# The ANNOTATION writers (tag / ignore / approved). Same atomic
-# stage-chown-chmod-rename discipline and the same ownership as the state
-# file, but annotations take no part in the exactly-one-state rule, so
-# nothing is removed here. The slot dir always exists by the time these
-# run (the state write creates it root-owned), which is why neither
-# re-asserts it.
-#   write_slot_note  content from a string (one trailing newline added)
+# The ANNOTATION writers (tag / ignored.json / approved) -- and, with the
+# same discipline, the policy files. Same atomic stage-chown-chmod-rename
+# and the same ownership as the state file, but annotations take no part in
+# the exactly-one-state rule, so nothing is removed here. The target dir
+# always exists by the time these run (the state write creates the slot
+# root-owned; ensure_tree creates policy/), which is why neither re-asserts
+# it.
+#   write_note       content from a string (one trailing newline added)
 #   write_slot_copy  content copied from a file, byte for byte
-write_slot_note() {
+write_note() {
   local d="$1" name="$2" tmp
   tmp="$(mktemp "$d/.stage.XXXXXX")"
   printf '%s\n' "$3" >"$tmp"
@@ -755,7 +845,7 @@ write_slot_copy() {
 # slot over, and a tombstone (retired content has no keys to tolerate).
 # The glob clears ANY declared format, including one this version does not
 # recognize -- re-approving is the documented way out of such a slot.
-clear_slot_ignore() { rm -f "$1"/ignore.* "$1/approved"; }
+clear_slot_ignore() { rm -f "$1"/ignored.* "$1/approved"; }
 
 # ---- hash algorithms (file pins) -------------------------------------------
 # Labels are EXACT function names -- the shipped --algo vocabulary and the
@@ -905,26 +995,36 @@ validate_tag_name() {
 
 # ---- ignored keys (verify-side tolerance) ----------------------------------
 #
-# A file slot may declare `ignore.<format>`: keys whose later drift verify
-# tolerates. ONE format ships -- `ignore.json`, one dotted JSON key path per
-# line:
-#     model
-#     effortLevel
-#     statusLine.command
+# A file slot may declare `ignored.<format>`: keys whose later drift verify
+# tolerates. ONE format ships -- `ignored.json`, a JSON array of jq key
+# paths:
+#     [["model"],["effortLevel"],["statusLine","command"]]
 # The SUFFIX is the declaration, exactly like rev.<vcs> and pin.<algo>: the
 # record says which grammar its content is written in, and an unrecognized
-# suffix (ignore.toml, ignore.yaml, ...) REFUSES rather than being guessed
-# at -- which is also the extension point, should another format ever be
-# worth implementing.
+# suffix (ignored.toml, ignored.yaml, ...) REFUSES rather than being
+# guessed at -- which is also the extension point, should another format
+# ever be worth implementing.
+#
+# WHY REAL JSON, and not the dotted lines this started as: the .json suffix
+# has to be truthful, jq's delpaths takes exactly this shape (so the
+# comparison consumes the record with no translation step in between), and
+# a JSON object key may contain ANY character -- dots, spaces, parentheses
+# ("Bash(git status:*)" is a real settings key). A dotted line cannot spell
+# those; an array of strings spells all of them. GENERALITY LIVES IN THE
+# STORAGE, CONVENIENCE IN THE HUMAN SURFACE: the CLI still takes
+# --ignore-json-key model (or a.b.c) and every display joins paths back
+# with dots, and dot-splitting happens ONLY at that surface.
 #
 # The pin stays byte-exact -- the declaration changes only what VERIFY does
 # with a mismatch, and only when it can prove the difference is confined to
-# those keys. The key grammar is deliberately narrow and validated
-# fail-closed on WRITE and on READ: [A-Za-z0-9_.-] with no leading,
-# trailing or doubled dot. KEYS ONLY -- no array subscripts -- because an
-# index is a position, not a name, and a tolerated position would silently
-# move with an insertion.
+# those keys. KEYS ONLY -- no array subscripts -- because an index is a
+# position, not a name, and a tolerated position would silently move with
+# an insertion.
 
+# The CLI's dotted convenience grammar, and ONLY that: [A-Za-z0-9_.-] with
+# no leading, trailing or doubled dot. It bounds what may be typed, never
+# what may be stored -- a key outside it is spelled by writing the path
+# array, not by loosening this. Validated fail-closed before any dot-split.
 validate_ignore_key() {
   case "$1" in
     ''|.*|*.|*..*) return 1 ;;
@@ -933,80 +1033,34 @@ validate_ignore_key() {
   return 0
 }
 
-# Read + validate a slot's ignored-key declaration into IGN_KEYS (one
-# space-separated list; the grammar admits neither spaces nor newlines, so
-# the flat string is unambiguous). Exit status is three-valued, because
-# "nothing declared" and "declared but unusable" are different answers:
-#   0  a valid ignore.json; IGN_KEYS holds its keys
-#   1  no ignore.* at all -- the feature is simply not declared here
-#   2  a declaration that cannot be honoured (unknown format, more than
-#      one, not root-owned, empty, or a line outside the grammar). Loud,
-#      and every caller falls back to the STRICTER verdict.
-IGN_KEYS=""
-read_ignore_keys() {
-  local d="$1" f line n=0 found="" fmt
-  IGN_KEYS=""
-  for f in "$d"/ignore.*; do
-    [ -e "$f" ] || continue
-    if [ -n "$found" ]; then
-      echo "REFUSE: slot $d declares more than one ignore.<format>; refusing all of them" >&2
-      return 2
-    fi
-    found="$f"
-  done
-  [ -n "$found" ] || return 1
-  fmt="${found##*/ignore.}"
-  case "$fmt" in
-    json) ;;
-    *)
-      echo "REFUSE: $found declares unsupported ignored-key format '$fmt'; refusing" >&2
-      echo "        (the shipped format is ignore.json -- dotted JSON key paths, one per line)" >&2
-      return 2 ;;
-  esac
-  verify_record_file "$found" || return 2
-  # `|| [ -n "$line" ]` so a final line without a newline is still read --
-  # and still validated, rather than silently dropped.
-  while IFS= read -r line || [ -n "$line" ]; do
-    if ! validate_ignore_key "$line"; then
-      echo "REFUSE: $found holds '$line', outside the ignored-key grammar (dotted [A-Za-z0-9_.-])" >&2
-      IGN_KEYS=""
-      return 2
-    fi
-    IGN_KEYS="${IGN_KEYS:+$IGN_KEYS }$line"
-    n=$((n + 1))
-  done <"$found"
-  [ "$n" -gt 0 ] || {
-    echo "REFUSE: $found declares no keys; an empty declaration tolerates nothing" >&2
-    return 2
-  }
-  return 0
-}
-
-# Does this slot declare ignored keys at all (in any format)? Cheap
-# existence test, used to decide whether the tolerance path is even in
-# play before spending anything on it.
-slot_declares_ignore() {
-  local f
-  for f in "$1"/ignore.*; do
-    [ -e "$f" ] && return 0
-  done
+# jq is what makes every JSON-shaped rung of the ladder readable at all;
+# without it there is no honest answer, only a guess. One refusal, one
+# remediation, everywhere. $1 = what needed it, for the message.
+require_jq() {
+  command -v jq >/dev/null 2>&1 && return 0
+  echo "ERROR: $1 needs jq in the trusted PATH ($PATH)" >&2
+  echo "       install jq system-wide (a user-writable one could falsify the comparison)" >&2
   return 1
 }
 
-# Space-separated keys -> the comma-separated form humans read.
-ign_display() {
-  local k out=""
-  # shellcheck disable=SC2086  # deliberate split: the key grammar has no spaces or globs
-  for k in $1; do out="${out:+$out, }$k"; done
-  printf '%s' "$out"
+# One dotted key -> one jq path array: "statusLine.command" ->
+# ["statusLine","command"]. Interpolating the segments raw is safe ONLY
+# because validate_ignore_key has already excluded quotes, backslashes and
+# every other byte that would need escaping -- validate first, build second.
+ign_key_path_json() {
+  printf '%s' "$1" | LC_ALL=C awk '
+    {
+      n = split($0, seg, "."); p = ""
+      for (j = 1; j <= n; j++) p = p (j > 1 ? "," : "") "\"" seg[j] "\""
+      printf "[%s]", p
+    }'
 }
 
-# Dotted keys -> the JSON array-of-paths jq's delpaths/getpath want:
+# The space-separated dotted list the CLI collected -> the JSON array of
+# paths jq's delpaths/getpath want, which is also exactly what the slot
+# records:
 #   "model effortLevel statusLine.command"
 #     -> [["model"],["effortLevel"],["statusLine","command"]]
-# Interpolating the segments raw is safe ONLY because the grammar above
-# has already excluded quotes, backslashes and every other byte that would
-# need escaping -- validate first, build second.
 ign_paths_json() {
   printf '%s\n' "$1" | LC_ALL=C awk '
     {
@@ -1019,6 +1073,243 @@ ign_paths_json() {
       }
       printf "[%s]\n", out
     }'
+}
+
+# A JSON array of paths -> the dotted, comma-separated form humans read.
+# Display only: a key containing a dot renders ambiguously here and is
+# still stored, compared and enforced exactly.
+ign_display() {
+  printf '%s' "$1" | jq -r 'map(join(".")) | join(", ")'
+}
+
+# Read + validate a slot's ignored-key declaration into IGN_PATHS (the
+# canonical compact JSON array -- what delpaths is handed, and what a
+# declaration is compared against). Exit status is three-valued, because
+# "nothing declared" and "declared but unusable" are different answers:
+#   0  a valid ignored.json; IGN_PATHS holds its paths
+#   1  no ignored.* at all -- the feature is simply not declared here
+#   2  a declaration that cannot be honoured (unknown format, more than
+#      one, not root-owned, empty, no jq, or content outside the shape).
+#      Loud, and every caller falls back to the STRICTER verdict.
+IGN_PATHS=""
+read_ignored_paths() {
+  local d="$1" f found="" fmt
+  IGN_PATHS=""
+  for f in "$d"/ignored.*; do
+    [ -e "$f" ] || continue
+    if [ -n "$found" ]; then
+      echo "REFUSE: slot $d declares more than one ignored.<format>; refusing all of them" >&2
+      return 2
+    fi
+    found="$f"
+  done
+  [ -n "$found" ] || return 1
+  fmt="${found##*/ignored.}"
+  case "$fmt" in
+    json) ;;
+    *)
+      echo "REFUSE: $found declares unsupported ignored-key format '$fmt'; refusing" >&2
+      echo "        (the shipped format is ignored.json -- a JSON array of key paths)" >&2
+      return 2 ;;
+  esac
+  verify_record_file "$found" || return 2
+  require_jq "reading $found" || return 2
+  if ! jq -e 'type == "array"
+              and all(.[]; type == "array" and length > 0
+                           and all(.[]; type == "string"))' \
+       <"$found" >/dev/null 2>&1; then
+    echo "REFUSE: $found is outside the ignored-key shape: a JSON array of nonempty" >&2
+    echo '        arrays of strings, e.g. [["model"],["statusLine","command"]]' >&2
+    return 2
+  fi
+  [ "$(jq 'length' <"$found")" -gt 0 ] || {
+    echo "REFUSE: $found declares no keys; an empty declaration tolerates nothing" >&2
+    return 2
+  }
+  IGN_PATHS="$(jq -c . <"$found")" || return 2
+  return 0
+}
+
+# Does this slot declare ignored keys at all (in any format)? Cheap
+# existence test, used to decide whether the tolerance path is even in
+# play before spending anything on it.
+slot_declares_ignore() {
+  local f
+  for f in "$1"/ignored.*; do
+    [ -e "$f" ] && return 0
+  done
+  return 1
+}
+
+# ---- the ignorable policy (machine tier, user tier) ------------------------
+#
+# What a slot MAY declare, root-owned and separate from the declaration
+# itself. Two tiers, both arrays of entries:
+#     [{"path":["model"],"under":"/Users/x/.config"},{"path":["effortLevel"]}]
+# "under" is optional and means EVERYWHERE when omitted; when present it is
+# an absolute prefix matched at a component boundary, so /a/b covers /a/b
+# and /a/b/c and never /a/bb -- the same rule `list --under` uses.
+#
+# The EFFECTIVE policy is the intersection: a user entry counts only if the
+# machine tier has the same path with a scope that covers it (no machine
+# tier at all = no machine constraint, so the user tier stands alone). An
+# absent or empty user tier grants NOTHING -- the fail-closed direction --
+# and an unreadable tier of either kind grants nothing either.
+
+# The shared jq preamble: the two coverage rules live in exactly one place,
+# so the approve-side check, the verify-side check and the intersection can
+# never drift apart. norm() folds a trailing slash and spells the root as
+# "" (so "" + "/" prefixes every absolute path).
+POLICY_JQ='
+  def norm($p): if $p == null then null elif $p == "/" then "" else ($p | rtrimstr("/")) end;
+  def covers_path($scope; $target):
+    norm($scope) as $s
+    | if $s == null then true
+      else ($target == $s or ($target | startswith($s + "/")))
+      end;
+  def covers_scope($mscope; $uscope):
+    norm($mscope) as $m | norm($uscope) as $u
+    | if $m == null then true
+      elif $u == null then false
+      else ($u == $m or ($u | startswith($m + "/")))
+      end;
+'
+
+# The shape a policy file must have. Unknown object keys are REFUSED, not
+# skipped: a key this version does not understand could be a NARROWING
+# constraint written by a newer one, and ignoring it would silently widen
+# the grant.
+POLICY_VALID='
+  type == "array" and all(.[];
+    type == "object"
+    and ((keys - ["path", "under"]) | length) == 0
+    and has("path")
+    and (.path | type == "array" and length > 0 and all(.[]; type == "string"))
+    and (if has("under")
+         then (.under | type == "string" and startswith("/")
+               and (. == "/" or (endswith("/") | not))
+               and (contains("//") | not))
+         else true end))
+'
+
+# Read + validate ONE tier into POLICY_JSON. Three-valued like the slot
+# declaration: 0 valid, 1 absent, 2 present but unusable (loud).
+POLICY_JSON=""
+read_policy_file() {
+  local f="$1" label="$2"
+  POLICY_JSON=""
+  [ -e "$f" ] || return 1
+  [ -f "$f" ] || { echo "REFUSE: $label $f is not a regular file" >&2; return 2; }
+  verify_record_file "$f" || return 2
+  verify_ancestry "$f" || return 2
+  require_jq "reading $f" || return 2
+  jq -e "$POLICY_VALID" <"$f" >/dev/null 2>&1 || {
+    echo "REFUSE: $label $f is not a valid ignorable policy" >&2
+    echo '        (a JSON array of {"path":["a","b"],"under":"/abs/prefix"};' >&2
+    echo '        "under" is optional and means everywhere; no other keys)' >&2
+    return 2
+  }
+  POLICY_JSON="$(jq -c . <"$f")" || return 2
+  return 0
+}
+
+# Load both tiers and their intersection for tier user $1:
+#   POL_MACHINE  the machine tier, "" when there is none
+#   POL_USER     the user tier ([] when absent)
+#   POL_EFF      what approve and verify actually check against
+# Returns 1, loudly, when a tier that EXISTS cannot be read: an unreadable
+# policy grants nothing rather than everything.
+POL_MACHINE="" POL_USER="[]" POL_EFF="[]"
+load_policy() {
+  local u="$1" rc=0
+  POL_MACHINE="" POL_USER="[]" POL_EFF="[]"
+  read_policy_file "$MACHINE_POLICY" "machine policy" || rc=$?
+  case "$rc" in
+    0) POL_MACHINE="$POLICY_JSON" ;;
+    1) ;;
+    *) return 1 ;;
+  esac
+  rc=0
+  read_policy_file "$(policy_dir_for "$u")/ignorable.json" "user policy" || rc=$?
+  case "$rc" in
+    0) POL_USER="$POLICY_JSON" ;;
+    1) return 0 ;;
+    *) return 1 ;;
+  esac
+  if [ -z "$POL_MACHINE" ]; then
+    POL_EFF="$POL_USER"
+  else
+    POL_EFF="$(jq -c -n --argjson m "$POL_MACHINE" --argjson u "$POL_USER" \
+      "$POLICY_JQ"'[ $u[] as $e
+                     | select(any($m[]; .path == $e.path and covers_scope(.under; $e.under)))
+                     | $e ]')" || return 1
+  fi
+  return 0
+}
+
+# How many of the declared paths $2 does the effective policy $1 NOT grant
+# for the path $3? Counted structurally (never by counting output lines: a
+# key may contain a newline), because this number is a trust decision.
+policy_ungranted_count() {
+  jq -n --argjson e "$1" --argjson d "$2" --arg f "$3" \
+    "$POLICY_JQ"'[ $d[] as $p
+                   | select([ $e[] | select(.path == $p and covers_path(.under; $f)) ] | length == 0) ]
+                 | length'
+}
+
+# The same set, dotted, one per line -- for the human-readable refusal.
+policy_ungranted() {
+  jq -r -n --argjson e "$1" --argjson d "$2" --arg f "$3" \
+    "$POLICY_JQ"'$d[] as $p
+                 | select([ $e[] | select(.path == $p and covers_path(.under; $f)) ] | length == 0)
+                 | ($p | join("."))'
+}
+
+# Per-key grant PROVENANCE for the ceremony display: "<dotted><TAB><scope>",
+# where the scope is "*" for a grant that holds everywhere, "-" for no
+# grant at all, and otherwise the prefix it is scoped to. When several
+# entries cover the path, the NARROWEST is reported: that is the one worth
+# reading, since it says how far the tolerance actually reaches.
+policy_grants() {
+  jq -r -n --argjson e "$1" --argjson d "$2" --arg f "$3" \
+    "$POLICY_JQ"'$d[] as $p
+                 | [ $e[] | select(.path == $p and covers_path(.under; $f)) | (.under // "") ] as $m
+                 | ($p | join(".")) + "\t"
+                   + (if ($m | length) == 0 then "-"
+                      else ($m | sort_by(length) | last | if . == "" then "*" else . end)
+                      end)'
+}
+
+# The ladder rung the ceremony enforces: may THIS ceremony declare THESE
+# keys for THIS path? A refusal that does not say what to run is a refusal
+# a human routes around, so it names the exact grant command per key.
+policy_check_declaration() { # $1 effective policy  $2 declared paths  $3 abs path
+  local n names k
+  n="$(policy_ungranted_count "$1" "$2" "$3")" || return 1
+  # A count that is not a number is a check that did not happen, which is
+  # NOT the same as a check that passed.
+  case "$n" in
+    0) return 0 ;;
+    ''|*[!0-9]*)
+      echo "REFUSE: the ignorable policy check did not complete; declaring nothing" >&2
+      return 1 ;;
+  esac
+  names="$(policy_ungranted "$1" "$2" "$3")"
+  printf '%sREFUSE: the ignorable policy does not grant these keys for%s %s\n' \
+    "$C_RED$C_B" "$C_OFF" "$3" >&2
+  while IFS= read -r k; do
+    [ -n "$k" ] && printf '          %s\n' "$k" >&2
+  done <<EOF
+$names
+EOF
+  echo "        grant them first -- each is its own root ceremony:" >&2
+  while IFS= read -r k; do
+    [ -n "$k" ] && printf '          sudo pinned ignorable add %s --under %s\n' "$k" "$(dirname "$3")" >&2
+  done <<EOF
+$names
+EOF
+  echo "        (omit --under to grant a key everywhere; pinned ignorable list shows both tiers)" >&2
+  return 1
 }
 
 # May these bytes be PROJECTED (parsed, keys deleted, re-serialized) as a
@@ -1082,14 +1373,37 @@ json_projectable() {
 #   $5 caller --baseline (may be empty)  $6 the path, for the verdict line
 ignored_keys_match() {
   local slot="$1" label="$2" rec_digest="$3" live="$4" base="$5" path="$6"
-  local approved="" paths pa pb rc=0
+  local approved="" paths pa pb rc=0 ungranted
   command -v jq >/dev/null 2>&1 || {
     echo "note: $slot declares ignored keys but jq is not in the trusted PATH ($PATH);" >&2
     echo "      the byte-exact verdict stands (install jq system-wide to enable the comparison)" >&2
     return 1
   }
-  read_ignore_keys "$slot" || rc=$?
+  read_ignored_paths "$slot" || rc=$?
   [ "$rc" -eq 0 ] || return 1
+  # THE LADDER AT USE TIME: a recorded key is tolerated only while the
+  # effective policy still grants it FOR THIS PATH. Checked here, not only
+  # at the ceremony, so narrowing the policy bites at the very next verify
+  # -- no re-ceremony, no stale grant surviving in a slot nobody revisits.
+  # An unreadable policy grants nothing and lands right back at 11.
+  if ! load_policy "$(tier_user)"; then
+    echo "note: the ignorable policy cannot be read; the byte-exact verdict stands" >&2
+    return 1
+  fi
+  local n_ungranted
+  n_ungranted="$(policy_ungranted_count "$POL_EFF" "$IGN_PATHS" "$path")" || n_ungranted=""
+  case "$n_ungranted" in
+    0) ;;
+    ''|*[!0-9]*)
+      # A count that is not a number is a check that did not happen.
+      echo "note: the ignorable policy check did not complete; the byte-exact verdict stands" >&2
+      return 1 ;;
+    *)
+      ungranted="$(policy_ungranted "$POL_EFF" "$IGN_PATHS" "$path" | tr '\n' ' ')"
+      echo "note: $slot records ignored key(s) the policy no longer grants for this path:" >&2
+      echo "      ${ungranted% } (byte-exact verdict stands; re-approve, or: pinned ignorable add)" >&2
+      return 1 ;;
+  esac
   # The last-approved bytes. The slot's own copy is preferred and has
   # already been re-hashed against the record (the slot invariant in
   # do_verify); a caller baseline must prove itself here, by the same
@@ -1113,14 +1427,16 @@ ignored_keys_match() {
   fi
   json_projectable "$approved" "the approved bytes" || return 1
   json_projectable "$live" "$path" || return 1
-  paths="$(ign_paths_json "$IGN_KEYS")"
+  # The record IS the delpaths argument -- no translation step between what
+  # the slot declares and what the comparison deletes.
+  paths="$IGN_PATHS"
   # Project and canonicalize IDENTICALLY on both sides (-S sorts keys, -c
   # compacts), then compare bytes: key order and whitespace are not what
   # this comparison is about, the remaining VALUES are.
   pa="$(jq -S -c --argjson p "$paths" 'delpaths($p)' <"$approved" 2>/dev/null)" || return 1
   pb="$(jq -S -c --argjson p "$paths" 'delpaths($p)' <"$live" 2>/dev/null)" || return 1
   if [ -z "$pa" ] || [ "$pa" != "$pb" ]; then
-    echo "note: differences remain OUTSIDE the declared ignored keys ($IGN_KEYS)" >&2
+    echo "note: differences remain OUTSIDE the declared ignored keys ($(ign_display "$paths"))" >&2
     return 1
   fi
   # Report which declared keys actually moved -- the caller's whole reason
@@ -1425,8 +1741,10 @@ case "$action" in
       exec sudo -- "$elev" "$action" "$@"
     fi
     ;;
-  signer)
-    # add/remove write root-owned files; list stays unprivileged.
+  signer|ignorable)
+    # add/remove write root-owned files; list stays unprivileged. One arm
+    # for both verbs: they share the sub-verb shape, and the exec below
+    # re-execs whichever $action asked for it.
     case "${1:-}" in
       add|remove)
         if [ "$EUID" -ne 0 ]; then
@@ -1487,8 +1805,10 @@ do_approve() {
       --ignore-json-key)
         # Repeatable, and attaches to the preceding --file exactly like
         # --baseline: WHICH keys may drift is a per-path declaration. The
-        # flag names its FORMAT because the slot file does (ignore.json);
-        # another format would be another flag, never a guess.
+        # flag names its FORMAT because the slot file does (ignored.json);
+        # another format would be another flag, never a guess. The dotted
+        # spelling is the CLI's convenience form; the slot stores the jq
+        # path array it converts to.
         [ $# -ge 2 ] || { echo "--ignore-json-key needs a key" >&2; exit 1; }
         [ "${#files[@]}" -gt 0 ] \
           || { echo "--ignore-json-key must follow the --file it belongs to" >&2; exit 1; }
@@ -1592,7 +1912,7 @@ do_approve() {
     # vouch for every repo on the machine; keep machine-wide keys in the
     # user-tier file deliberately.
     local signers="$slot/signers/allowed_signers"
-    [ -f "$signers" ] || signers="$PIN_ROOT/$inv/signers/allowed_signers"
+    [ -f "$signers" ] || signers="$(policy_dir_for "$inv")/allowed_signers"
     if [ ! -f "$signers" ]; then
       echo "ERROR: no allowed signers for this repo" >&2
       echo "  install the signer's public key with the signer ceremony:" >&2
@@ -1751,7 +2071,7 @@ do_approve() {
         "$C_YEL" "$decl_tag" "$C_OFF"
       rm -f "$slot/tag"
     else
-      write_slot_note "$slot" tag "$decl_tag"
+      write_note "$slot" tag "$decl_tag"
       printf '%s✓ declared:%s %s -> %s\n' "$C_GRN" "$C_OFF" "$decl_tag" "$slot/tag"
     fi
   else
@@ -1786,8 +2106,19 @@ do_approve_files() {
 
   local i=0 n="${#files[@]}" f base path slot line new_digest old_digest old_label
   local base_ok recorded=0 declined=0 failed=0 answer state_note nl
-  local ign old_ign had_copy ign_note decl_changed
+  local ign ign_json old_ign old_bad had_copy ign_note decl_changed
+  local gk gscope
   local -a hdr_opt=()
+
+  # The ignorable policy, read ONCE for the whole ceremony: every --file in
+  # it is checked against the same effective policy, and a policy that
+  # cannot be read stops the ceremony rather than approving without one.
+  # Only when something is actually declared -- a ceremony that declares
+  # nothing has no rung to check.
+  if [ "$ign_given" -eq 1 ]; then
+    require_jq "--ignore-json-key" || exit 1
+    load_policy "$inv" || exit 1
+  fi
 
   # Hunk-header orientation for the baseline diff: diff's OWN -F prints the
   # nearest preceding line matching the regex after each "@@ ... @@", so a
@@ -1846,16 +2177,29 @@ do_approve_files() {
       verify_ancestry "$slot" || exit 1
     fi
 
+    # THE LADDER'S CEREMONY RUNG: a key may be declared here only if the
+    # effective policy grants it FOR THIS PATH. Refused per file, before
+    # anything is displayed or recorded, and loudly -- semantics are
+    # UNIFORM, because pinned cannot tell a human's argv from a calling
+    # tool's, so "the human typed it" can never be the reason to allow it.
+    ign_json=""
+    if [ -n "$ign" ]; then
+      ign_json="$(ign_paths_json "$ign")"
+      if ! policy_check_declaration "$POL_EFF" "$ign_json" "$path"; then
+        failed=$((failed + 1)); continue
+      fi
+    fi
+
     old_digest="" old_label="" state_note="" ign_note="" decl_changed=0
-    old_ign=""; had_copy=0
+    old_ign=""; old_bad=0; had_copy=0
     if slot_declares_ignore "$slot"; then
       # Quiet read: a broken declaration is reported by the note below and
-      # replaced by this ceremony, so read_ignore_keys' own refusal text
+      # replaced by this ceremony, so read_ignored_paths' own refusal text
       # would only be noise here.
-      if read_ignore_keys "$slot" 2>/dev/null; then
-        old_ign="$IGN_KEYS"
+      if read_ignored_paths "$slot" 2>/dev/null; then
+        old_ign="$IGN_PATHS"
       else
-        old_ign="(unreadable declaration)"
+        old_bad=1
       fi
     fi
     [ -e "$slot/approved" ] && had_copy=1
@@ -1888,12 +2232,15 @@ do_approve_files() {
     # approved copy. So identical bytes are only a no-op when the
     # declaration is identical too -- otherwise the human still has a
     # narrowing or widening to confirm.
-    if [ "$ign" != "$old_ign" ]; then
+    if [ "$old_bad" -eq 1 ]; then
       decl_changed=1
-      if [ -z "$ign" ]; then
+      ign_note="the slot's ignored-key declaration is unreadable -- this approval replaces it"
+    elif [ "$ign_json" != "$old_ign" ]; then
+      decl_changed=1
+      if [ -z "$ign_json" ]; then
         ign_note="clearing the ignored keys ($(ign_display "$old_ign")) -- every key returns to byte-exact"
       elif [ -n "$old_ign" ]; then
-        ign_note="ignored keys change: $(ign_display "$old_ign") -> $(ign_display "$ign")"
+        ign_note="ignored keys change: $(ign_display "$old_ign") -> $(ign_display "$ign_json")"
       fi
     fi
     if [ -n "$ign" ] && [ "$had_copy" -ne "$store" ]; then
@@ -1924,7 +2271,22 @@ do_approve_files() {
     # has to be on screen while the question is being asked.
     if [ -n "$ign" ]; then
       printf '%signored:%s    %s%s%s  %s(these keys may drift without re-approval)%s\n' \
-        "$C_B" "$C_OFF" "$C_CYN" "$(ign_display "$ign")" "$C_OFF" "$C_YEL" "$C_OFF"
+        "$C_B" "$C_OFF" "$C_CYN" "$(ign_display "$ign_json")" "$C_OFF" "$C_YEL" "$C_OFF"
+      # Per-key GRANT PROVENANCE: the display audits the ladder, so the
+      # rung that permits each key -- and how far that permission reaches
+      # -- is on screen while the question is asked. Every key here is
+      # granted (an ungranted one never reaches this display).
+      while IFS="$TAB" read -r gk gscope; do
+        [ -n "$gk" ] || continue
+        case "$gscope" in
+          '*') printf '            %s%s -- user policy, everywhere%s\n' "$C_DIM" "$gk" "$C_OFF" ;;
+          *)   printf '            %s%s -- user policy, under %s%s\n' "$C_DIM" "$gk" "$gscope" "$C_OFF" ;;
+        esac
+      done <<EOF
+$(policy_grants "$POL_EFF" "$ign_json" "$path")
+EOF
+      [ -z "$POL_MACHINE" ] \
+        || printf '            %s(and within the machine policy at %s)%s\n' "$C_DIM" "$MACHINE_POLICY" "$C_OFF"
       if [ "$store" -eq 1 ]; then
         printf '            %sa copy of these bytes is kept in the slot -- readable by anything%s\n' "$C_DIM" "$C_OFF"
         printf '            %sthat mounts it, including every lane (--store)%s\n' "$C_DIM" "$C_OFF"
@@ -1983,20 +2345,19 @@ do_approve_files() {
         if [ -n "$ign" ]; then
           # Any previously declared format goes first, so a slot never ends
           # up holding two of them.
-          rm -f "$slot"/ignore.*
-          # shellcheck disable=SC2086  # deliberate split: one key per printf argument, one per line
-          write_slot_note "$slot" ignore.json "$(printf '%s\n' $ign)"
+          rm -f "$slot"/ignored.*
+          write_note "$slot" ignored.json "$ign_json"
           if [ "$store" -eq 1 ]; then
             # The copy is the frozen buffer this ceremony displayed and
             # hashed -- the same single read the record binds to, so the
             # copy can never carry bytes the human did not see.
             write_slot_copy "$slot" approved "$fro"
             printf '%s✓ ignoring:%s %s -> %s %s(approved copy kept)%s\n' \
-              "$C_GRN" "$C_OFF" "$(ign_display "$ign")" "$slot/ignore.json" "$C_DIM" "$C_OFF"
+              "$C_GRN" "$C_OFF" "$(ign_display "$ign_json")" "$slot/ignored.json" "$C_DIM" "$C_OFF"
           else
             rm -f "$slot/approved"
             printf '%s✓ ignoring:%s %s -> %s %s(no copy kept)%s\n' \
-              "$C_GRN" "$C_OFF" "$(ign_display "$ign")" "$slot/ignore.json" "$C_DIM" "$C_OFF"
+              "$C_GRN" "$C_OFF" "$(ign_display "$ign_json")" "$slot/ignored.json" "$C_DIM" "$C_OFF"
           fi
         else
           clear_slot_ignore "$slot"
@@ -2076,8 +2437,9 @@ do_tombstone() {
 #   12  live pin but the file is missing
 #   13  tombstoned but the path is present (retired content resurrected)
 #   14  mode/ownership invariant violated
-#   15  the bytes differ, but ONLY in keys the slot declared ignorable
-#       (see ignore.<format> above) -- and the differing keys are named on
+#   15  the bytes differ, but ONLY in keys the slot declared ignored (see
+#       ignored.<format> above) AND the ignorable policy still grants every
+#       one of those keys for this path -- and the differing keys are named on
 #       stdout, one `ignored-drift: <key>` line each
 # Anything structural (malformed slot, unknown algorithm, wrong recorded
 # path, unreadable tier) is a hard error: exit 1, fail closed. The
@@ -2358,8 +2720,8 @@ do_status_file() {
       # The slot's extras, when it has them: WHICH keys may drift is part
       # of what this record says, so it belongs in the record's report.
       if slot_declares_ignore "$slot"; then
-        if read_ignore_keys "$slot" 2>/dev/null; then
-          printf '%signored:%s    %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$(ign_display "$IGN_KEYS")" "$C_OFF"
+        if read_ignored_paths "$slot" 2>/dev/null; then
+          printf '%signored:%s    %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$(ign_display "$IGN_PATHS")" "$C_OFF"
         else
           printf '%signored:%s    %s✗ unusable declaration (re-approve to reset)%s\n' \
             "$C_DIM" "$C_OFF" "$C_YEL" "$C_OFF"
@@ -2514,8 +2876,8 @@ do_list() {
             # A line that cannot match the row shape is skipped by all of
             # them and read by humans.
             if slot_declares_ignore "$d"; then
-              if read_ignore_keys "$d" 2>/dev/null; then
-                printf '%s            ignored: %s%s%s\n' "$C_DIM" "$(ign_display "$IGN_KEYS")" \
+              if read_ignored_paths "$d" 2>/dev/null; then
+                printf '%s            ignored: %s%s%s\n' "$C_DIM" "$(ign_display "$IGN_PATHS")" \
                   "$([ -e "$d/approved" ] && printf ' (+approved copy)')" "$C_OFF"
               else
                 printf '%s            ignored: unusable declaration%s\n' "$C_YEL" "$C_OFF"
@@ -2751,10 +3113,11 @@ do_slot() {
 # LABEL, and it is load-bearing: ssh-keygen -Y matches it at
 # verification, so it cannot drift into decoration.
 #
-# Storage: user tier = <user>/signers/allowed_signers; --repo writes the
-# per-slot override (signers/ is a dir at BOTH tiers: one resolution
-# rule, and slot signer data stays independently mountable). `signer add
-# --repo` may create a slot dir holding only signers/ -- a legitimate
+# Storage: user tier = <user>/policy/allowed_signers (who may vouch is
+# POLICY, and rides the policy dir a lane can be handed without the slot
+# list); --repo writes the per-slot override at slots/<enc>/signers/,
+# which stays with the slot because slot contents are one disclosure
+# class. `signer add --repo` may create a slot dir holding only signers/ -- a legitimate
 # pre-approve bootstrap, since approve --signed-tag verifies AGAINST the
 # signers; verify still answers "no slot" for such a dir. remove is
 # first-class: key compromise response must not be the hand-edited path.
@@ -2811,7 +3174,7 @@ do_signer() {
     resolve_repo "$repo_arg"
     target="$default_slot/signers/allowed_signers"
   else
-    target="$PIN_ROOT/$tier/signers/allowed_signers"
+    target="$(policy_dir_for "$tier")/allowed_signers"
   fi
 
   if [ "$sub" = "list" ]; then
@@ -2963,6 +3326,192 @@ EOF
     found=1
   done <"$f"
   [ "$found" -eq 1 ] || echo "(no signers)"
+}
+
+# ---- ignorable -------------------------------------------------------------
+
+# The user tier of the ignorable policy, managed by the same kind of
+# ceremony the signers get: display, confirm, atomic root-owned write,
+# syslog line. Nothing here decides that a key IS ignored -- that stays the
+# approve ceremony's per-path declaration. This decides only what such a
+# declaration is ALLOWED to say, which is why it is a separate root act:
+# granting "model may drift under my settings dir" once is a decision worth
+# making deliberately; re-confirming it at every settings edit is not.
+#
+# --under is the whole point of the scoping: a grant that reads "model,
+# everywhere" would tolerate a `model` key in ANY pinned file on the
+# machine, including one where it means something else entirely. The
+# prefix matches at a component boundary, the same rule `list --under`
+# uses, so /a/b covers /a/b/c and never /a/bb.
+do_ignorable() {
+  [ $# -ge 1 ] || usage
+  local sub="$1"; shift
+  case "$sub" in add|remove|list) ;; *) usage ;; esac
+
+  local key="" under=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --under)
+        [ $# -ge 2 ] || { echo "--under needs a directory" >&2; exit 1; }
+        under="$2"; shift 2 ;;
+      -*) echo "unknown ignorable option: $1" >&2; usage ;;
+      *)  [ -z "$key" ] || { echo "ignorable $sub takes one key" >&2; usage; }
+          key="$1"; shift ;;
+    esac
+  done
+  require_jq "the ignorable policy" || exit 1
+
+  local tier
+  tier="$(tier_user)"
+  if [ "$sub" = list ]; then
+    [ -z "$key$under" ] \
+      || { echo "ignorable list takes no arguments (it shows every entry of both tiers)" >&2; exit 1; }
+    do_ignorable_list "$tier"
+    return
+  fi
+
+  require_root ignorable
+  [ -n "$key" ] || { echo "ignorable $sub needs a key, e.g. model or statusLine.command" >&2; exit 1; }
+  validate_ignore_key "$key" || {
+    echo "ERROR: key '$key' is outside the key grammar: dotted [A-Za-z0-9_.-]," >&2
+    echo "       no leading/trailing/doubled dot, no array subscripts" >&2
+    exit 1
+  }
+  # Scope normalization, exactly as `list --under` does it: absolute,
+  # symlinks resolved when the directory exists, no trailing slash. The
+  # stored prefix has to be the spelling a canonicalized subject path
+  # carries, or the grant would quietly never match anything.
+  if [ -n "$under" ]; then
+    case "$under" in
+      /*) ;;
+      *)  echo "ERROR: --under needs an ABSOLUTE directory (a grant is not relative to a cwd)" >&2
+          exit 1 ;;
+    esac
+    [ -d "$under" ] && under="$(readlink -f "$under")"
+    while [ "${under%/}" != "$under" ]; do under="${under%/}"; done
+    [ -n "$under" ] || under=/
+    case "$under" in
+      *//*) echo "ERROR: --under must not contain an empty path component" >&2; exit 1 ;;
+    esac
+  fi
+
+  ensure_tree "$inv"
+  local pf
+  pf="$(policy_dir_for "$inv")/ignorable.json"
+  load_policy "$inv" || exit 1
+
+  local path_json dup scope_disp new_json answer covered=1
+  path_json="$(ign_key_path_json "$key")"
+  dup="$(jq -n --argjson e "$POL_USER" --argjson p "$path_json" --arg u "$under" \
+    '[ $e[] | select(.path == $p and ((.under // "") == $u)) ] | length')"
+  if [ -n "$under" ]; then scope_disp="under $under"; else scope_disp="everywhere"; fi
+
+  if [ "$sub" = add ]; then
+    [ "$dup" -eq 0 ] || {
+      echo "REFUSE: already granted, $scope_disp: $key" >&2
+      echo "        (a second identical entry would say nothing new; see: pinned ignorable list)" >&2
+      exit 1
+    }
+    new_json="$(jq -n --argjson e "$POL_USER" --argjson p "$path_json" --arg u "$under" \
+      '$e + [ if $u == "" then {path: $p} else {path: $p, under: $u} end ]')" || exit 1
+    if [ -n "$POL_MACHINE" ]; then
+      covered="$(jq -n --argjson m "$POL_MACHINE" --argjson p "$path_json" --arg u "$under" \
+        "$POLICY_JQ"'[ $m[]
+                       | select(.path == $p
+                                and covers_scope(.under; (if $u == "" then null else $u end))) ]
+                     | length')" || exit 1
+    fi
+  else
+    [ "$dup" -gt 0 ] || {
+      echo "REFUSE: no such grant to withdraw: $key, $scope_disp" >&2
+      echo "        remove takes the EXACT entry -- same key AND same scope; the entries are" >&2
+      echo "        listed by: pinned ignorable list" >&2
+      exit 1
+    }
+    new_json="$(jq -n --argjson e "$POL_USER" --argjson p "$path_json" --arg u "$under" \
+      '[ $e[] | select((.path == $p and ((.under // "") == $u)) | not) ]')" || exit 1
+  fi
+
+  printf '%starget:%s      %s\n' "$C_B" "$C_OFF" "$pf"
+  printf '%skey:%s         %s%s%s  %s(stored as %s)%s\n' \
+    "$C_B" "$C_OFF" "$C_CYN" "$key" "$C_OFF" "$C_DIM" "$path_json" "$C_OFF"
+  printf '%sscope:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$scope_disp" "$C_OFF"
+  if [ "$sub" = add ]; then
+    printf '            %sapprove --file may then declare this key ignored for paths in%s\n' "$C_DIM" "$C_OFF"
+    printf '            %sscope; verify answers 15 instead of 11 when only it drifts%s\n' "$C_DIM" "$C_OFF"
+    if [ "$covered" -eq 0 ]; then
+      printf '%snote:%s        %sthe machine policy (%s) does not cover this scope --\n' \
+        "$C_B" "$C_OFF" "$C_YEL" "$MACHINE_POLICY"
+      printf '            the entry will be recorded but will NOT be effective%s\n' "$C_OFF"
+    fi
+  else
+    printf '            %sany slot that records this key falls back to a byte-exact%s\n' "$C_DIM" "$C_OFF"
+    printf '            %sverdict (11) at the very next verify -- no re-ceremony needed%s\n' "$C_DIM" "$C_OFF"
+  fi
+  if [ "$sub" = add ]; then
+    printf '%sgrant this key? [y/N]%s ' "$C_B" "$C_OFF"
+  else
+    printf '%swithdraw this grant? [y/N]%s ' "$C_B" "$C_OFF"
+  fi
+  read -r answer </dev/tty
+  case "$answer" in
+    y|Y|yes) ;;
+    *) echo "aborted; policy unchanged."; log_action "ignorable-$sub" "$key" "" abort; exit 2 ;;
+  esac
+  write_note "$(policy_dir_for "$inv")" ignorable.json "$new_json"
+  if [ "$sub" = add ]; then
+    printf '%s✓ granted:%s %s%s%s %s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$key" "$C_OFF" "$scope_disp" "$pf"
+  else
+    printf '%s✓ withdrawn:%s %s%s%s %s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$key" "$C_OFF" "$scope_disp" "$pf"
+  fi
+  log_action "ignorable-$sub" "$key" "${under:-everywhere}"
+}
+
+# One entry per line: dotted key, then the scope it is granted in.
+policy_print_entries() { # $1 = a policy array
+  local k sc
+  if [ "$(printf '%s' "$1" | jq 'length')" -eq 0 ]; then
+    printf '  %s(no entries)%s\n' "$C_DIM" "$C_OFF"
+    return
+  fi
+  while IFS="$TAB" read -r k sc; do
+    [ -n "$k" ] || continue
+    case "$sc" in
+      '*') printf '  %s%-24s%s everywhere\n' "$C_CYN" "$k" "$C_OFF" ;;
+      *)   printf '  %s%-24s%s under %s\n' "$C_CYN" "$k" "$C_OFF" "$sc" ;;
+    esac
+  done <<EOF
+$(printf '%s' "$1" | jq -r '.[] | (.path | join(".")) + "\t" + (.under // "*")')
+EOF
+}
+
+# Both tiers AND the intersection, in one unprivileged command: "why was
+# this key dropped" has to be answerable without reading two files by hand
+# and doing the prefix arithmetic in your head.
+do_ignorable_list() {
+  local u="$1" pf mach_present=0 user_present=0
+  pf="$(policy_dir_for "$u")/ignorable.json"
+  [ -e "$MACHINE_POLICY" ] && mach_present=1
+  [ -e "$pf" ] && user_present=1
+  load_policy "$u" || exit 1
+
+  printf '%smachine tier:%s %s\n' "$C_B" "$C_OFF" "$MACHINE_POLICY"
+  if [ "$mach_present" -eq 0 ]; then
+    printf '  %s(absent -- no machine constraint; the user tier stands alone)%s\n' "$C_DIM" "$C_OFF"
+  else
+    policy_print_entries "$POL_MACHINE"
+  fi
+  echo
+  printf '%suser tier:%s    %s\n' "$C_B" "$C_OFF" "$pf"
+  if [ "$user_present" -eq 0 ]; then
+    printf '  %s(absent -- nothing is ignorable; every --ignore-json-key is refused)%s\n' "$C_DIM" "$C_OFF"
+  else
+    policy_print_entries "$POL_USER"
+  fi
+  echo
+  printf '%seffective%s %s(machine INTERSECT user -- what approve and verify check)%s\n' \
+    "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
+  policy_print_entries "$POL_EFF"
 }
 
 # ---- deploy ----------------------------------------------------------------
@@ -3207,6 +3756,7 @@ case "$action" in
   verify)    do_verify "$@" ;;
   sign)      do_sign "$@" ;;
   signer)    do_signer "$@" ;;
+  ignorable) do_ignorable "$@" ;;
   status)    do_status "$@" ;;
   list)      do_list "$@" ;;
   slot)      do_slot "$@" ;;

@@ -97,6 +97,11 @@ POUT=""
 
 export PIN_ROOT="$FIX/pinroot"
 export INSTALL_TARGET="$FIX/no-such-install"
+# The OPTIONAL machine tier of the ignorable policy, pointed at the fixture
+# instead of /etc/pinned so the harness never reads (or needs) machine state.
+# Absent by default: most sections want "no machine constraint".
+export MACHINE_POLICY="$FIX/etc-pinned/ignorable.json"
+POLICY_USER="$PIN_ROOT/$USERNAME/policy/ignorable.json"
 
 need() { # regex count label -- the sed anchors must still exist, exactly
   local n
@@ -118,7 +123,7 @@ need '-o root -g "\$TREE_GRP" '                             3 'slot-tree install
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
-need '</dev/tty'                                            9 'ceremony tty reads'
+need '</dev/tty'                                            10 'ceremony tty reads'
 need '^# ---- setup ---'                                    1 'library cut marker'
 
 sed -e 's/if \[ "\$EUID" -ne 0 \]; then/if false; then/' \
@@ -191,6 +196,17 @@ seed_tombstone() { seed_state "$1" tombstone "1970-01-01T00:00:00Z retired by $U
 
 slot_file_of() { # subject-path slot-file-name -> absolute path inside the slot
   printf '%s/%s\n' "$(slot_of "$1")" "$2"
+}
+
+seed_policy_user() { # policy-json -- the user tier, as a root ceremony would write it
+  mkdir -p "$(dirname "$POLICY_USER")"
+  printf '%s\n' "$1" > "$POLICY_USER"
+  chmod 640 "$POLICY_USER"
+}
+seed_policy_machine() { # policy-json -- the optional machine tier
+  mkdir -p "$(dirname "$MACHINE_POLICY")"
+  printf '%s\n' "$1" > "$MACHINE_POLICY"
+  chmod 644 "$MACHINE_POLICY"
 }
 
 count_state() { # slot-dir -> how many of rev.* / pin.* / tombstone exist
@@ -565,7 +581,7 @@ assert_exit "$RC" 0 "list survives a corrupt rev slot"
 assert_contains "$OUT" "CORRUPT" "list flags a corrupt rev slot instead of printing a digest"
 
 # ---------------------------------------------------------------------------
-say "S9: ignored keys (ignore.json / approved / exit 15)"
+say "S9: ignored keys (ignored.json / approved / exit 15)"
 # ---------------------------------------------------------------------------
 # The tolerance path is jq-driven by construction (structural comparison of
 # two JSON documents), so without jq there is nothing to exercise -- the
@@ -575,9 +591,14 @@ if ! command -v jq >/dev/null 2>&1; then
 else
 mkdir -p "$SUB/ig"
 
-# The declaration is recorded ONLY by the ceremony, one key per line, and
-# WITHOUT an approved copy unless --store asks for one (slot dirs are mounted
-# into lanes: a copy discloses content there).
+# A ceremony may only declare what the ignorable policy grants, so S9 opens
+# by granting its keys everywhere; the SCOPING and the tiers are S10's
+# subject. No machine tier here: absent means no machine constraint.
+seed_policy_user '[{"path":["model"]},{"path":["effortLevel"]},{"path":["statusLine","command"]}]'
+
+# The declaration is recorded ONLY by the ceremony, as the JSON array of key
+# paths jq's delpaths wants, and WITHOUT an approved copy unless --store asks
+# for one (slot dirs are mounted into lanes: a copy discloses content there).
 printf '{\n  "model": "opus",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/nocopy.json"
 ANS='y
 '
@@ -586,9 +607,10 @@ assert_exit "$RC" 0 "approve with --ignore-json-key succeeds"
 assert_contains "$OUT" "ignored:" "ceremony displays the proposed ignored keys"
 assert_contains "$OUT" "model, effortLevel" "ceremony names them before the confirm"
 assert_contains "$OUT" "may drift without re-approval" "ceremony states what ignoring means"
-assert_file "$(slot_file_of "$SUB/ig/nocopy.json" ignore.json)" "ignore.json recorded"
-assert_eq "$(cat "$(slot_file_of "$SUB/ig/nocopy.json" ignore.json)")" "$(printf 'model\neffortLevel')" \
-          "ignore.json holds one key per line, in declaration order"
+assert_contains "$OUT" "model -- user policy, everywhere" "ceremony shows each key's grant provenance"
+assert_file "$(slot_file_of "$SUB/ig/nocopy.json" ignored.json)" "ignored.json recorded"
+assert_eq "$(cat "$(slot_file_of "$SUB/ig/nocopy.json" ignored.json)")" '[["model"],["effortLevel"]]' \
+          "ignored.json holds the jq path array, in declaration order"
 assert_absent "$(slot_file_of "$SUB/ig/nocopy.json" approved)" "no approved copy without --store"
 
 # --store is what keeps the bytes, and it keeps exactly the approved ones.
@@ -666,30 +688,40 @@ run_pinned verify "$SUB/ig/lane"
 assert_exit "$RC" 11 "a non-JSON file falls back to the byte-exact verdict"
 assert_contains "$OUT" "not exactly one JSON document" "the note says why it could not be compared"
 
-# A declaration outside the grammar disables the feature loudly -- it never
-# silently tolerates more than it says.
+# A declaration outside the recorded SHAPE disables the feature loudly -- it
+# never silently tolerates more than it says. (A leftover dotted-line file
+# from before the JSON format lands right here: it is not JSON, so it is
+# refused rather than guessed at.)
 printf '{"model": "sonnet", "permissions": {"deny": ["Bash"]}}\n' > "$SUB/ig/bad.json"
 ANS='y
 '
 run_pinned approve --file "$SUB/ig/bad.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "fixture: bad.json approved with a declaration"
-seed_state "$SUB/ig/bad.json" ignore.json 'permissions.deny[0]'
+seed_state "$SUB/ig/bad.json" ignored.json 'model'
 printf '{"model": "opus", "permissions": {"deny": ["Bash"]}}\n' > "$SUB/ig/bad.json"
 run_pinned verify "$SUB/ig/bad.json"
-assert_exit "$RC" 11 "a line outside the key grammar refuses the tolerance path"
-assert_contains "$OUT" "outside the ignored-key grammar" "the refusal names the grammar"
+assert_exit "$RC" 11 "an old dotted-line declaration refuses the tolerance path"
+assert_contains "$OUT" "outside the ignored-key shape" "the refusal names the shape"
+seed_state "$SUB/ig/bad.json" ignored.json '["model"]'
+run_pinned verify "$SUB/ig/bad.json"
+assert_exit "$RC" 11 "an array of STRINGS (not of paths) refuses the tolerance path"
+assert_contains "$OUT" "outside the ignored-key shape" "the shape refusal names arrays of strings"
+seed_state "$SUB/ig/bad.json" ignored.json '[]'
+run_pinned verify "$SUB/ig/bad.json"
+assert_exit "$RC" 11 "an empty declaration refuses (it tolerates nothing)"
+assert_contains "$OUT" "declares no keys" "the refusal names the empty declaration"
 
 # An UNDECLARED format refuses exactly like an unknown rev.<vcs>.
-rm -f "$(slot_file_of "$SUB/ig/bad.json" ignore.json)"
-seed_state "$SUB/ig/bad.json" ignore.toml 'model = true'
+rm -f "$(slot_file_of "$SUB/ig/bad.json" ignored.json)"
+seed_state "$SUB/ig/bad.json" ignored.toml 'model = true'
 run_pinned verify "$SUB/ig/bad.json"
-assert_exit "$RC" 11 "an unrecognized ignore.<format> refuses the tolerance path"
+assert_exit "$RC" 11 "an unrecognized ignored.<format> refuses the tolerance path"
 assert_contains "$OUT" "unsupported ignored-key format" "the refusal names the undeclared format"
-seed_state "$SUB/ig/bad.json" ignore.json 'model'
+seed_state "$SUB/ig/bad.json" ignored.json '[["model"]]'
 run_pinned verify "$SUB/ig/bad.json"
-assert_exit "$RC" 11 "two ignore.<format> files at once refuse"
-assert_contains "$OUT" "more than one ignore" "the refusal names the ambiguity"
-rm -f "$(slot_file_of "$SUB/ig/bad.json" ignore.toml)"
+assert_exit "$RC" 11 "two ignored.<format> files at once refuse"
+assert_contains "$OUT" "more than one ignored" "the refusal names the ambiguity"
+rm -f "$(slot_file_of "$SUB/ig/bad.json" ignored.toml)"
 
 # The approved copy is a slot INVARIANT: if it exists it must re-hash to the
 # record beside it. A violation is malformed state, not a degraded compare.
@@ -715,7 +747,7 @@ run_pinned approve --file "$SUB/ig/clear.json"
 assert_exit "$RC" 0 "re-approving identical bytes without a declaration still runs"
 assert_missing  "$OUT" "already approved" "a changed declaration defeats the no-op short-circuit"
 assert_contains "$OUT" "clearing the ignored keys" "the ceremony says the tolerance is being withdrawn"
-assert_absent "$CLEAR_SLOT/ignore.json" "a plain approve clears the declaration"
+assert_absent "$CLEAR_SLOT/ignored.json" "a plain approve clears the declaration"
 assert_absent "$CLEAR_SLOT/approved" "a plain approve clears the approved copy"
 printf '{"model": "sonnet", "keep": 1}\n' > "$SUB/ig/clear.json"
 run_pinned verify "$SUB/ig/clear.json"
@@ -733,7 +765,7 @@ ANS='y
 '
 run_pinned tombstone "$SUB/ig/doomed.json"
 assert_exit "$RC" 0 "tombstone succeeds"
-assert_absent "$DOOM_SLOT/ignore.json" "tombstone drops the declaration"
+assert_absent "$DOOM_SLOT/ignored.json" "tombstone drops the declaration"
 assert_absent "$DOOM_SLOT/approved" "tombstone drops the approved copy"
 
 # Surfaces: list annotates, status reports the declaration and the ~ state.
@@ -777,6 +809,175 @@ assert_exit "$RC" 1 "json_projectable refuses a concatenated document stream"
 printf '{"a":1}\000' > "$FIX/nul.json"
 run_probe json_projectable "$FIX/nul.json" side
 assert_exit "$RC" 1 "json_projectable refuses NUL bytes jq would tolerate"
+run_probe ign_key_path_json "statusLine.command"
+assert_eq "$POUT" '["statusLine","command"]' "ign_key_path_json builds one jq path"
+fi
+
+# ---------------------------------------------------------------------------
+say "S10: the ignorable policy (tiers, ceremony, enforcement)"
+# ---------------------------------------------------------------------------
+# The ladder: machine policy >= user policy >= slot declaration >= tolerated
+# drift. Every rung is jq-shaped, so this section needs jq exactly like S9.
+if ! command -v jq >/dev/null 2>&1; then
+  say "S10: SKIPPED (no jq in the trusted PATH)"
+else
+mkdir -p "$SUB/pol/in" "$SUB/pol/inx"
+JSON_IN='{"model": "opus", "keep": 1}'
+printf '%s\n' "$JSON_IN" > "$SUB/pol/in/s.json"
+printf '%s\n' "$JSON_IN" > "$SUB/pol/inx/s.json"
+
+# An absent user tier grants nothing: the ceremony refuses, and says exactly
+# which command grants it. This is also the first-deploy state, so a refusal
+# here must never read as breakage.
+rm -f "$POLICY_USER" "$MACHINE_POLICY"
+ANS='y
+'
+run_pinned approve --file "$SUB/pol/in/s.json" --ignore-json-key model
+assert_exit "$RC" 1 "no policy at all -> the ceremony refuses the declaration"
+assert_contains "$OUT" "does not grant these keys" "the refusal names the missing grant"
+assert_contains "$OUT" "sudo pinned ignorable add model --under $SUB/pol/in" \
+                "the refusal names the exact grant command"
+assert_absent "$(slot_file_of "$SUB/pol/in/s.json" pin.sha256)" "nothing was recorded"
+
+ANS=""
+run_pinned ignorable list
+assert_exit "$RC" 0 "ignorable list runs unprivileged with no policy at all"
+assert_contains "$OUT" "no machine constraint" "list says the machine tier is absent"
+assert_contains "$OUT" "nothing is ignorable" "list says an absent user tier grants nothing"
+
+# The grant ceremony writes the user tier.
+ANS='y
+'
+run_pinned ignorable add model --under "$SUB/pol/in"
+assert_exit "$RC" 0 "ignorable add succeeds"
+assert_contains "$OUT" "granted" "the ceremony confirms the grant"
+assert_contains "$OUT" "under $SUB/pol/in" "the ceremony states the scope"
+assert_file "$POLICY_USER" "the user tier is written"
+assert_eq "$(jq -c . "$POLICY_USER")" "[{\"path\":[\"model\"],\"under\":\"$SUB/pol/in\"}]" \
+          "the entry is {path, under}"
+
+ANS='y
+'
+run_pinned ignorable add model --under "$SUB/pol/in"
+assert_exit "$RC" 1 "a duplicate grant is refused"
+assert_contains "$OUT" "already granted" "the duplicate refusal names the reason"
+ANS='y
+'
+run_pinned ignorable add model --under "relative/dir"
+assert_exit "$RC" 1 "a relative --under is refused"
+assert_contains "$OUT" "ABSOLUTE" "the refusal names the requirement"
+ANS='y
+'
+run_pinned ignorable remove effortLevel --under "$SUB/pol/in"
+assert_exit "$RC" 1 "removing an entry that does not exist is refused"
+assert_contains "$OUT" "no such grant" "the refusal names the missing entry"
+ANS='y
+'
+run_pinned ignorable remove model
+assert_exit "$RC" 1 "removing the same key at a DIFFERENT scope is refused"
+assert_contains "$OUT" "no such grant" "remove matches key AND scope"
+
+ANS=""
+run_pinned ignorable list
+assert_exit "$RC" 0 "ignorable list exits 0 with a user tier"
+assert_contains "$OUT" "effective" "list shows the effective intersection"
+assert_contains "$OUT" "under $SUB/pol/in" "list shows each entry's scope"
+
+# In scope the ceremony proceeds; one component further along it refuses --
+# the same boundary rule list --under uses (/pol/in is not /pol/inx).
+ANS='y
+'
+run_pinned approve --file "$SUB/pol/in/s.json" --ignore-json-key model --store
+assert_exit "$RC" 0 "a granted key in scope approves"
+assert_contains "$OUT" "model -- user policy, under $SUB/pol/in" "provenance names the scope"
+ANS='y
+'
+run_pinned approve --file "$SUB/pol/inx/s.json" --ignore-json-key model
+assert_exit "$RC" 1 "the same key one component off the scope is refused"
+assert_contains "$OUT" "does not grant these keys" "the near-miss refusal is the policy refusal"
+
+# NARROWING BITES IMMEDIATELY: the grant is checked at USE time, so
+# withdrawing it turns the tolerated drift back into a plain mismatch with
+# no re-ceremony anywhere.
+printf '{"model": "sonnet", "keep": 1}\n' > "$SUB/pol/in/s.json"
+ANS=""
+run_pinned verify "$SUB/pol/in/s.json"
+assert_exit "$RC" 15 "drift in a granted, declared key -> 15"
+ANS='y
+'
+run_pinned ignorable remove model --under "$SUB/pol/in"
+assert_exit "$RC" 0 "the grant is withdrawn"
+assert_contains "$OUT" "withdrawn" "the ceremony confirms the withdrawal"
+ANS=""
+run_pinned verify "$SUB/pol/in/s.json"
+assert_exit "$RC" 11 "the recorded key loses its grant -> plain 11, no re-ceremony"
+assert_contains "$OUT" "no longer grants" "the note says the grant is gone"
+assert_contains "$OUT" "model" "the note names the key that lost it"
+
+# MACHINE TIER: the effective policy is the intersection. A user entry the
+# machine tier does not cover grants nothing, even though it is recorded.
+seed_policy_user "[{\"path\":[\"model\"]}]"
+seed_policy_machine "[{\"path\":[\"model\"],\"under\":\"$SUB/pol/in\"}]"
+ANS=""
+run_pinned ignorable list
+assert_exit "$RC" 0 "list exits 0 with both tiers"
+assert_contains "$OUT" "everywhere" "the user tier's unscoped entry is shown"
+printf '%s\n' "$JSON_IN" > "$SUB/pol/in/s.json"
+ANS='y
+'
+run_pinned approve --file "$SUB/pol/in/s.json" --ignore-json-key model
+assert_exit "$RC" 1 "an unscoped user grant is NOT covered by a scoped machine entry"
+assert_contains "$OUT" "does not grant these keys" "the intersection refuses it"
+
+# Narrower than the machine scope is inside it; equal is inside it too.
+seed_policy_user "[{\"path\":[\"model\"],\"under\":\"$SUB/pol/in/deeper\"}]"
+mkdir -p "$SUB/pol/in/deeper"
+printf '%s\n' "$JSON_IN" > "$SUB/pol/in/deeper/s.json"
+ANS='y
+'
+run_pinned approve --file "$SUB/pol/in/deeper/s.json" --ignore-json-key model --store
+assert_exit "$RC" 0 "a user scope BELOW the machine scope survives the intersection"
+assert_contains "$OUT" "under $SUB/pol/in/deeper" "provenance names the narrower scope"
+
+# An unusable tier grants nothing -- on either rung, at both ends.
+seed_policy_machine '{"path": ["model"]}'
+ANS='y
+'
+run_pinned approve --file "$SUB/pol/in/deeper/s.json" --ignore-json-key model
+assert_exit "$RC" 1 "an unusable machine tier stops the ceremony"
+assert_contains "$OUT" "not a valid ignorable policy" "the refusal names the invalid tier"
+printf '{"model": "sonnet", "keep": 1}\n' > "$SUB/pol/in/deeper/s.json"
+ANS=""
+run_pinned verify "$SUB/pol/in/deeper/s.json"
+assert_exit "$RC" 11 "an unusable policy refuses the tolerance path at verify too"
+assert_contains "$OUT" "cannot be read" "the note says the policy could not be read"
+
+seed_policy_machine '[{"path": ["model"], "nope": 1}]'
+ANS=""
+run_pinned ignorable list
+assert_exit "$RC" 1 "an entry with an unknown key is refused (it could be a constraint)"
+seed_policy_machine "[{\"path\":[\"model\"],\"under\":\"relative\"}]"
+ANS=""
+run_pinned ignorable list
+assert_exit "$RC" 1 "a non-absolute under is refused"
+rm -f "$MACHINE_POLICY"
+
+# ensure_tree SELF-HEALS the allowed_signers move, loudly, at the next root
+# ceremony -- and leaves the old directory behind only if something else is
+# still in it.
+mkdir -p "$PIN_ROOT/$USERNAME/signers"
+printf 'harness ssh-ed25519 AAAAfake\n' > "$PIN_ROOT/$USERNAME/signers/allowed_signers"
+chmod 640 "$PIN_ROOT/$USERNAME/signers/allowed_signers"
+printf '%s\n' "$JSON_IN" > "$SUB/pol/heal.json"
+ANS='y
+'
+run_pinned approve --file "$SUB/pol/heal.json"
+assert_exit "$RC" 0 "a root ceremony runs with a legacy signers/ dir present"
+assert_contains "$OUT" "moved allowed_signers into the policy dir" "the move is announced"
+assert_file "$PIN_ROOT/$USERNAME/policy/allowed_signers" "allowed_signers now lives in policy/"
+assert_eq "$(cat "$PIN_ROOT/$USERNAME/policy/allowed_signers")" "harness ssh-ed25519 AAAAfake" \
+          "the moved file keeps its content"
+assert_absent "$PIN_ROOT/$USERNAME/signers" "the emptied legacy dir is removed"
 fi
 
 # ---------------------------------------------------------------------------
