@@ -24,9 +24,11 @@
 #      land in the machine's real approval history
 # Every anchor is counted in the source BEFORE the sed (see need()), so a
 # drifting script aborts the harness loudly instead of silently testing a
-# no-op stub. PINNED_ROOT and INSTALL_TARGET are honest environment overrides
-# the script already supports; nothing here touches /var/db/pinned, /etc, or
-# any live system state.
+# no-op stub. INSTALL_TARGET is an honest environment override the script
+# already supports; PINNED_ROOT and PINNED_MACHINE_POLICY are compile-time
+# constants in the real script, so they are anchored and rewritten by the sed
+# like any other. Nothing here touches /var/db/pinned, /etc, or any live
+# system state.
 #
 # canon_path / encode / decode / write_slot_state are unit-driven through a
 # PROBE: the stub truncated before its first action (a pure function library)
@@ -95,12 +97,16 @@ ANS=""
 RC=0
 POUT=""
 
-export PINNED_ROOT="$FIX/pinroot"
+# Fixture paths for the two constants the sed below bakes into the stub. They
+# are plain shell variables here -- the harness uses them to build and inspect
+# fixture state; exporting them would do nothing, since the stub no longer
+# reads the environment for either.
+PINNED_ROOT="$FIX/pinroot"
 export INSTALL_TARGET="$FIX/no-such-install"
 # The OPTIONAL machine tier of the ignorable policy, pointed at the fixture
 # instead of /etc/pinned so the harness never reads (or needs) machine state.
 # Absent by default: most sections want "no machine constraint".
-export PINNED_MACHINE_POLICY="$FIX/etc-pinned/ignorable.json"
+PINNED_MACHINE_POLICY="$FIX/etc-pinned/ignorable.json"
 POLICY_USER="$PINNED_ROOT/$USERNAME/policy/ignorable.json"
 
 need() { # regex count label -- the sed anchors must still exist, exactly
@@ -118,6 +124,8 @@ need '^  \[ "\$EUID" -eq 0 \] ||'                           1 'require_root EUID
 need '^  inv="\${SUDO_USER:-}"$'                            1 'require_root SUDO_USER read'
 need '^  \[ -n "\$inv" \] ||'                               1 'require_root sudo check'
 need '^    root:\*) ;;$'                                    2 'owner allowlists'
+need '^PINNED_ROOT=/var/db/pinned$'                         1 'pin-root constant'
+need '^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json$'   1 'machine-policy constant'
 need '^  install -d -m 755 -o root -g wheel "\$PINNED_ROOT"$'  1 'pin-root install'
 need '-o root -g "\$TREE_GRP" '                             3 'slot-tree installs'
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
@@ -126,7 +134,9 @@ need '^  logger -t pinned '                                 1 'audit-log call'
 need '</dev/tty'                                            10 'ceremony tty reads'
 need '^# ---- setup ---'                                    1 'library cut marker'
 
-sed -e 's/if \[ "\$EUID" -ne 0 \]; then/if false; then/' \
+sed -e "s#^PINNED_ROOT=/var/db/pinned\$#PINNED_ROOT='$PINNED_ROOT'#" \
+    -e "s#^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json\$#PINNED_MACHINE_POLICY='$PINNED_MACHINE_POLICY'#" \
+    -e 's/if \[ "\$EUID" -ne 0 \]; then/if false; then/' \
     -e 's/^  \[ "\$EUID" -eq 0 \] ||.*/  :/' \
     -e 's/^  inv="\${SUDO_USER:-}"$/  inv="$(id -un)"/' \
     -e 's/^  \[ -n "\$inv" \] ||.*/  :/' \
@@ -142,6 +152,12 @@ chmod 755 "$STUB"
 
 # Post-conditions: the seds actually landed (a silently-unapplied sed would
 # turn every ceremony test into a hang or a sudo prompt).
+if grep -q '^PINNED_ROOT=/var/db/pinned$' "$STUB"; then
+  say "STUB SED FAILED: the real pin root survives"; exit 2
+fi
+if grep -q '^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json$' "$STUB"; then
+  say "STUB SED FAILED: the real machine policy path survives"; exit 2
+fi
 if grep -q '</dev/tty' "$STUB"; then say "STUB SED FAILED: /dev/tty survives"; exit 2; fi
 if [ "$(grep -c 'if false; then' "$STUB")" != 2 ]; then say "STUB SED FAILED: elevation gates"; exit 2; fi
 if grep -q '^  logger -t pinned ' "$STUB"; then say "STUB SED FAILED: logger survives"; exit 2; fi

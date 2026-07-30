@@ -106,16 +106,25 @@ export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
 set -euo pipefail
 
-# Override-friendly defaults (handy for testing). Root ceremonies never
-# inherit these from a caller: self-elevation goes through sudo's
-# env_reset, so the elevated run always sees the defaults.
+# Where this script installs itself. Override-friendly (handy for testing);
+# a packaging that owns its own prefix rewrites this line at build time.
 : "${INSTALL_TARGET:=/usr/local/sbin/pinned}"
-: "${PINNED_ROOT:=/var/db/pinned}"
+
+# Where trust state lives. A COMPILE-TIME CONSTANT, not an environment
+# default: nothing in the environment can re-point where pinned reads or
+# writes the records its verdicts rest on. No knob beats a guarded knob.
+# The test harness rewrites this exact line in its sed-stubbed copy, so keep
+# it on one line in this shape.
+PINNED_ROOT=/var/db/pinned
+
 # The OPTIONAL machine tier of the ignorable policy. Absent = no machine
 # constraint (the user tier stands alone); the FILE is the interface, so a
 # configuration manager can declare it (nix: environment.etc) without this
-# script knowing anything about the tool that wrote it.
-: "${PINNED_MACHINE_POLICY:=/etc/pinned/ignorable.json}"
+# script knowing anything about the tool that wrote it. A constant for the
+# same reason as PINNED_ROOT, and one more: a value aimed at nothing would
+# drop the machine rung silently, and dropping a rung WIDENS what verify
+# tolerates. The harness rewrites this exact line too.
+PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json
 
 # Colour only when stdout is a terminal (piping/redirecting stays clean).
 if [ -t 1 ]; then
