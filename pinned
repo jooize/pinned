@@ -251,7 +251,9 @@ usage: pinned <action> [args]
   list [--under <dir>]
                      live pins in your tier: kind, digest, decoded path
                      (--under: only paths below that directory)
-  slot <repo>        print the repo's slot directory (for consumer symlinks)
+  slot <path>        print the slot directory for any path -- repo, file,
+                     existing or not; a name resolver for consumer
+                     symlinks and lane mounts, never an existence answer
   deploy [--dry-run] [--yes] [--flake <path>]
                      sync every git+file input of the system flake to its
                      approved rev and rebuild; always shows the root
@@ -332,6 +334,57 @@ verify_root_owned_path() {
   esac
 }
 
+# ---- vm-guest record presentation ------------------------------------------
+#
+# Apple Virtualization's virtiofs (AppleVirtIOFS) IGNORES ownership: a
+# shared file presents in-guest as owned by whoever ACCESSES it (the
+# unknown-owner substitution), so host records mounted into a vm lane
+# arrive owned by the invoking user -- root sees them as _unknown -- and
+# there is no ownership-honoring remount (mount -u -o owners is refused;
+# no mount_AppleVirtIOFS helper exists). Measured in a disposable guest.
+# The strict owner check therefore refuses EVERY record a lane can see:
+# verify --frozen answers 1, list prints CORRUPT for every slot. That is
+# not strictness, it is a tool that cannot run where it was mounted.
+#
+# So READ paths -- and only they -- also accept a record presented as
+# owned by the accessing user, when the kernel says this machine is a
+# guest. kern.hv_vmm_present is read-only kernel truth (the claude shim
+# already trusts exactly this sysctl as vm-lane evidence); anything but 1
+# -- a missing sysctl, a Linux host, a failed read -- means NOT a guest,
+# so the relaxation fails closed.
+#
+# Why this is sound: the records reach the guest through a READ-ONLY host
+# share, so the bytes stay the host's, and anyone who can fake this
+# presentation inside the guest is guest-root, already inside the one
+# boundary the human consented to by launching the lane. Hosts answer 0,
+# so host verification is unchanged bit for bit. The one caveat: a HOST
+# that is itself virtualized also answers 1 and would accept this
+# presentation -- such a machine's trust is bounded by its hypervisor
+# anyway.
+#
+# The identity accepted is the ACCESSING user (what the substitution
+# uses), not $inv: under a root ceremony the accessor is root, which the
+# strict check already admits, so no ceremony gains anything here.
+# Approving stays a host ceremony.
+VM_GUEST=""
+in_vm_guest() {
+  if [ -z "$VM_GUEST" ]; then
+    VM_GUEST="$(sysctl -n kern.hv_vmm_present 2>/dev/null || echo 0)"
+    [ -n "$VM_GUEST" ] || VM_GUEST=0
+  fi
+  [ "$VM_GUEST" = 1 ]
+}
+
+ACCESS_USER=""
+presented_to_invoker() { # $1 = owner, as stat_owner prints it ("user:group")
+  in_vm_guest || return 1
+  [ -n "$ACCESS_USER" ] || ACCESS_USER="$(id -un)"
+  case "$1" in
+    "$ACCESS_USER":*) return 0 ;;
+  esac
+  return 1
+}
+
 # The record-file variant: a slot's state file is authoritative only if
 # root wrote it and nothing non-root can rewrite it -- owner root, no
 # group/other write bit. (Directory modes go through
@@ -342,8 +395,10 @@ verify_record_file() {
   case "$owner" in
     root:*) ;;
     *)
-      echo "ERROR: record $f is owned $owner, expected owner root" >&2
-      return 1 ;;
+      presented_to_invoker "$owner" || {
+        echo "ERROR: record $f is owned $owner, expected owner root" >&2
+        return 1
+      } ;;
   esac
   mode="$(stat_mode "$f")"
   case "$mode" in
@@ -359,6 +414,31 @@ verify_ancestry() {
   p="$(dirname "$1")"
   while [ "$p" != "/" ]; do
     verify_root_owned_path "$p" || return 1
+    p="$(dirname "$p")"
+  done
+}
+
+# The read-path ancestry walk: same rule, plus the vm-guest presentation
+# acceptance verify_record_file makes -- a mounted directory presents as
+# the accessor's own, so the strict walk would refuse the policy file no
+# lane could then read. A directory accepted this way must still deny
+# group and other write. Ceremony and elevation paths keep the strict
+# verify_ancestry, which is the only walk that gates writes or exec.
+verify_ancestry_presented() {
+  local p owner mode
+  p="$(dirname "$1")"
+  while [ "$p" != "/" ]; do
+    owner="$(stat_owner "$p")"
+    if presented_to_invoker "$owner"; then
+      mode="$(stat_mode "$p")"
+      case "$mode" in
+        *[2367]?|*[2367])
+          echo "ERROR: $p has mode $mode (group/other-writable); refusing" >&2
+          return 1 ;;
+      esac
+    else
+      verify_root_owned_path "$p" || return 1
+    fi
     p="$(dirname "$p")"
   done
 }
@@ -1210,7 +1290,7 @@ read_policy_file() {
   [ -e "$f" ] || return 1
   [ -f "$f" ] || { echo "REFUSE: $label $f is not a regular file" >&2; return 2; }
   verify_record_file "$f" || return 2
-  verify_ancestry "$f" || return 2
+  verify_ancestry_presented "$f" || return 2
   require_jq "reading $f" || return 2
   jq -e "$POLICY_VALID" <"$f" >/dev/null 2>&1 || {
     echo "REFUSE: $label $f is not a valid ignorable policy" >&2
@@ -3105,12 +3185,28 @@ EOF
 # ---- slot ------------------------------------------------------------------
 
 do_slot() {
-  # Print the repo's slot directory, for consumers and root-owned
-  # symlinks (the rev lives at <slot>/rev.git):
+  # Print the slot directory for ANY path -- repo, file, present or not.
+  # This is the one place slot names are spelled: consumers (lane
+  # launchers deciding what to mount, root-owned symlinks) must never
+  # reimplement the encoding, so the resolver has to answer for the same
+  # paths verify does, including ones that do not exist yet.
+  #
   #   sudo ln -s "$(pinned slot <repo>)" /etc/nix-darwin/pinned-rev
-  inv="$(id -un)"
-  resolve_repo "$@"
-  printf '%s\n' "$default_slot"
+  #   d="$(pinned slot "$f")"; [ -d "$d" ] && mount ...
+  #
+  # A NAME RESOLVER, NOT AN EXISTENCE ORACLE: it never says whether the
+  # path is pinned (that is verify) or whether the slot dir is there (the
+  # caller's own -d). Canonicalization is canon_path's, the same one
+  # verify keys its slot with -- one code path, so a repo and a file can
+  # never encode differently -- which also inherits its refusal of a `..`
+  # tail below a missing directory.
+  [ $# -eq 1 ] || { echo "slot takes one path" >&2; usage; }
+  local path tier
+  # The tier verify would key the slot under, so `sudo pinned slot ...`
+  # still answers for the human, not for root.
+  tier="$(tier_user)"
+  path="$(canon_path "$1")" || exit 1
+  slot_dir_for "$tier" "$path"
 }
 
 # ---- signer ----------------------------------------------------------------

@@ -66,7 +66,11 @@ unknown declarations refuse outright.
                                       trusted review of a non-repo file:
                                       one read, shown and hashed; no record
     pinned list [--under <dir>]       live pins: kind, digest, path
-    pinned slot <repo>                print the repo's slot directory
+    pinned slot <path>                print the slot directory for any
+                                      path -- repo, file, existing or
+                                      not; a name, never an existence
+                                      answer (exit 1 only if the path
+                                      cannot be resolved)
 
     pinned deploy [--dry-run] [--yes] [--flake <path>]
                                       sync every git+file input of the
@@ -114,6 +118,23 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
     force a lane that needs the policy to mount the slot list with it.
   Consumers that want a friendly path use a root-owned symlink:
   `sudo ln -s "$(pinned slot <repo>)" /etc/nix-darwin/pinned-rev`.
+  SLOT NAMES NEVER LEAVE PINNED: `pinned slot <path>` resolves any path
+  -- repo or file, existing or not -- to its slot directory, so a lane
+  launcher builds its mount list with it instead of reimplementing the
+  encoding. It resolves a NAME and nothing more: it does not say whether
+  the path is pinned (that is `verify`) or whether the directory exists
+  (the caller's own `-d`).
+- IN A VM LANE, RECORDS CANNOT BE ROOT-OWNED. Apple Virtualization's
+  virtiofs ignores ownership: a shared file presents in-guest as owned by
+  whoever accesses it, and there is no ownership-honoring remount. So on
+  a machine the kernel reports as a guest (`kern.hv_vmm_present` is 1),
+  the READ paths -- and only they -- also accept a record presented as
+  owned by the invoking user; the group/other-write refusal stays
+  unconditional, and approving stays a host ceremony. The bytes are still
+  the host's (the share is read-only), and faking that presentation
+  in-guest needs guest root, which is already inside the boundary the
+  human consented to by launching the lane. A host answers 0, so host
+  verification is unchanged.
 - First approval of a repo shows the full tree (diff from the empty
   tree) unless `--trust` is passed, loudly.
 - The file-pin ceremony (`approve --file`) takes NO hash argument, ever.
