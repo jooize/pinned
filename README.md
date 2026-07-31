@@ -41,13 +41,14 @@ unknown declarations refuse outright.
                                       that path; --store also keeps the
                                       approved bytes in the slot)
     pinned verify <path>              file-pin verdict for gates: 0 ok,
-                                      10 no slot, 11 mismatch, 12 missing,
-                                      13 tombstoned-but-present, 14 mode,
-                                      15 differs only in ignored keys
+                                      5 differs only in ignored keys,
+                                      10 no slot, 11 mismatch,
+                                      13 tombstoned-but-present,
+                                      20 missing, 30 mode
                                       (--emit prints the verified bytes;
                                       --frozen <copy> checks held bytes;
                                       --baseline <copy> offers the last
-                                      approved bytes for the 15 comparison)
+                                      approved bytes for the 5 comparison)
     pinned tombstone <path>           retire a pinned file that is GONE
     pinned sign <repo> <tag>          signed release tag at the PINNED hash
     pinned signer add|list|remove [--repo <path>] (--file <pubkey> | --key '<line>')
@@ -125,8 +126,9 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   `--baseline <copy>` shows a diff instead of the full file, but only
   when the copy re-hashes to the previously recorded digest.
 - `verify` is the one state table. Consumers never re-derive slot
-  semantics; they read verify's exit code (0/10/11/12/13/14/15, stable
-  API). Parsers use `--emit` (print the VERIFIED bytes, nothing on
+  semantics; they read verify's exit code (0/5/10/11/13/20/30, stable
+  API; the decade is the action class, and 12/14/15 are retired numbers
+  that are never reused). Parsers use `--emit` (print the VERIFIED bytes, nothing on
   failure) or `--frozen <copy>` (verdict on caller-held bytes) so the
   bytes acted on are the bytes verified -- never verify-path-then-
   read-path. File modes are CHECKED as an invariant (owner is the tier
@@ -143,10 +145,10 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   `shasum -a 256 -c pin.sha256` still cross-checks it with stock tools, and
   nothing about what gets hashed changes. What changes is the answer to a
   MISMATCH: verify may compare the two documents with the declared keys
-  projected out, and, if everything else is identical, answer **15**
+  projected out, and, if everything else is identical, answer **5**
   ("matches modulo declared ignored keys") instead of 11, naming each key
   that actually moved on stdout as `ignored-drift: <key>`. Consumers treat
-  15 as permitted and unknown codes as refusal, exactly as before.
+  5 as permitted and unknown codes as refusal, exactly as before.
   - The FORMAT is declared by the suffix, like `rev.<vcs>` and
     `pin.<algo>`: `ignored.json` is the shipped grammar, and an
     `ignored.toml` / `ignored.yaml` / anything else REFUSES rather than

@@ -68,7 +68,7 @@
 # approved bytes) -- both written ONLY by the approve ceremony. The PIN
 # stays byte-exact -- `shasum -c pin.sha256` still verifies -- and ignoring
 # is a VERIFY-side tolerance: when the live bytes differ, verify may
-# compare the two sides with those keys projected out and answer 15 instead
+# compare the two sides with those keys projected out and answer 5 instead
 # of 11. Every step of that path fails CLOSED to the stricter verdict. The
 # `approved` copy is OPT-IN (--store) because slot dirs get read-only
 # mounted into container and vm lanes: a copy turns a slot that discloses
@@ -197,7 +197,7 @@ usage: pinned <action> [args]
                      that re-hashes to the prior record
                      --ignore-json-key (after its --file, repeatable)
                      declares a dotted JSON key whose later drift verify
-                     tolerates, answering 15; the key must be granted for
+                     tolerates, answering 5; the key must be granted for
                      that path by the ignorable policy or the ceremony
                      REFUSES (see: pinned ignorable); --store additionally
                      keeps the approved bytes in the slot so verify needs
@@ -207,13 +207,13 @@ usage: pinned <action> [args]
   tombstone <path>   (sudo) retire a pinned file that is GONE; if it
                      reappears, verify refuses until re-approved
   verify <path>      file-pin verdict, quiet contract for gates:
-                     0 ok, 10 no slot, 11 mismatch, 12 pinned-but-
-                     missing, 13 tombstoned-but-present, 14 mode/owner,
-                     15 differs ONLY in declared ignored keys
+                     0 ok, 5 differs ONLY in declared ignored keys,
+                     10 no slot, 11 mismatch, 13 tombstoned-but-present,
+                     20 pinned-but-missing, 30 mode/owner
   verify --emit <path>
                      verify, then print the VERIFIED bytes on stdout
                      (nothing on failure) -- the parse-safely form
-                     (byte-exact only: never answers 15)
+                     (byte-exact only: never answers 5)
   verify --frozen <copy> <path>
                      verify caller-frozen bytes against <path>'s record
   verify [--baseline <copy>] <path>
@@ -924,7 +924,7 @@ hash_file() {
 #
 # Walking up rather than stopping at the immediate parent is load-bearing.
 # A path is absent whether one component is missing or five, and the verdict
-# for an absent path belongs to its SLOT -- no slot -> 10, live pin -> 12,
+# for an absent path belongs to its SLOT -- no slot -> 10, live pin -> 20,
 # tombstone -> 0. Erroring out because the parent dir happens to be gone
 # made those states unreachable for an entire subtree: verify returned a
 # generic failure that callers must treat as "pinned itself broke" (the shim
@@ -1323,7 +1323,7 @@ EOF
 
 # May these bytes be PROJECTED (parsed, keys deleted, re-serialized) as a
 # stand-in for themselves? Three refusals, all of them parser-differential
-# hazards -- a "yes" here is what lets verify answer 15 instead of 11, so
+# hazards -- a "yes" here is what lets verify answer 5 instead of 11, so
 # each one fails closed. $1 = file, $2 = which side, for the note.
 #
 #   NUL bytes: jq accepts a trailing NUL and treats the file as one
@@ -2441,15 +2441,18 @@ do_tombstone() {
 # private copy of the state table (writer/reader split: approve records,
 # verify answers). Exit contract, a stable API:
 #   0   state matches the record (pin + match, or tombstone + absent)
-#   10  no slot for this path
-#   11  hash mismatch
-#   12  live pin but the file is missing
-#   13  tombstoned but the path is present (retired content resurrected)
-#   14  mode/ownership invariant violated
-#   15  the bytes differ, but ONLY in keys the slot declared ignored (see
+#   5   the bytes differ, but ONLY in keys the slot declared ignored (see
 #       ignored.<format> above) AND the ignorable policy still grants every
 #       one of those keys for this path -- and the differing keys are named on
 #       stdout, one `ignored-drift: <key>` line each
+#   10  no slot for this path
+#   11  hash mismatch
+#   13  tombstoned but the path is present (retired content resurrected)
+#   20  live pin but the file is missing
+#   30  mode/ownership invariant violated
+# The decade is the consumer's action class: teens "approve fixes it",
+# twenties "restore or tombstone", thirties "invariant". 12, 14 and 15 are
+# RETIRED and never reused; a new code takes the next free one in its class.
 # Anything structural (malformed slot, unknown algorithm, wrong recorded
 # path, unreadable tier) is a hard error: exit 1, fail closed. The
 # common gate stays `if pinned verify <path>; then`.
@@ -2459,7 +2462,7 @@ do_tombstone() {
 #   verify --emit <path>          freeze, verify, print the VERIFIED bytes on
 #                                 stdout; NOTHING on nonzero exit. The "verify
 #                                 and emit the SAME bytes" shape as one call.
-#                                 BYTE-EXACT ONLY: --emit never answers 15,
+#                                 BYTE-EXACT ONLY: --emit never answers 5,
 #                                 because bytes that merely match modulo
 #                                 ignored keys are not the verified bytes.
 #   verify --frozen <copy> <path> caller-frozen bytes against <path>'s record,
@@ -2581,9 +2584,9 @@ do_verify() {
     }
   fi
 
-  # Order: existence (12), then the mode invariant (14), then content
+  # Order: existence (20), then the mode invariant (30), then content
   # (11). With --frozen the copy evidences existence -- absence was the
-  # caller's to catch at its freeze -- so 12 cannot arise there.
+  # caller's to catch at its freeze -- so 20 cannot arise there.
   local subject
   if [ -n "$frozen" ]; then
     [ -f "$frozen" ] || { echo "ERROR: frozen copy is not a readable file: $frozen" >&2; exit 1; }
@@ -2591,7 +2594,7 @@ do_verify() {
   else
     if [ ! -e "$path" ]; then
       echo "REFUSE: $path is pinned but MISSING (restore it, or run: pinned tombstone $path)" >&2
-      exit 12
+      exit 20
     fi
     [ -f "$path" ] || { echo "ERROR: not a regular file: $path" >&2; exit 1; }
   fi
@@ -2612,13 +2615,13 @@ do_verify() {
     owner="$(stat_owner "$path")"
     if [ "${owner%%:*}" != "$tier" ] && [ "${owner%%:*}" != root ]; then
       echo "REFUSE: $path is owned by ${owner%%:*}, expected $tier (or root)" >&2
-      exit 14
+      exit 30
     fi
     mode="$(stat_mode "$path")"
     case "$mode" in
       *[2367]?|*[2367])
         echo "REFUSE: $path has mode $mode (group/other-writable); fix: chmod go-w $path" >&2
-        exit 14 ;;
+        exit 30 ;;
     esac
   fi
 
@@ -2637,7 +2640,7 @@ do_verify() {
     # verified bytes, and these are not.
     if [ "$emit" -eq 0 ] && slot_declares_ignore "$slot" \
        && ignored_keys_match "$slot" "$label" "$rec_digest" "$subject" "$baseline" "$path"; then
-      exit 15
+      exit 5
     fi
     echo "REFUSE: $path does not match its approved record" >&2
     echo "  approved $label: $rec_digest" >&2
@@ -2744,10 +2747,10 @@ do_status_file() {
       rc=0; (do_verify "$path" >/dev/null 2>&1) || rc=$?
       case "$rc" in
         0)  printf '%sstate:%s      %s✓ live file matches the record%s\n' "$C_DIM" "$C_OFF" "$C_GRN" "$C_OFF" ;;
-        15) printf '%sstate:%s      %s~ live file matches except in the ignored keys%s\n' "$C_DIM" "$C_OFF" "$C_YEL" "$C_OFF" ;;
+        5)  printf '%sstate:%s      %s~ live file matches except in the ignored keys%s\n' "$C_DIM" "$C_OFF" "$C_YEL" "$C_OFF" ;;
         11) printf '%sstate:%s      %s✗ live file DIFFERS from the record%s\n' "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF" ;;
-        12) printf '%sstate:%s      %s✗ pinned but MISSING (restore, or tombstone)%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF" ;;
-        14) printf '%sstate:%s      %s✗ mode/ownership invariant violated%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF" ;;
+        20) printf '%sstate:%s      %s✗ pinned but MISSING (restore, or tombstone)%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF" ;;
+        30) printf '%sstate:%s      %s✗ mode/ownership invariant violated%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF" ;;
         *)  printf '%sstate:%s      %s✗ verify error (exit %s)%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$rc" "$C_OFF" ;;
       esac ;;
   esac
@@ -3447,7 +3450,7 @@ do_ignorable() {
   printf '%sscope:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$scope_disp" "$C_OFF"
   if [ "$sub" = add ]; then
     printf '            %sapprove --file may then declare this key ignored for paths in%s\n' "$C_DIM" "$C_OFF"
-    printf '            %sscope; verify answers 15 instead of 11 when only it drifts%s\n' "$C_DIM" "$C_OFF"
+    printf '            %sscope; verify answers 5 instead of 11 when only it drifts%s\n' "$C_DIM" "$C_OFF"
     if [ "$covered" -eq 0 ]; then
       printf '%snote:%s        %sthe machine policy (%s) does not cover this scope --\n' \
         "$C_B" "$C_OFF" "$C_YEL" "$PINNED_MACHINE_POLICY"

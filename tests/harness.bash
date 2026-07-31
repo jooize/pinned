@@ -344,8 +344,8 @@ printf 'here for now\n' > "$SUB/v/vanish.txt"
 seed_pin "$SUB/v/vanish.txt" "$(digest_of "$SUB/v/vanish.txt")"
 rm -f "$SUB/v/vanish.txt"
 run_pinned verify "$SUB/v/vanish.txt"
-assert_exit "$RC" 12 "pinned but missing -> 12"
-assert_contains "$OUT" "pinned but MISSING" "12 names the absence"
+assert_exit "$RC" 20 "pinned but missing -> 20"
+assert_contains "$OUT" "pinned but MISSING" "20 names the absence"
 
 printf 'back from the dead\n' > "$SUB/v/risen.txt"
 seed_tombstone "$SUB/v/risen.txt"
@@ -357,8 +357,8 @@ printf 'loose modes\n' > "$SUB/v/loose.txt"
 seed_pin "$SUB/v/loose.txt" "$(digest_of "$SUB/v/loose.txt")"
 chmod 664 "$SUB/v/loose.txt"
 run_pinned verify "$SUB/v/loose.txt"
-assert_exit "$RC" 14 "group-writable subject -> 14"
-assert_contains "$OUT" "group/other-writable" "14 names the invariant"
+assert_exit "$RC" 30 "group-writable subject -> 30"
+assert_contains "$OUT" "group/other-writable" "30 names the invariant"
 chmod 644 "$SUB/v/loose.txt"
 run_pinned verify "$SUB/v/loose.txt"
 assert_exit "$RC" 0 "remediated mode verifies again"
@@ -597,7 +597,7 @@ assert_exit "$RC" 0 "list survives a corrupt rev slot"
 assert_contains "$OUT" "CORRUPT" "list flags a corrupt rev slot instead of printing a digest"
 
 # ---------------------------------------------------------------------------
-say "S9: ignored keys (ignored.json / approved / exit 15)"
+say "S9: ignored keys (ignored.json / approved / exit 5)"
 # ---------------------------------------------------------------------------
 # The tolerance path is jq-driven by construction (structural comparison of
 # two JSON documents), so without jq there is nothing to exercise -- the
@@ -653,16 +653,16 @@ else
   fail "shasum -c cross-check broke on an ignore-declaring slot"
 fi
 
-# Exit 15 via the slot's own copy, naming the key that actually moved.
+# Exit 5 via the slot's own copy, naming the key that actually moved.
 printf '{\n  "model": "sonnet",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/copy.json"
 run_pinned verify "$SUB/ig/copy.json"
-assert_exit "$RC" 15 "drift confined to an ignored key -> 15"
-assert_contains "$OUT" "ignored-drift: model" "15 names the drifted key on stdout"
+assert_exit "$RC" 5 "drift confined to an ignored key -> 5"
+assert_contains "$OUT" "ignored-drift: model" "5 names the drifted key on stdout"
 assert_missing  "$OUT" "ignored-drift: effortLevel" "an unchanged declared key is not reported"
 
 # --emit is byte-exact only: it must never hand a parser unapproved bytes.
 run_pinned verify --emit "$SUB/ig/copy.json"
-assert_exit "$RC" 11 "--emit never answers 15"
+assert_exit "$RC" 11 "--emit never answers 5"
 assert_missing "$OUT" "sonnet" "--emit prints nothing on a mismatch"
 
 # A difference OUTSIDE the declared keys is a plain mismatch again.
@@ -678,7 +678,7 @@ assert_exit "$RC" 11 "no approved copy and no --baseline -> 11"
 assert_contains "$OUT" "no --baseline" "the note says what is missing"
 printf '{\n  "model": "opus",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$FIX/baseline.json"
 run_pinned verify --baseline "$FIX/baseline.json" "$SUB/ig/nocopy.json"
-assert_exit "$RC" 15 "a caller baseline that re-hashes to the record enables 15"
+assert_exit "$RC" 5 "a caller baseline that re-hashes to the record enables 5"
 assert_contains "$OUT" "ignored-drift: model" "the baseline path names the drifted key"
 printf 'not the approved bytes\n' > "$FIX/forged.json"
 run_pinned verify --baseline "$FIX/forged.json" "$SUB/ig/nocopy.json"
@@ -918,7 +918,7 @@ assert_contains "$OUT" "does not grant these keys" "the near-miss refusal is the
 printf '{"model": "sonnet", "keep": 1}\n' > "$SUB/pol/in/s.json"
 ANS=""
 run_pinned verify "$SUB/pol/in/s.json"
-assert_exit "$RC" 15 "drift in a granted, declared key -> 15"
+assert_exit "$RC" 5 "drift in a granted, declared key -> 5"
 ANS='y
 '
 run_pinned ignorable remove model --under "$SUB/pol/in"
