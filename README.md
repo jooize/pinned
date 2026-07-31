@@ -102,39 +102,35 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   glance. `<user>/` is 0750 root:`_<user>-pinned` -- the group is
   consumed from the system config, never created, and its absence fails
   closed to root-only 0700.
-- The tier has exactly TWO wrapper dirs, and they are the MOUNT MENU:
-  `slots/` (what IS pinned) and `policy/` (what MAY be trusted:
-  `allowed_signers` and `ignorable.json`). A lane mounts its own slot
-  dirs and `policy/` read-only, never `<user>/` itself, which would
-  disclose every pinned path name. Two rules produced this shape, and
-  both rule out loose files directly under `<user>/`:
-  - **Directories are mounted, never files.** Every write here is an
-    atomic rename over a staged temp file, so the name gets a NEW inode
-    -- and a bind-mounted (or virtiofs-shared) FILE pins the inode it
-    was mounted from, so a guest would keep reading pre-ceremony bytes
-    forever. Sharing the enclosing dir re-reads the name every time.
+- The tier has exactly TWO wrapper dirs, and they are the SELECTION
+  MENU: `slots/` (what IS pinned) and `policy/` (what MAY be trusted:
+  `allowed_signers` and `ignorable.json`). A lane's launch payload
+  carries its own slot dirs and `policy/`, never `<user>/` itself,
+  which would disclose every pinned path name. Two rules produced this
+  shape, and both rule out loose files directly under `<user>/`:
+  - **Directories are the transfer unit, never files.** Every write
+    here is an atomic rename over a staged temp file, so the name gets
+    a NEW inode. Any consumer that binds a FILE (a root-owned symlink,
+    a hypothetical file mount) would pin the pre-ceremony inode
+    forever; naming the enclosing dir re-reads the name every time.
+    Payload snapshots copy whole dirs for the same reason: a dir is a
+    complete, self-consistent slot state.
   - **One dir per disclosure class.** Policy is small, boring and safe
     to expose; the slot LIST is itself information. Flat files would
-    force a lane that needs the policy to mount the slot list with it.
+    force a lane that needs the policy to carry the slot list with it.
   Consumers that want a friendly path use a root-owned symlink:
   `sudo ln -s "$(pinned slot <repo>)" /etc/nix-darwin/pinned-rev`.
   SLOT NAMES NEVER LEAVE PINNED: `pinned slot <path>` resolves any path
   -- repo or file, existing or not -- to its slot directory, so a lane
-  launcher builds its mount list with it instead of reimplementing the
-  encoding. It resolves a NAME and nothing more: it does not say whether
-  the path is pinned (that is `verify`) or whether the directory exists
-  (the caller's own `-d`).
-- IN A VM LANE, RECORDS CANNOT BE ROOT-OWNED. Apple Virtualization's
-  virtiofs ignores ownership: a shared file presents in-guest as owned by
-  whoever accesses it, and there is no ownership-honoring remount. So on
-  a machine the kernel reports as a guest (`kern.hv_vmm_present` is 1),
-  the READ paths -- and only they -- also accept a record presented as
-  owned by the invoking user; the group/other-write refusal stays
-  unconditional, and approving stays a host ceremony. The bytes are still
-  the host's (the share is read-only), and faking that presentation
-  in-guest needs guest root, which is already inside the boundary the
-  human consented to by launching the lane. A host answers 0, so host
-  verification is unchanged.
+  launcher selects its launch payload with it instead of reimplementing
+  the encoding. It resolves a NAME and nothing more: it does not say
+  whether the path is pinned (that is `verify`) or whether the directory
+  exists (the caller's own `-d`).
+- LANES GET COPIES, NOT THE LEDGER. A lane receives a launch-time
+  snapshot of just the slot dirs it needs, installed at the verbatim host
+  paths by the LANE'S OWN root -- so the records are genuinely root-owned
+  where they are read, and verification is the same strict check
+  everywhere. `pinned` has no lane-conditional branch.
 - First approval of a repo shows the full tree (diff from the empty
   tree) unless `--trust` is passed, loudly.
 - The file-pin ceremony (`approve --file`) takes NO hash argument, ever.

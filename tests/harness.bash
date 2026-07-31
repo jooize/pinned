@@ -22,10 +22,6 @@
 #      driven by $ANS
 #   6. log_action's `logger -t pinned` -> no-op, so fixture ceremonies never
 #      land in the machine's real approval history
-#   7. in_vm_guest's `sysctl -n kern.hv_vmm_present` read -> $HARNESS_VM_GUEST
-#      (default 0), so S11 can drive the vm-guest presentation branch on a
-#      host; the kernel is never consulted and every other section runs with
-#      the host answer
 # Every anchor is counted in the source BEFORE the sed (see need()), so a
 # drifting script aborts the harness loudly instead of silently testing a
 # no-op stub. INSTALL_TARGET is an honest environment override the script
@@ -92,7 +88,6 @@ FIX="$(mktemp -d "${TMPDIR:-/tmp}/pinned-harness.XXXXXX")"
 FIX="$(cd "$FIX" && pwd -P)"
 STUB="$FIX/pinned-stub"
 LIB="$FIX/pinned-lib.bash"
-LIBVM="$FIX/pinned-lib-vm.bash"
 PROBE="$FIX/probe"
 OUT="$FIX/out"
 ERRF="$FIX/err"
@@ -136,7 +131,6 @@ need '-o root -g "\$TREE_GRP" '                             3 'slot-tree install
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
-need '^    VM_GUEST="\$(sysctl -n kern.hv_vmm_present'       1 'vm-guest sysctl probe'
 need '</dev/tty'                                            10 'ceremony tty reads'
 need '^# ---- setup ---'                                    1 'library cut marker'
 
@@ -152,7 +146,6 @@ sed -e "s#^PINNED_ROOT=/var/db/pinned\$#PINNED_ROOT='$PINNED_ROOT'#" \
     -e 's/^\( *\)chown -R "root:\$TREE_GRP".*/\1:/' \
     -e 's/^\( *\)chown "root:\$TREE_GRP".*/\1:/' \
     -e 's/^  logger -t pinned .*/  :/' \
-    -e 's#^    VM_GUEST="\$(sysctl -n kern.hv_vmm_present.*#    VM_GUEST="${HARNESS_VM_GUEST:-0}"#' \
     -e 's#</dev/tty##g' \
     "$SRC" > "$STUB"
 chmod 755 "$STUB"
@@ -168,35 +161,19 @@ fi
 if grep -q '</dev/tty' "$STUB"; then say "STUB SED FAILED: /dev/tty survives"; exit 2; fi
 if [ "$(grep -c 'if false; then' "$STUB")" != 2 ]; then say "STUB SED FAILED: elevation gates"; exit 2; fi
 if grep -q '^  logger -t pinned ' "$STUB"; then say "STUB SED FAILED: logger survives"; exit 2; fi
-if ! grep -q 'HARNESS_VM_GUEST' "$STUB"; then
-  say "STUB SED FAILED: the sysctl vm-guest probe survives"; exit 2
-fi
 
 # The pure-function library: everything above the first action.
 sed '/^# ---- setup ---/,$d' "$STUB" > "$LIB"
-
-# A SECOND library for S11. The stub's owner allowlist admits this user
-# everywhere, which would hide the vm-guest branch entirely -- so restore the
-# STRICT `root:*)` case inside verify_record_file only. In that library the
-# guest presentation rule is the ONLY way a user-owned record can pass, while
-# verify_root_owned_path stays relaxed so the fixture tree is still walkable.
-sed -e "/^verify_record_file()/,/^}/ s/^    root:\\*|${USERNAME}:\\*) ;;\$/    root:*) ;;/" \
-    "$LIB" > "$LIBVM"
-if [ "$(grep -c "^    root:\\*|${USERNAME}:\\*) ;;\$" "$LIBVM")" != 1 ]; then
-  say "STUB SED FAILED: the vm library must keep exactly one relaxed owner allowlist"; exit 2
-fi
 
 cat > "$PROBE" <<EOF
 #!/usr/bin/env bash
 # Call one internal pinned function by name. Args are captured BEFORE the
 # source so the library's own positional-parameter handling cannot touch them.
-# \$PROBE_LIB picks the library: the stubbed one by default, the
-# strict-record one (S11) when asked.
 set -euo pipefail
 fn="\$1"; shift
 args=("\$@")
 # shellcheck disable=SC1090
-. "\${PROBE_LIB:-$LIB}" probe
+. "$LIB" probe
 "\$fn" \${args[@]+"\${args[@]}"}
 EOF
 chmod 755 "$PROBE"
@@ -218,11 +195,6 @@ run_probe_in() { # dir fn args...
   local d="$1"; shift
   RC=0
   POUT="$(cd "$d" && "$PROBE" "$@" 2>"$ERRF")" || RC=$?
-}
-run_probe_vm() { # vm-evidence fn args... -- the strict-record library
-  local vm="$1"; shift
-  RC=0
-  POUT="$(PROBE_LIB="$LIBVM" HARNESS_VM_GUEST="$vm" "$PROBE" "$@" 2>"$ERRF")" || RC=$?
 }
 
 slot_of()   { "$PROBE" slot_dir_for "$USERNAME" "$1"; }
@@ -1035,8 +1007,8 @@ fi
 say "S11: slot (the name resolver)"
 # ---------------------------------------------------------------------------
 # `slot` prints ONE line -- the slot directory -- for any path, and never
-# answers existence. Lane launchers resolve mount sources with it, so the
-# encoding must never be reimplemented outside pinned.
+# answers existence. Lane launchers select their launch payload with it, so
+# the encoding must never be reimplemented outside pinned.
 mkdir -p "$SUB/s"
 printf '{"measured": true}\n' > "$SUB/s/measured.json"
 ANS='y
@@ -1068,52 +1040,6 @@ assert_eq "$(cat "$OUT")" "$DIR_SLOT" "a trailing slash resolves to the same slo
 
 run_pinned slot "$SUB/s/measured.json" "$SUB/s/absent/never-written.json"
 assert_exit "$RC" 1 "slot takes exactly one path"
-
-# ---------------------------------------------------------------------------
-say "S12: vm-guest record presentation"
-# ---------------------------------------------------------------------------
-# Apple's virtiofs presents host-shared records as owned by the ACCESSING
-# user, so a lane's records can never be root-owned in-guest. verify_record_file
-# accepts that presentation only when kern.hv_vmm_present says this machine is
-# a guest -- driven here through the stubbed sysctl read, against the library
-# whose record allowlist is still strict (see LIBVM).
-VMREC="$FIX/vmrec"
-printf 'a record\n' > "$VMREC"
-chmod 640 "$VMREC"
-
-run_probe_vm 0 verify_record_file "$VMREC"
-assert_exit "$RC" 1 "no guest evidence: a user-owned record is still refused"
-assert_contains "$ERRF" "expected owner root" "the refusal is the ownership one"
-
-run_probe_vm 1 verify_record_file "$VMREC"
-assert_exit "$RC" 0 "guest evidence: a record presented as the invoker's verifies"
-
-run_probe_vm 2 verify_record_file "$VMREC"
-assert_exit "$RC" 1 "any sysctl answer but 1 is NOT a guest (fail closed)"
-
-chmod 660 "$VMREC"
-run_probe_vm 1 verify_record_file "$VMREC"
-assert_exit "$RC" 1 "the mode invariant is unconditional: group-writable still refuses"
-assert_contains "$ERRF" "group/other-writable" "the refusal names the mode"
-chmod 640 "$VMREC"
-
-run_probe_vm 1 in_vm_guest
-assert_exit "$RC" 0 "in_vm_guest: 1 means guest"
-run_probe_vm 0 in_vm_guest
-assert_exit "$RC" 1 "in_vm_guest: 0 means host"
-run_probe_vm "" in_vm_guest
-assert_exit "$RC" 1 "in_vm_guest: an unreadable sysctl means host"
-
-# The read-path ancestry walk takes the same presentation, and refuses a
-# group-writable directory just as unconditionally.
-mkdir -p "$FIX/vmtree/loose"
-printf 'policy-ish\n' > "$FIX/vmtree/loose/rec"
-chmod 640 "$FIX/vmtree/loose/rec"
-chmod 770 "$FIX/vmtree/loose"
-run_probe_vm 1 verify_ancestry_presented "$FIX/vmtree/loose/rec"
-assert_exit "$RC" 1 "guest evidence does not admit a group-writable ancestor"
-assert_contains "$ERRF" "group/other-writable" "the ancestry refusal names the mode"
-chmod 750 "$FIX/vmtree/loose"
 
 # ---------------------------------------------------------------------------
 say ""
