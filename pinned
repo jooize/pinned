@@ -63,17 +63,19 @@
 #   ln -s "$(pinned slot /path/to/repo)" /etc/nix-darwin/pinned-rev
 #
 # IGNORED KEYS: a file slot may additionally declare `ignored.json` (a JSON
-# array of jq key paths, e.g. [["model"],["statusLine","command"]]) and,
-# only when the ceremony was asked for it, `approved` (a copy of the
-# approved bytes) -- both written ONLY by the approve ceremony. The PIN
-# stays byte-exact -- `shasum -c pin.sha256` still verifies -- and ignoring
-# is a VERIFY-side tolerance: when the live bytes differ, verify may
-# compare the two sides with those keys projected out and answer 5 instead
-# of 11. Every step of that path fails CLOSED to the stricter verdict. The
-# `approved` copy is OPT-IN (--store) because slot dirs get read-only
-# mounted into container and vm lanes: a copy turns a slot that discloses
-# only a hash into one that discloses the file's CONTENT, which is a
-# per-slot human decision, not a default.
+# array of jq key paths, e.g. [["model"],["statusLine","command"]]) --
+# written ONLY by the approve ceremony, which also writes `approved` (a copy
+# of the approved bytes) into every file slot it records. The PIN stays
+# byte-exact -- `shasum -c pin.sha256` still verifies -- and ignoring is a
+# VERIFY-side tolerance: when the live bytes differ, verify may compare the
+# two sides with those keys projected out and answer 5 instead of 11. Every
+# step of that path fails CLOSED to the stricter verdict. The `approved`
+# copy is UNCONDITIONAL because it discloses nothing new: the tier is 0750
+# root:_<user>-pinned host-side, and a lane receives a launch-time payload
+# of only the slot dirs it is measured against -- whose files the lane
+# already reads through its own mounts. A record written before copies
+# became the norm holds none; verify then needs a caller --baseline, and
+# re-approving the path writes the copy.
 #
 # THE IGNORABLE LADDER. What a slot may declare is itself gated, by two
 # root-owned policy tiers, and every rung is checked at approve AND at
@@ -189,21 +191,22 @@ usage: pinned <action> [args]
                      --tag may add an unsigned name (a clean release
                      name) that must name the same commit
   approve --file <path> [--baseline <copy>] [--ignore-json-key <key> ...]
-          [--file <path> ...] [--algo <name>] [--store]
+          [--file <path> ...] [--algo <name>]
                      (sudo) file-pin ceremony: each file is frozen,
                      displayed ROOT-SIDE, confirmed, and its hash
-                     recorded; multiple --file share one authentication;
+                     recorded, together with a copy of the approved bytes
+                     (the slot's "approved") that later serves the
+                     ignored-key comparison; multiple --file share one
+                     authentication;
                      --baseline (after its --file) diffs against a copy
                      that re-hashes to the prior record
                      --ignore-json-key (after its --file, repeatable)
                      declares a dotted JSON key whose later drift verify
                      tolerates, answering 5; the key must be granted for
                      that path by the ignorable policy or the ceremony
-                     REFUSES (see: pinned ignorable); --store additionally
-                     keeps the approved bytes in the slot so verify needs
-                     no caller baseline (opt-in: slot dirs are mounted into
-                     lanes, so a copy discloses the content there). An
-                     approve WITHOUT --ignore-json-key clears both again.
+                     REFUSES (see: pinned ignorable). An approve WITHOUT
+                     --ignore-json-key clears the declaration again; the
+                     copy is re-written either way.
   tombstone <path>   (sudo) retire a pinned file that is GONE; if it
                      reappears, verify refuses until re-approved
   verify <path>      file-pin verdict, quiet contract for gates:
@@ -218,7 +221,8 @@ usage: pinned <action> [args]
                      verify caller-frozen bytes against <path>'s record
   verify [--baseline <copy>] <path>
                      supply the last-approved bytes for the ignored-key
-                     comparison when the slot keeps no approved copy
+                     comparison, for a record that predates the stored
+                     copy (re-approving the path writes one)
   sign <repo> <tag>  create signed tag <tag> at the pinned hash -- no sudo
                      (needs your SSH agent, e.g. 1Password)
   signer add [--repo <path>] (--file <pubkey> | --key '<line>') [--principal <id>]
@@ -850,13 +854,18 @@ write_slot_copy() {
   mv -f "$tmp" "$d/$name"
 }
 
-# Drop the ignored-keys annotations. Called wherever a slot's declaration
-# is re-stated without them: a plain approve (the ceremony re-declares
-# slot extras every time, exactly like `tag`), a repo approval taking the
-# slot over, and a tombstone (retired content has no keys to tolerate).
-# The glob clears ANY declared format, including one this version does not
-# recognize -- re-approving is the documented way out of such a slot.
-clear_slot_ignore() { rm -f "$1"/ignored.* "$1/approved"; }
+# Drop a slot's ignored-key DECLARATION, in any declared format -- including
+# one this version does not recognize, which is why the glob and not a fixed
+# name. Called wherever the declaration is re-stated without keys: the file
+# ceremony re-states it every time, exactly like `tag`.
+clear_ignore_decl() { rm -f "$1"/ignored.*; }
+
+# Declaration AND approved copy. The copy belongs to a FILE record, so it
+# goes wherever the file record itself goes: a repo approval taking the slot
+# over, and a tombstone (retired content has no bytes to keep, and no keys to
+# tolerate). A plain file approve is NOT one of these -- it clears the
+# declaration and re-writes the copy.
+clear_slot_ignore() { clear_ignore_decl "$1"; rm -f "$1/approved"; }
 
 # ---- hash algorithms (file pins) -------------------------------------------
 # Labels are EXACT function names -- the shipped --algo vocabulary and the
@@ -1415,10 +1424,11 @@ ignored_keys_match() {
       echo "      ${ungranted% } (byte-exact verdict stands; re-approve, or: pinned ignorable add)" >&2
       return 1 ;;
   esac
-  # The last-approved bytes. The slot's own copy is preferred and has
-  # already been re-hashed against the record (the slot invariant in
-  # do_verify); a caller baseline must prove itself here, by the same
-  # self-verifying trick the ceremony's diff uses.
+  # The last-approved bytes. Every ceremony writes the slot's own copy, and
+  # it has already been re-hashed against the record (the slot invariant in
+  # do_verify); a caller baseline stands in only for a record written before
+  # that was so, and must prove itself here, by the same self-verifying trick
+  # the ceremony's diff uses.
   if [ -f "$slot/approved" ]; then
     approved="$slot/approved"
   elif [ -n "$base" ]; then
@@ -1433,7 +1443,8 @@ ignored_keys_match() {
     approved="$base"
   else
     echo "note: $slot declares ignored keys but holds no approved copy, and no --baseline was" >&2
-    echo "      given; there is nothing to compare against (byte-exact verdict stands)" >&2
+    echo "      given; there is nothing to compare against (byte-exact verdict stands;" >&2
+    echo "      re-approve the path to write the copy)" >&2
     return 1
   fi
   json_projectable "$approved" "the approved bytes" || return 1
@@ -1794,7 +1805,7 @@ do_approve() {
   # nothing is pinned. k-of-n is the caller demanding whichever k tags they
   # trust.
   local trust=0 repo_arg="" sel_tag="" tag_args files file_base file_ign file_algo=sha256 algo_given=0
-  local store=0 ign_given=0 last
+  local ign_given=0 last
   tag_args=(); files=(); file_base=(); file_ign=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1831,7 +1842,6 @@ do_approve() {
         last=$((${#files[@]} - 1))
         file_ign[last]="${file_ign[last]:+${file_ign[last]} }$2"
         ign_given=1; shift 2 ;;
-      --store)     store=1; shift ;;
       --algo)
         [ $# -ge 2 ] || { echo "--algo needs a value" >&2; exit 1; }
         file_algo="$2"; algo_given=1; shift 2 ;;
@@ -1846,18 +1856,10 @@ do_approve() {
       echo "--file is its own ceremony; repo arguments and evidence flags do not combine with it" >&2
       exit 1
     fi
-    # --store keeps the approved bytes to SERVE the ignored-key comparison;
-    # without a declaration it serves nothing. Refuse the no-op rather than
-    # let it read as meaningful.
-    if [ "$store" -eq 1 ] && [ "$ign_given" -eq 0 ]; then
-      echo "--store applies to a ceremony that declares --ignore-json-key (the copy exists to serve it)" >&2
-      exit 1
-    fi
     do_approve_files
     return
   fi
   [ "$algo_given" -eq 0 ] || { echo "--algo applies to the --file ceremony only" >&2; exit 1; }
-  [ "$store" -eq 0 ] || { echo "--store applies to the --file ceremony only" >&2; exit 1; }
   [ -n "$repo_arg" ] || usage
   case "$sel_tag" in
     -*) echo "invalid tag name: $sel_tag" >&2; exit 1 ;;
@@ -2238,11 +2240,10 @@ do_approve_files() {
     local fro="$FROZEN_COPY"
     new_digest="$(hash_file "$file_algo" "$fro")" || exit 1
 
-    # The ceremony re-declares a slot's extras EVERY time (the `tag` rule):
-    # an approve carrying no --ignore clears both the declaration and the
-    # approved copy. So identical bytes are only a no-op when the
-    # declaration is identical too -- otherwise the human still has a
-    # narrowing or widening to confirm.
+    # The ceremony re-declares a slot's ignored keys EVERY time (the `tag`
+    # rule): an approve carrying no --ignore clears the declaration. So
+    # identical bytes are only a no-op when the declaration is identical too
+    # -- otherwise the human still has a narrowing or widening to confirm.
     if [ "$old_bad" -eq 1 ]; then
       decl_changed=1
       ign_note="the slot's ignored-key declaration is unreadable -- this approval replaces it"
@@ -2254,12 +2255,13 @@ do_approve_files() {
         ign_note="ignored keys change: $(ign_display "$old_ign") -> $(ign_display "$ign_json")"
       fi
     fi
-    if [ -n "$ign" ] && [ "$had_copy" -ne "$store" ]; then
+    # A record holding no approved copy is not in the shape this version
+    # writes -- a record from before copies became the norm. Identical bytes
+    # are then not a no-op either: the ceremony is what writes the copy, so
+    # re-approving the path is the way such a record catches up.
+    if [ "$had_copy" -eq 0 ] && [ -n "$old_digest" ]; then
       decl_changed=1
-    fi
-    if [ -z "$ign" ] && [ "$had_copy" -eq 1 ]; then
-      decl_changed=1
-      [ -n "$ign_note" ] || ign_note="removing the approved-bytes copy"
+      [ -n "$ign_note" ] || ign_note="the record holds no approved copy -- this approval writes one"
     fi
 
     if [ -n "$old_digest" ] && [ "$old_label" = "$file_algo" ] && [ "$new_digest" = "$old_digest" ] \
@@ -2298,12 +2300,8 @@ $(policy_grants "$POL_EFF" "$ign_json" "$path")
 EOF
       [ -z "$POL_MACHINE" ] \
         || printf '            %s(and within the machine policy at %s)%s\n' "$C_DIM" "$PINNED_MACHINE_POLICY" "$C_OFF"
-      if [ "$store" -eq 1 ]; then
-        printf '            %sa copy of these bytes is kept in the slot -- readable by anything%s\n' "$C_DIM" "$C_OFF"
-        printf '            %sthat mounts it, including every lane (--store)%s\n' "$C_DIM" "$C_OFF"
-      else
-        printf '            %sno copy is kept: a consumer compares against its own baseline%s\n' "$C_DIM" "$C_OFF"
-      fi
+      printf '            %sa copy of these bytes is kept in the slot; it is what the%s\n' "$C_DIM" "$C_OFF"
+      printf '            %scomparison reads, here and in every lane the slot reaches%s\n' "$C_DIM" "$C_OFF"
     fi
     echo
 
@@ -2350,28 +2348,25 @@ EOF
     case "$answer" in
       y|Y|yes)
         write_slot_state "$slot" "pin.$file_algo" "$new_digest  $path"
-        printf '%s✓ approved:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$new_digest" "$C_OFF" "$slot/pin.$file_algo"
-        # Extras are re-declared from THIS ceremony every time, so the
-        # absence of --ignore is itself a declaration: it clears both.
+        # The copy is the frozen buffer this ceremony displayed and hashed --
+        # the same single read the record binds to, so it can never carry
+        # bytes the human did not see. Every file record keeps one: the
+        # comparison it serves must not depend on a caller having kept the
+        # right bytes, and a root-owned copy beside the digest is the only
+        # baseline nothing unprivileged can forge.
+        write_slot_copy "$slot" approved "$fro"
+        printf '%s✓ approved:%s %s%s%s -> %s %s(+approved copy)%s\n' \
+          "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$new_digest" "$C_OFF" "$slot/pin.$file_algo" "$C_DIM" "$C_OFF"
+        # The declaration is re-stated from THIS ceremony every time, so the
+        # absence of --ignore is itself a declaration: it clears the keys.
+        # Clearing first also means a slot never ends up holding two declared
+        # formats. The copy is not part of that clearing -- it belongs to the
+        # record, not to the tolerance.
+        clear_ignore_decl "$slot"
         if [ -n "$ign" ]; then
-          # Any previously declared format goes first, so a slot never ends
-          # up holding two of them.
-          rm -f "$slot"/ignored.*
           write_note "$slot" ignored.json "$ign_json"
-          if [ "$store" -eq 1 ]; then
-            # The copy is the frozen buffer this ceremony displayed and
-            # hashed -- the same single read the record binds to, so the
-            # copy can never carry bytes the human did not see.
-            write_slot_copy "$slot" approved "$fro"
-            printf '%s✓ ignoring:%s %s -> %s %s(approved copy kept)%s\n' \
-              "$C_GRN" "$C_OFF" "$(ign_display "$ign_json")" "$slot/ignored.json" "$C_DIM" "$C_OFF"
-          else
-            rm -f "$slot/approved"
-            printf '%s✓ ignoring:%s %s -> %s %s(no copy kept)%s\n' \
-              "$C_GRN" "$C_OFF" "$(ign_display "$ign_json")" "$slot/ignored.json" "$C_DIM" "$C_OFF"
-          fi
-        else
-          clear_slot_ignore "$slot"
+          printf '%s✓ ignoring:%s %s -> %s\n' \
+            "$C_GRN" "$C_OFF" "$(ign_display "$ign_json")" "$slot/ignored.json"
         fi
         log_action approve-file "$path" "$new_digest"
         recorded=$((recorded + 1))
@@ -2473,11 +2468,12 @@ do_tombstone() {
 #                                 mode invariant still checks the original.
 #   verify --baseline <copy> <path>
 #                                 offer the LAST-APPROVED bytes for the
-#                                 ignored-key comparison, for slots that keep
-#                                 no `approved` copy of their own. The copy
-#                                 must re-hash to the record or it is ignored;
-#                                 a forged one can only ever make verify
-#                                 STRICTER (the projection then differs).
+#                                 ignored-key comparison, for a record written
+#                                 before the ceremony kept an `approved` copy
+#                                 of its own. The copy must re-hash to the
+#                                 record or it is ignored; a forged one can
+#                                 only ever make verify STRICTER (the
+#                                 projection then differs).
 # Consumer rule: PARSE content -> --emit or --frozen; gate/display only
 # -> bare form (the verdict refers to one coherent frozen moment; a
 # caller's later live read is the caller's race).
@@ -2743,7 +2739,8 @@ do_status_file() {
         if [ -e "$slot/approved" ]; then
           printf '%scopy:%s       approved bytes kept in the slot\n' "$C_DIM" "$C_OFF"
         else
-          printf '%scopy:%s       %snone -- a consumer supplies --baseline%s\n' "$C_DIM" "$C_OFF" "$C_DIM" "$C_OFF"
+          printf '%scopy:%s       %snone -- re-approve to write one; until then a consumer supplies --baseline%s\n' \
+            "$C_DIM" "$C_OFF" "$C_DIM" "$C_OFF"
         fi
       fi
       rc=0; (do_verify "$path" >/dev/null 2>&1) || rc=$?

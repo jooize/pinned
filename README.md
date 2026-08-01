@@ -31,15 +31,15 @@ unknown declarations refuse outright.
                                       all naming one commit -> pin (--tag:
                                       an unsigned name that must agree)
     pinned approve --file <path> [--baseline <copy>] [--ignore-json-key <key> ...]
-                   [--file <path> ...] [--algo <name>] [--store]
+                   [--file <path> ...] [--algo <name>]
                                       file-pin ceremony: freeze, display
-                                      ROOT-SIDE, confirm, record the hash;
+                                      ROOT-SIDE, confirm, record the hash
+                                      and a copy of the approved bytes;
                                       several --file share one sudo
                                       (--ignore-json-key: keys whose later
                                       drift verify tolerates, each of which
                                       the ignorable policy must grant for
-                                      that path; --store also keeps the
-                                      approved bytes in the slot)
+                                      that path)
     pinned verify <path>              file-pin verdict for gates: 0 ok,
                                       5 differs only in ignored keys,
                                       10 no slot, 11 mismatch,
@@ -48,7 +48,8 @@ unknown declarations refuse outright.
                                       (--emit prints the verified bytes;
                                       --frozen <copy> checks held bytes;
                                       --baseline <copy> offers the last
-                                      approved bytes for the 5 comparison)
+                                      approved bytes for the 5 comparison,
+                                      for a record that predates the copy)
     pinned tombstone <path>           retire a pinned file that is GONE
     pinned sign <repo> <tag>          signed release tag at the PINNED hash
     pinned signer add|list|remove [--repo <path>] (--file <pubkey> | --key '<line>')
@@ -186,15 +187,19 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
     dot, KEYS ONLY. No array subscripts: an index is a position, not a
     name, and a tolerated position silently moves when something is
     inserted before it.
-  - Comparing needs the LAST-APPROVED bytes. `--store` keeps them in the
-    slot as `approved`; otherwise the caller passes
-    `verify --baseline <copy> <path>` and the copy must re-hash to the
+  - Comparing needs the LAST-APPROVED bytes, so every file ceremony keeps
+    them in the slot as `approved` -- unconditionally, from the same frozen
+    buffer it displayed and hashed. Nothing is disclosed by that: the tier
+    is 0750 root:`_<user>-pinned` host-side, and a lane receives a
+    launch-time payload of only the slot dirs it is measured against,
+    whose files it already reads through its own mounts. A record written
+    before this was so holds no copy; the caller then passes
+    `verify --baseline <copy> <path>`, and the copy must re-hash to the
     record before it is used (the same self-verifying trick the ceremony's
     baseline diff uses -- a forged baseline can only make verify
-    STRICTER). The copy is OPT-IN because the lanes read-only mount slot
-    directories into containers and VMs: a slot that today discloses one
-    hash would then disclose the file's whole CONTENT there. That is a
-    per-slot human decision at the ceremony, not a default.
+    STRICTER). Re-approving such a path writes the copy: a record with
+    none is not "already approved", so the ceremony runs even on identical
+    bytes.
   - If `approved` exists it MUST re-hash to the record beside it. A
     violation is a MALFORMED SLOT (hard error, exit 1) rather than a
     degraded comparison -- a slot either holds coherent state or it does
@@ -217,9 +222,10 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
     values are objects, where the leaf paths differ and a path-multiset
     comparison would miss them.
   - The ceremony states the declaration prominently before the y/N, and an
-    approve WITHOUT `--ignore-json-key` CLEARS both the declaration and the
-    copy -- extras are re-declared every time, exactly like `tag` -- with a
-    loud note whenever that narrows or widens what was there.
+    approve WITHOUT `--ignore-json-key` CLEARS the declaration -- it is
+    re-stated every time, exactly like `tag` -- with a loud note whenever
+    that narrows or widens what was there. The copy is not part of that
+    clearing: it is re-written from the bytes the ceremony just froze.
   - A non-JSON file simply fails the parse step and always gets the
     byte-exact verdict; pinned never restricts which KINDS of path may
     carry a declaration, only which keys (below).

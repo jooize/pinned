@@ -380,11 +380,20 @@ run_pinned approve --file "$SUB/a/first.txt"
 assert_exit "$RC" 0 "first-ever approval of an unpinned path succeeds (regression)"
 assert_contains "$OUT" "first approval" "ceremony announces the first approval"
 assert_contains "$OUT" "pin.sha256" "ceremony names the record it wrote"
+assert_contains "$OUT" "(+approved copy)" "ceremony names the copy it wrote"
 assert_file "$FIRST_SLOT/pin.sha256" "record file exists"
 assert_eq "$(cat "$FIRST_SLOT/pin.sha256")" \
           "$(digest_of "$SUB/a/first.txt")  $SUB/a/first.txt" \
           "record is '<digest>  <path>'"
 assert_eq "$(count_state "$FIRST_SLOT")" 1 "slot holds exactly one state file"
+# The copy is not an extra: EVERY file ceremony writes one, from the same
+# frozen bytes it hashed and displayed, and it is an annotation -- it takes
+# no part in the exactly-one-state rule above.
+assert_file "$FIRST_SLOT/approved" "a plain approve writes the approved copy"
+assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(digest_of "$SUB/a/first.txt")" \
+          "the copy is byte-for-byte the approved file"
+assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(awk '{print $1}' "$FIRST_SLOT/pin.sha256")" \
+          "the copy re-hashes to the pin beside it"
 run_pinned verify "$SUB/a/first.txt"
 assert_exit "$RC" 0 "the approved file verifies"
 
@@ -392,6 +401,29 @@ ANS=""
 run_pinned approve --file "$SUB/a/first.txt"
 assert_exit "$RC" 0 "re-approving identical bytes needs no answer"
 assert_contains "$OUT" "already approved" "re-approval short-circuits"
+
+# A record written before copies became the norm holds none. Identical bytes
+# are then NOT a no-op: the ceremony is the only thing that writes the copy,
+# so re-approving is how such a record catches up.
+rm -f "$FIRST_SLOT/approved"
+ANS='y
+'
+run_pinned approve --file "$SUB/a/first.txt"
+assert_exit "$RC" 0 "re-approving a copy-less record runs"
+assert_missing "$OUT" "already approved" "identical bytes without a copy defeat the short-circuit"
+assert_contains "$OUT" "holds no approved copy" "the ceremony says what is missing"
+assert_file "$FIRST_SLOT/approved" "the re-approval writes the copy"
+
+# What the slot holds is always what the LAST ceremony displayed.
+printf 'second draft\n' > "$SUB/a/first.txt"
+ANS='y
+'
+run_pinned approve --file "$SUB/a/first.txt"
+assert_exit "$RC" 0 "re-approving changed bytes succeeds"
+assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(digest_of "$SUB/a/first.txt")" \
+          "the copy is replaced with the newly approved bytes"
+assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(awk '{print $1}' "$FIRST_SLOT/pin.sha256")" \
+          "the replaced copy re-hashes to the new pin"
 
 printf 'reinstate me\n' > "$SUB/a/reinstated.txt"
 seed_tombstone "$SUB/a/reinstated.txt"
@@ -620,8 +652,7 @@ mkdir -p "$SUB/ig"
 seed_policy_user '[{"path":["model"]},{"path":["effortLevel"]},{"path":["statusLine","command"]}]'
 
 # The declaration is recorded ONLY by the ceremony, as the JSON array of key
-# paths jq's delpaths wants, and WITHOUT an approved copy unless --store asks
-# for one (slot dirs are mounted into lanes: a copy discloses content there).
+# paths jq's delpaths wants, beside the approved copy every ceremony writes.
 printf '{\n  "model": "opus",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/nocopy.json"
 ANS='y
 '
@@ -631,19 +662,28 @@ assert_contains "$OUT" "ignored:" "ceremony displays the proposed ignored keys"
 assert_contains "$OUT" "model, effortLevel" "ceremony names them before the confirm"
 assert_contains "$OUT" "may drift without re-approval" "ceremony states what ignoring means"
 assert_contains "$OUT" "model -- user policy, everywhere" "ceremony shows each key's grant provenance"
+assert_contains "$OUT" "a copy of these bytes is kept" "ceremony states that the bytes are kept"
 assert_file "$(slot_file_of "$SUB/ig/nocopy.json" ignored.json)" "ignored.json recorded"
 assert_eq "$(cat "$(slot_file_of "$SUB/ig/nocopy.json" ignored.json)")" '[["model"],["effortLevel"]]' \
           "ignored.json holds the jq path array, in declaration order"
-assert_absent "$(slot_file_of "$SUB/ig/nocopy.json" approved)" "no approved copy without --store"
+assert_file "$(slot_file_of "$SUB/ig/nocopy.json" approved)" "a declaring ceremony keeps the approved bytes"
+# From here this slot stands in for a record written BEFORE copies became the
+# norm -- a shape the ceremony no longer produces, and the only shape the
+# caller --baseline path exists to serve. Made by hand, deliberately.
+rm -f "$(slot_file_of "$SUB/ig/nocopy.json" approved)"
 
-# --store is what keeps the bytes, and it keeps exactly the approved ones.
+# The copy is exactly the approved bytes, on a plain ceremony too: nothing
+# has to be asked for.
 printf '{\n  "model": "opus",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/copy.json"
 COPY_SLOT="$(slot_of "$SUB/ig/copy.json")"
 ANS='y
 '
-run_pinned approve --file "$SUB/ig/copy.json" --ignore-json-key model --store
-assert_exit "$RC" 0 "approve with --store succeeds"
-assert_file "$COPY_SLOT/approved" "--store keeps the approved bytes"
+run_pinned approve --file "$SUB/ig/copy.json" --ignore-json-key model
+assert_exit "$RC" 0 "approve with a declaration succeeds"
+assert_file "$COPY_SLOT/approved" "the ceremony keeps the approved bytes"
+assert_contains "$OUT" "(+approved copy)" "the ceremony says the copy was written"
+assert_eq "$(digest_of "$COPY_SLOT/approved")" "$(awk '{print $1}' "$COPY_SLOT/pin.sha256")" \
+          "the copy re-hashes to the pin beside it"
 if cmp -s "$COPY_SLOT/approved" "$SUB/ig/copy.json"; then
   ok "the stored copy is byte-identical to what was approved"
 else
@@ -678,7 +718,8 @@ run_pinned verify "$SUB/ig/copy.json"
 assert_exit "$RC" 11 "drift outside the ignored keys -> 11"
 assert_contains "$OUT" "differences remain OUTSIDE" "the refusal says where the difference is"
 
-# The no-copy slot needs a caller baseline; without one it stays strict.
+# A record from before copies needs a caller baseline; without one it stays
+# strict.
 printf '{\n  "model": "sonnet",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/nocopy.json"
 run_pinned verify "$SUB/ig/nocopy.json"
 assert_exit "$RC" 11 "no approved copy and no --baseline -> 11"
@@ -704,7 +745,7 @@ assert_contains "$OUT" "DUPLICATE object keys" "the refusal names the duplicatio
 printf 'container\n' > "$SUB/ig/lane"
 ANS='y
 '
-run_pinned approve --file "$SUB/ig/lane" --ignore-json-key model --store
+run_pinned approve --file "$SUB/ig/lane" --ignore-json-key model
 assert_exit "$RC" 0 "pinned does not restrict WHICH paths may declare ignored keys"
 printf 'vm\n' > "$SUB/ig/lane"
 run_pinned verify "$SUB/ig/lane"
@@ -718,7 +759,7 @@ assert_contains "$OUT" "not exactly one JSON document" "the note says why it cou
 printf '{"model": "sonnet", "permissions": {"deny": ["Bash"]}}\n' > "$SUB/ig/bad.json"
 ANS='y
 '
-run_pinned approve --file "$SUB/ig/bad.json" --ignore-json-key model --store
+run_pinned approve --file "$SUB/ig/bad.json" --ignore-json-key model
 assert_exit "$RC" 0 "fixture: bad.json approved with a declaration"
 seed_state "$SUB/ig/bad.json" ignored.json 'model'
 printf '{"model": "opus", "permissions": {"deny": ["Bash"]}}\n' > "$SUB/ig/bad.json"
@@ -757,13 +798,14 @@ assert_contains "$OUT" "malformed slot" "the error names the malformation"
 assert_contains "$OUT" "re-approve" "the error names the remediation"
 
 # Re-approving the same bytes with a DIFFERENT declaration is not a no-op,
-# and clearing is loud.
+# and clearing is loud. The copy is not part of what a plain approve clears:
+# it belongs to the record, not to the tolerance.
 printf '{"model": "opus", "keep": 1}\n' > "$SUB/ig/clear.json"
 CLEAR_SLOT="$(slot_of "$SUB/ig/clear.json")"
 ANS='y
 '
-run_pinned approve --file "$SUB/ig/clear.json" --ignore-json-key model --store
-assert_exit "$RC" 0 "fixture: clear.json approved with a declaration + stored copy"
+run_pinned approve --file "$SUB/ig/clear.json" --ignore-json-key model
+assert_exit "$RC" 0 "fixture: clear.json approved with a declaration"
 ANS='y
 '
 run_pinned approve --file "$SUB/ig/clear.json"
@@ -771,7 +813,9 @@ assert_exit "$RC" 0 "re-approving identical bytes without a declaration still ru
 assert_missing  "$OUT" "already approved" "a changed declaration defeats the no-op short-circuit"
 assert_contains "$OUT" "clearing the ignored keys" "the ceremony says the tolerance is being withdrawn"
 assert_absent "$CLEAR_SLOT/ignored.json" "a plain approve clears the declaration"
-assert_absent "$CLEAR_SLOT/approved" "a plain approve clears the approved copy"
+assert_file "$CLEAR_SLOT/approved" "a plain approve keeps the approved copy"
+assert_eq "$(digest_of "$CLEAR_SLOT/approved")" "$(digest_of "$SUB/ig/clear.json")" \
+          "the kept copy is the bytes this ceremony approved"
 printf '{"model": "sonnet", "keep": 1}\n' > "$SUB/ig/clear.json"
 run_pinned verify "$SUB/ig/clear.json"
 assert_exit "$RC" 11 "after clearing, the same drift is a plain mismatch again"
@@ -781,7 +825,7 @@ printf '{"model": "opus"}\n' > "$SUB/ig/doomed.json"
 DOOM_SLOT="$(slot_of "$SUB/ig/doomed.json")"
 ANS='y
 '
-run_pinned approve --file "$SUB/ig/doomed.json" --ignore-json-key model --store
+run_pinned approve --file "$SUB/ig/doomed.json" --ignore-json-key model
 assert_exit "$RC" 0 "fixture: doomed.json approved with extras"
 rm -f "$SUB/ig/doomed.json"
 ANS='y
@@ -800,7 +844,7 @@ ANS=""
 run_pinned status "$SUB/ig/nocopy.json"
 assert_exit "$RC" 0 "status exits 0"
 assert_contains "$OUT" "model, effortLevel" "status reports the declared keys"
-assert_contains "$OUT" "a consumer supplies --baseline" "status says the slot keeps no copy"
+assert_contains "$OUT" "re-approve to write one" "status says a record with no copy can catch up"
 run_pinned status "$SUB/ig/copy.json"
 assert_contains "$OUT" "live file DIFFERS" "status agrees with verify on a real mismatch"
 
@@ -810,8 +854,8 @@ run_pinned approve --file "$SUB/ig/nocopy.json" --ignore-json-key 'permissions.d
 assert_exit "$RC" 1 "an out-of-grammar --ignore-json-key is refused up front"
 assert_contains "$OUT" "outside the key grammar" "the refusal names the grammar"
 run_pinned approve --file "$SUB/ig/nocopy.json" --store
-assert_exit "$RC" 1 "--store without a declaration is refused as a no-op"
-assert_contains "$OUT" "--store applies to a ceremony" "the refusal explains the pairing"
+assert_exit "$RC" 1 "the retired --store flag is refused like any unknown flag"
+assert_missing "$OUT" "--store applies" "no refusal text survives the flag it explained"
 run_pinned approve --ignore-json-key model --file "$SUB/ig/nocopy.json"
 assert_exit "$RC" 1 "--ignore-json-key before any --file is refused"
 assert_contains "$OUT" "must follow the --file" "the refusal names the ordering rule"
@@ -910,7 +954,7 @@ assert_contains "$OUT" "under $SUB/pol/in" "list shows each entry's scope"
 # the same boundary rule list --under uses (/pol/in is not /pol/inx).
 ANS='y
 '
-run_pinned approve --file "$SUB/pol/in/s.json" --ignore-json-key model --store
+run_pinned approve --file "$SUB/pol/in/s.json" --ignore-json-key model
 assert_exit "$RC" 0 "a granted key in scope approves"
 assert_contains "$OUT" "model -- user policy, under $SUB/pol/in" "provenance names the scope"
 ANS='y
@@ -958,7 +1002,7 @@ mkdir -p "$SUB/pol/in/deeper"
 printf '%s\n' "$JSON_IN" > "$SUB/pol/in/deeper/s.json"
 ANS='y
 '
-run_pinned approve --file "$SUB/pol/in/deeper/s.json" --ignore-json-key model --store
+run_pinned approve --file "$SUB/pol/in/deeper/s.json" --ignore-json-key model
 assert_exit "$RC" 0 "a user scope BELOW the machine scope survives the intersection"
 assert_contains "$OUT" "under $SUB/pol/in/deeper" "provenance names the narrower scope"
 
