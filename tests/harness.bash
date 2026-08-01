@@ -187,6 +187,13 @@ run_pinned() { # verb args... -- stdin comes from \$ANS, output lands in \$OUT
   RC=0
   "$STUB" "$@" <"$FIX/stdin" >"$OUT" 2>&1 || RC=$?
 }
+run_pinned_split() { # verb args... -- like run_pinned, but stderr stays in \$ERRF
+  # `cat` is the one verb with a stdout CONTRACT ("nothing on stdout in any
+  # failure case"), which a merged stream cannot test.
+  printf '%s' "$ANS" > "$FIX/stdin"
+  RC=0
+  "$STUB" "$@" <"$FIX/stdin" >"$OUT" 2>"$ERRF" || RC=$?
+}
 run_probe() { # fn args... -- stdout in \$POUT, stderr in \$ERRF
   RC=0
   POUT="$("$PROBE" "$@" 2>"$ERRF")" || RC=$?
@@ -380,20 +387,17 @@ run_pinned approve --file "$SUB/a/first.txt"
 assert_exit "$RC" 0 "first-ever approval of an unpinned path succeeds (regression)"
 assert_contains "$OUT" "first approval" "ceremony announces the first approval"
 assert_contains "$OUT" "pin.sha256" "ceremony names the record it wrote"
-assert_contains "$OUT" "(+approved copy)" "ceremony names the copy it wrote"
 assert_file "$FIRST_SLOT/pin.sha256" "record file exists"
 assert_eq "$(cat "$FIRST_SLOT/pin.sha256")" \
           "$(digest_of "$SUB/a/first.txt")  $SUB/a/first.txt" \
           "record is '<digest>  <path>'"
 assert_eq "$(count_state "$FIRST_SLOT")" 1 "slot holds exactly one state file"
-# The copy is not an extra: EVERY file ceremony writes one, from the same
-# frozen bytes it hashed and displayed, and it is an annotation -- it takes
-# no part in the exactly-one-state rule above.
-assert_file "$FIRST_SLOT/approved" "a plain approve writes the approved copy"
-assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(digest_of "$SUB/a/first.txt")" \
-          "the copy is byte-for-byte the approved file"
-assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(awk '{print $1}' "$FIRST_SLOT/pin.sha256")" \
-          "the copy re-hashes to the pin beside it"
+# CUSTODY IS OPT-IN. A plain ceremony records a digest and keeps no witness:
+# the slot discloses one hash and nothing about the file's content.
+assert_absent "$FIRST_SLOT/approved" "a plain approve keeps no stored copy"
+assert_missing "$OUT" "(+approved copy)" "and does not claim to have written one"
+assert_contains "$OUT" "custody:" "the ceremony states custody in both directions"
+assert_contains "$OUT" "no copy is kept" "and says what 'none' means before the confirm"
 run_pinned verify "$SUB/a/first.txt"
 assert_exit "$RC" 0 "the approved file verifies"
 
@@ -402,28 +406,69 @@ run_pinned approve --file "$SUB/a/first.txt"
 assert_exit "$RC" 0 "re-approving identical bytes needs no answer"
 assert_contains "$OUT" "already approved" "re-approval short-circuits"
 
-# A record written before copies became the norm holds none. Identical bytes
-# are then NOT a no-op: the ceremony is the only thing that writes the copy,
-# so re-approving is how such a record catches up.
-rm -f "$FIRST_SLOT/approved"
+# ADDING custody is a disclosure decision, so the human confirms it: identical
+# bytes stop being a no-op the moment --store changes the custody state.
+ANS='y
+'
+run_pinned approve --file "$SUB/a/first.txt" --store
+assert_exit "$RC" 0 "adding --store to a copy-less slot runs"
+assert_missing "$OUT" "already approved" "adding custody defeats the no-op short-circuit"
+assert_contains "$OUT" "ADDS a stored copy" "the note names the custody delta and its direction"
+assert_contains "$OUT" "(+approved copy)" "the success line names the copy it wrote"
+assert_file "$FIRST_SLOT/approved" "--store writes the witness"
+assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(digest_of "$SUB/a/first.txt")" \
+          "the witness is byte-for-byte the approved file"
+assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(awk '{print $1}' "$FIRST_SLOT/pin.sha256")" \
+          "the witness re-hashes to the pin beside it"
+assert_eq "$(count_state "$FIRST_SLOT")" 1 "the witness is an annotation: no part of the one-state rule"
+
+# The no-op condition is identical bytes AND identical declaration AND
+# identical custody -- all three, so this one short-circuits again.
+ANS=""
+run_pinned approve --file "$SUB/a/first.txt" --store
+assert_exit "$RC" 0 "identical bytes with unchanged custody need no answer"
+assert_contains "$OUT" "already approved" "unchanged custody keeps the short-circuit"
+
+# Dropping it is equally a decision, and equally loud -- stated before the
+# confirm and again in the result.
 ANS='y
 '
 run_pinned approve --file "$SUB/a/first.txt"
-assert_exit "$RC" 0 "re-approving a copy-less record runs"
-assert_missing "$OUT" "already approved" "identical bytes without a copy defeat the short-circuit"
-assert_contains "$OUT" "holds no approved copy" "the ceremony says what is missing"
-assert_file "$FIRST_SLOT/approved" "the re-approval writes the copy"
+assert_exit "$RC" 0 "re-approving a custody slot without --store runs"
+assert_missing "$OUT" "already approved" "dropping custody defeats the no-op short-circuit"
+assert_contains "$OUT" "DROPS the slot's stored copy" "the pre-confirm note says the copy is going"
+assert_contains "$OUT" "was DROPPED" "the result line says it went"
+assert_absent "$FIRST_SLOT/approved" "a plain re-approve drops the stored copy"
 
-# What the slot holds is always what the LAST ceremony displayed.
+# What custody holds is always what the LAST ceremony displayed.
 printf 'second draft\n' > "$SUB/a/first.txt"
 ANS='y
 '
-run_pinned approve --file "$SUB/a/first.txt"
-assert_exit "$RC" 0 "re-approving changed bytes succeeds"
+run_pinned approve --file "$SUB/a/first.txt" --store
+assert_exit "$RC" 0 "re-approving changed bytes with --store succeeds"
 assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(digest_of "$SUB/a/first.txt")" \
-          "the copy is replaced with the newly approved bytes"
+          "the witness is the newly approved bytes"
+printf 'third draft\n' > "$SUB/a/first.txt"
+ANS='y
+'
+run_pinned approve --file "$SUB/a/first.txt" --store
+assert_exit "$RC" 0 "re-approving again with --store succeeds"
+assert_missing "$OUT" "custody change" "unchanged custody needs no custody note"
 assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(awk '{print $1}' "$FIRST_SLOT/pin.sha256")" \
-          "the replaced copy re-hashes to the new pin"
+          "the refreshed witness re-hashes to the new pin"
+
+# A stored witness that does not re-hash is incoherent state, and the ceremony
+# is what verify tells you to run -- so it must not short-circuit away.
+printf 'tampered\n' > "$FIRST_SLOT/approved"
+chmod 600 "$FIRST_SLOT/approved"
+ANS='y
+'
+run_pinned approve --file "$SUB/a/first.txt" --store
+assert_exit "$RC" 0 "re-approving over an incoherent witness runs"
+assert_missing "$OUT" "already approved" "a witness that does not re-hash defeats the short-circuit"
+assert_contains "$OUT" "does not re-hash to its record" "the note names the incoherence"
+assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(awk '{print $1}' "$FIRST_SLOT/pin.sha256")" \
+          "and the ceremony replaces it"
 
 printf 'reinstate me\n' > "$SUB/a/reinstated.txt"
 seed_tombstone "$SUB/a/reinstated.txt"
@@ -652,7 +697,9 @@ mkdir -p "$SUB/ig"
 seed_policy_user '[{"path":["model"]},{"path":["effortLevel"]},{"path":["statusLine","command"]}]'
 
 # The declaration is recorded ONLY by the ceremony, as the JSON array of key
-# paths jq's delpaths wants, beside the approved copy every ceremony writes.
+# paths jq's delpaths wants. Custody is a SEPARATE decision: this slot
+# declares ignored keys and keeps no witness of its own, so the comparison it
+# enables needs one from the caller.
 printf '{\n  "model": "opus",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/nocopy.json"
 ANS='y
 '
@@ -662,26 +709,23 @@ assert_contains "$OUT" "ignored:" "ceremony displays the proposed ignored keys"
 assert_contains "$OUT" "model, effortLevel" "ceremony names them before the confirm"
 assert_contains "$OUT" "may drift without re-approval" "ceremony states what ignoring means"
 assert_contains "$OUT" "model -- user policy, everywhere" "ceremony shows each key's grant provenance"
-assert_contains "$OUT" "a copy of these bytes is kept" "ceremony states that the bytes are kept"
+assert_contains "$OUT" "no copy is kept" "ceremony states the custody consequence"
 assert_file "$(slot_file_of "$SUB/ig/nocopy.json" ignored.json)" "ignored.json recorded"
 assert_eq "$(cat "$(slot_file_of "$SUB/ig/nocopy.json" ignored.json)")" '[["model"],["effortLevel"]]' \
           "ignored.json holds the jq path array, in declaration order"
-assert_file "$(slot_file_of "$SUB/ig/nocopy.json" approved)" "a declaring ceremony keeps the approved bytes"
-# From here this slot stands in for a record written BEFORE copies became the
-# norm -- a shape the ceremony no longer produces, and the only shape the
-# caller --baseline path exists to serve. Made by hand, deliberately.
-rm -f "$(slot_file_of "$SUB/ig/nocopy.json" approved)"
+assert_absent "$(slot_file_of "$SUB/ig/nocopy.json" approved)" \
+              "a declaration alone keeps no witness -- custody is opt-in"
 
-# The copy is exactly the approved bytes, on a plain ceremony too: nothing
-# has to be asked for.
+# --store is what keeps the bytes, and it keeps exactly the approved ones.
 printf '{\n  "model": "opus",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/copy.json"
 COPY_SLOT="$(slot_of "$SUB/ig/copy.json")"
 ANS='y
 '
-run_pinned approve --file "$SUB/ig/copy.json" --ignore-json-key model
-assert_exit "$RC" 0 "approve with a declaration succeeds"
-assert_file "$COPY_SLOT/approved" "the ceremony keeps the approved bytes"
+run_pinned approve --file "$SUB/ig/copy.json" --ignore-json-key model --store
+assert_exit "$RC" 0 "approve with a declaration AND --store succeeds"
+assert_file "$COPY_SLOT/approved" "--store keeps the approved bytes"
 assert_contains "$OUT" "(+approved copy)" "the ceremony says the copy was written"
+assert_contains "$OUT" "kept in the slot" "the ceremony states the custody consequence"
 assert_eq "$(digest_of "$COPY_SLOT/approved")" "$(awk '{print $1}' "$COPY_SLOT/pin.sha256")" \
           "the copy re-hashes to the pin beside it"
 if cmp -s "$COPY_SLOT/approved" "$SUB/ig/copy.json"; then
@@ -718,11 +762,13 @@ run_pinned verify "$SUB/ig/copy.json"
 assert_exit "$RC" 11 "drift outside the ignored keys -> 11"
 assert_contains "$OUT" "differences remain OUTSIDE" "the refusal says where the difference is"
 
-# A record from before copies needs a caller baseline; without one it stays
-# strict.
+# A slot that keeps no witness of its own needs a CALLER-BROUGHT one; without
+# any witness it stays strict. --baseline is a permanent interface, not a
+# transitional shim: custody is opt-in, so "the caller held the last approved
+# bytes" is an ordinary, supported case.
 printf '{\n  "model": "sonnet",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/nocopy.json"
 run_pinned verify "$SUB/ig/nocopy.json"
-assert_exit "$RC" 11 "no approved copy and no --baseline -> 11"
+assert_exit "$RC" 11 "no stored witness and no --baseline -> 11"
 assert_contains "$OUT" "no --baseline" "the note says what is missing"
 printf '{\n  "model": "opus",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$FIX/baseline.json"
 run_pinned verify --baseline "$FIX/baseline.json" "$SUB/ig/nocopy.json"
@@ -745,7 +791,7 @@ assert_contains "$OUT" "DUPLICATE object keys" "the refusal names the duplicatio
 printf 'container\n' > "$SUB/ig/lane"
 ANS='y
 '
-run_pinned approve --file "$SUB/ig/lane" --ignore-json-key model
+run_pinned approve --file "$SUB/ig/lane" --ignore-json-key model --store
 assert_exit "$RC" 0 "pinned does not restrict WHICH paths may declare ignored keys"
 printf 'vm\n' > "$SUB/ig/lane"
 run_pinned verify "$SUB/ig/lane"
@@ -798,24 +844,23 @@ assert_contains "$OUT" "malformed slot" "the error names the malformation"
 assert_contains "$OUT" "re-approve" "the error names the remediation"
 
 # Re-approving the same bytes with a DIFFERENT declaration is not a no-op,
-# and clearing is loud. The copy is not part of what a plain approve clears:
-# it belongs to the record, not to the tolerance.
+# and clearing is loud. EVERY extra is re-stated by every ceremony, so a
+# plain approve clears the declaration and drops the stored witness together.
 printf '{"model": "opus", "keep": 1}\n' > "$SUB/ig/clear.json"
 CLEAR_SLOT="$(slot_of "$SUB/ig/clear.json")"
 ANS='y
 '
-run_pinned approve --file "$SUB/ig/clear.json" --ignore-json-key model
-assert_exit "$RC" 0 "fixture: clear.json approved with a declaration"
+run_pinned approve --file "$SUB/ig/clear.json" --ignore-json-key model --store
+assert_exit "$RC" 0 "fixture: clear.json approved with a declaration + stored copy"
 ANS='y
 '
 run_pinned approve --file "$SUB/ig/clear.json"
 assert_exit "$RC" 0 "re-approving identical bytes without a declaration still runs"
 assert_missing  "$OUT" "already approved" "a changed declaration defeats the no-op short-circuit"
 assert_contains "$OUT" "clearing the ignored keys" "the ceremony says the tolerance is being withdrawn"
+assert_contains "$OUT" "DROPS the slot's stored copy" "and that custody is going with it"
 assert_absent "$CLEAR_SLOT/ignored.json" "a plain approve clears the declaration"
-assert_file "$CLEAR_SLOT/approved" "a plain approve keeps the approved copy"
-assert_eq "$(digest_of "$CLEAR_SLOT/approved")" "$(digest_of "$SUB/ig/clear.json")" \
-          "the kept copy is the bytes this ceremony approved"
+assert_absent "$CLEAR_SLOT/approved" "a plain approve drops the stored copy"
 printf '{"model": "sonnet", "keep": 1}\n' > "$SUB/ig/clear.json"
 run_pinned verify "$SUB/ig/clear.json"
 assert_exit "$RC" 11 "after clearing, the same drift is a plain mismatch again"
@@ -825,7 +870,7 @@ printf '{"model": "opus"}\n' > "$SUB/ig/doomed.json"
 DOOM_SLOT="$(slot_of "$SUB/ig/doomed.json")"
 ANS='y
 '
-run_pinned approve --file "$SUB/ig/doomed.json" --ignore-json-key model
+run_pinned approve --file "$SUB/ig/doomed.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "fixture: doomed.json approved with extras"
 rm -f "$SUB/ig/doomed.json"
 ANS='y
@@ -844,7 +889,7 @@ ANS=""
 run_pinned status "$SUB/ig/nocopy.json"
 assert_exit "$RC" 0 "status exits 0"
 assert_contains "$OUT" "model, effortLevel" "status reports the declared keys"
-assert_contains "$OUT" "re-approve to write one" "status says a record with no copy can catch up"
+assert_contains "$OUT" "re-approve with --store" "status says how a copy-less slot gets custody"
 run_pinned status "$SUB/ig/copy.json"
 assert_contains "$OUT" "live file DIFFERS" "status agrees with verify on a real mismatch"
 
@@ -853,9 +898,21 @@ ANS=""
 run_pinned approve --file "$SUB/ig/nocopy.json" --ignore-json-key 'permissions.deny[0]'
 assert_exit "$RC" 1 "an out-of-grammar --ignore-json-key is refused up front"
 assert_contains "$OUT" "outside the key grammar" "the refusal names the grammar"
+# --store COMBINES FREELY. Custody serves the tolerant comparison, but also
+# archives what was approved and feeds pinned cat, so it means something on a
+# ceremony that declares nothing -- the old "--store applies to a ceremony
+# that declares --ignore-json-key" pairing refusal must stay gone.
+ANS='n
+'
 run_pinned approve --file "$SUB/ig/nocopy.json" --store
-assert_exit "$RC" 1 "the retired --store flag is refused like any unknown flag"
-assert_missing "$OUT" "--store applies" "no refusal text survives the flag it explained"
+assert_exit "$RC" 0 "--store on a ceremony that declares NO ignored keys is accepted"
+assert_missing "$OUT" "--store applies to a ceremony" "the retired pairing refusal does not come back"
+assert_contains "$OUT" "kept in the slot" "custody stands on its own in the display"
+# It is still the FILE ceremony's flag: a repo approve has no bytes to keep.
+ANS=""
+run_pinned approve "$SUB" --store
+assert_exit "$RC" 1 "--store outside the --file ceremony is refused"
+assert_contains "$OUT" "--store applies to the --file ceremony only" "the refusal names the ceremony"
 run_pinned approve --ignore-json-key model --file "$SUB/ig/nocopy.json"
 assert_exit "$RC" 1 "--ignore-json-key before any --file is refused"
 assert_contains "$OUT" "must follow the --file" "the refusal names the ordering rule"
@@ -954,7 +1011,7 @@ assert_contains "$OUT" "under $SUB/pol/in" "list shows each entry's scope"
 # the same boundary rule list --under uses (/pol/in is not /pol/inx).
 ANS='y
 '
-run_pinned approve --file "$SUB/pol/in/s.json" --ignore-json-key model
+run_pinned approve --file "$SUB/pol/in/s.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "a granted key in scope approves"
 assert_contains "$OUT" "model -- user policy, under $SUB/pol/in" "provenance names the scope"
 ANS='y
@@ -1002,7 +1059,7 @@ mkdir -p "$SUB/pol/in/deeper"
 printf '%s\n' "$JSON_IN" > "$SUB/pol/in/deeper/s.json"
 ANS='y
 '
-run_pinned approve --file "$SUB/pol/in/deeper/s.json" --ignore-json-key model
+run_pinned approve --file "$SUB/pol/in/deeper/s.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "a user scope BELOW the machine scope survives the intersection"
 assert_contains "$OUT" "under $SUB/pol/in/deeper" "provenance names the narrower scope"
 
@@ -1084,6 +1141,128 @@ assert_eq "$(cat "$OUT")" "$DIR_SLOT" "a trailing slash resolves to the same slo
 
 run_pinned slot "$SUB/s/measured.json" "$SUB/s/absent/never-written.json"
 assert_exit "$RC" 1 "slot takes exactly one path"
+
+# ---------------------------------------------------------------------------
+say "S12: cat (custody's verified reader)"
+# ---------------------------------------------------------------------------
+# Custody without a verified reader would invite consumers to open slot files
+# directly, which is the one thing nothing outside pinned may do. cat is that
+# reader: it re-hashes the stored witness against the record and only then
+# emits it, and it puts NOTHING on stdout in any failure case -- which is why
+# these cases use the split-stream driver.
+mkdir -p "$SUB/c"
+printf '{"served": true}\n' > "$SUB/c/served.json"
+CAT_SLOT="$(slot_of "$SUB/c/served.json")"
+ANS='y
+'
+run_pinned approve --file "$SUB/c/served.json" --store
+assert_exit "$RC" 0 "fixture: served.json approved with custody"
+ANS=""
+run_pinned_split cat "$SUB/c/served.json"
+assert_exit "$RC" 0 "a witness that re-hashes to the record is served -> 0"
+if cmp -s "$OUT" "$SUB/c/served.json"; then
+  ok "cat emits the approved bytes, byte for byte and undecorated"
+else
+  fail "cat's output differs from the approved bytes"
+fi
+
+# DELIBERATE: cat serves even when the live file has DRIFTED. A consumer on
+# this rung reads custody, not the live path -- the approved bytes are the
+# content it is entitled to, and the live file is the editing surface waiting
+# for its next ceremony. Whether the two agree is verify's question.
+printf '{"served": false}\n' > "$SUB/c/served.json"
+run_pinned verify "$SUB/c/served.json"
+assert_exit "$RC" 11 "the drifted live file is a mismatch for verify"
+run_pinned_split cat "$SUB/c/served.json"
+assert_exit "$RC" 0 "cat serves DESPITE live drift -- one job per verb"
+assert_eq "$(cat "$OUT")" '{"served": true}' "and serves the APPROVED bytes, not the live ones"
+printf '{"served": true}\n' > "$SUB/c/served.json"
+
+# 16: a valid record with no witness at all. New code, tens class, because
+# the ceremony is what fixes it.
+printf 'no custody here\n' > "$SUB/c/bare.txt"
+ANS='y
+'
+run_pinned approve --file "$SUB/c/bare.txt"
+assert_exit "$RC" 0 "fixture: bare.txt approved without --store"
+ANS=""
+run_pinned_split cat "$SUB/c/bare.txt"
+assert_exit "$RC" 16 "a record with no stored witness -> 16"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+assert_contains "$ERRF" "keeps no approved copy" "16 names what is missing"
+assert_contains "$ERRF" "--store" "16 names the remediation"
+
+run_pinned_split cat "$SUB/c/never-pinned.txt"
+assert_exit "$RC" 10 "no record for the path -> 10"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+assert_contains "$ERRF" "no slot" "10 names the state"
+
+seed_tombstone "$SUB/c/retired.txt"
+run_pinned_split cat "$SUB/c/retired.txt"
+assert_exit "$RC" 13 "a tombstoned path -> 13"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+assert_contains "$ERRF" "no approved content to serve" "13 says why there is nothing"
+
+# THE WITNESS INVARIANT: a witness can only ever NARROW a comparison, never
+# stand in for the live file. A file that is GONE is 20 for both verbs --
+# custody does not rescue it, and must not go on serving a removed file's
+# content to consumers that never notice it went.
+printf 'here for now\n' > "$SUB/c/vanish.txt"
+VANISH_SLOT="$(slot_of "$SUB/c/vanish.txt")"
+ANS='y
+'
+run_pinned approve --file "$SUB/c/vanish.txt" --store
+assert_exit "$RC" 0 "fixture: vanish.txt approved with custody"
+assert_file "$VANISH_SLOT/approved" "the witness is in the slot"
+rm -f "$SUB/c/vanish.txt"
+ANS=""
+run_pinned verify "$SUB/c/vanish.txt"
+assert_exit "$RC" 20 "a stored witness does not rescue a missing file: verify still 20"
+run_pinned_split cat "$SUB/c/vanish.txt"
+assert_exit "$RC" 20 "and cat refuses to serve a removed file -> 20"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+assert_contains "$ERRF" "custody does not serve a removed file" "20 names the rule"
+
+# A witness that does not re-hash is a MALFORMED SLOT, the same class verify
+# hard-errors on: root-owned bytes that are not the approved bytes are
+# incoherent state, not weak evidence.
+printf 'tampered witness\n' > "$CAT_SLOT/approved"
+chmod 600 "$CAT_SLOT/approved"
+run_pinned_split cat "$SUB/c/served.json"
+assert_exit "$RC" 1 "a witness that does not re-hash -> 1"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+assert_contains "$ERRF" "malformed slot" "the error names the malformation"
+assert_contains "$ERRF" "re-approve" "the error names the remediation"
+
+# 30 is the slot's own ownership/mode invariant. verify answers 1 here (for a
+# gate, a record it cannot trust is a structural failure of the tool); cat
+# answers 30, because for a READER it is the same class as a wrong-mode live
+# file -- something chmod fixes, not something to re-approve.
+ANS='y
+'
+run_pinned approve --file "$SUB/c/served.json" --store
+assert_exit "$RC" 0 "fixture: served.json re-approved to reset the slot"
+ANS=""
+chmod 660 "$CAT_SLOT/approved"
+run_pinned_split cat "$SUB/c/served.json"
+assert_exit "$RC" 30 "a group-writable witness -> 30"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+assert_contains "$ERRF" "group/other-writable" "30 names the invariant"
+chmod 600 "$CAT_SLOT/approved"
+run_pinned_split cat "$SUB/c/served.json"
+assert_exit "$RC" 0 "the remediated slot serves again"
+
+# A repo slot has no custody to serve: content lives in git, addressed by the
+# rev the slot records.
+run_pinned_split cat "$SUB/handwritten.conf"
+assert_exit "$RC" 1 "a repo slot refuses -- custody is a file-pin concept"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+assert_contains "$ERRF" "git" "the refusal names the repo-side equivalent"
+assert_contains "$ERRF" "pinned slot" "and the resolver that gets you the rev"
+
+run_pinned_split cat "$SUB/c/served.json" "$SUB/c/bare.txt"
+assert_exit "$RC" 1 "cat takes exactly one path"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
 
 # ---------------------------------------------------------------------------
 say ""

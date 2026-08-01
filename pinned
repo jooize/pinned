@@ -17,6 +17,9 @@
 #                                             whose later drift needs no ceremony)
 #   pinned verify <path>                      consumer verdict for file pins
 #                                             (--emit / --frozen for parsers)
+#   pinned cat <path>                         the approved bytes from root
+#                                             custody, re-hashed against the
+#                                             record before a byte is emitted
 #   pinned tombstone <path>                   retire a pinned file that is GONE
 #   pinned sign <repo> <tag>                  signed release tag at the PINNED hash
 #   pinned signer add|list|remove             allowed-signers ceremony
@@ -62,20 +65,46 @@
 # slot dir, e.g.
 #   ln -s "$(pinned slot /path/to/repo)" /etc/nix-darwin/pinned-rev
 #
+# THE RECORD AND ITS WITNESSES. Two kinds of thing live in a file slot, and
+# keeping them apart is the whole model.
+#
+# The RECORD is what was approved: a digest (pin.<algo>) plus the ceremony's
+# declarations (`ignored.json`, `tag`). Root-owned, one shape always, and the
+# ONLY trust anchor -- nothing else in this tool authorizes anything.
+#
+# A WITNESS is any bytes that re-hash to the record's digest. Witnesses are
+# EVIDENCE, never authority: every reader authenticates a witness against the
+# record before using it, so where a witness was stored, and whose hands
+# carried it there, cannot affect a verdict. Two arrive by different roads
+# and are otherwise the same kind of thing: the slot's own `approved` copy
+# (root custody, written when the ceremony was asked for it -- see --store)
+# and a caller-brought copy (`verify --baseline <copy>`).
+#
+# A witness can only ever NARROW a comparison -- enable the ignored-key
+# projection, feed the ceremony's baseline diff -- and never stand in for the
+# live file: a pinned file that is MISSING is exit 20 no matter how many
+# witnesses agree on what it used to say. A forged witness fails its re-hash,
+# and the verdict falls back to the stricter one.
+#
 # IGNORED KEYS: a file slot may additionally declare `ignored.json` (a JSON
 # array of jq key paths, e.g. [["model"],["statusLine","command"]]) --
-# written ONLY by the approve ceremony, which also writes `approved` (a copy
-# of the approved bytes) into every file slot it records. The PIN stays
-# byte-exact -- `shasum -c pin.sha256` still verifies -- and ignoring is a
-# VERIFY-side tolerance: when the live bytes differ, verify may compare the
-# two sides with those keys projected out and answer 5 instead of 11. Every
-# step of that path fails CLOSED to the stricter verdict. The `approved`
-# copy is UNCONDITIONAL because it discloses nothing new: the tier is 0750
-# root:_<user>-pinned host-side, and a lane receives a launch-time payload
-# of only the slot dirs it is measured against -- whose files the lane
-# already reads through its own mounts. A record written before copies
-# became the norm holds none; verify then needs a caller --baseline, and
-# re-approving the path writes the copy.
+# written ONLY by the approve ceremony. The PIN stays byte-exact -- `shasum
+# -c pin.sha256` still verifies -- and ignoring is a VERIFY-side tolerance:
+# when the live bytes differ, verify may compare the live side against a
+# witness with those keys projected out and answer 5 instead of 11. Every
+# step of that path fails CLOSED to the stricter verdict.
+#
+# CUSTODY IS OPT-IN (--store). A stored witness serves three jobs -- the
+# tolerant comparison, an archive of exactly what was approved, and the
+# display of what changed -- but it also turns a slot that discloses one
+# digest into one that discloses the file's whole CONTENT. Disclosure is
+# bounded: the host tier is 0750 root:_<user>-pinned, and a lane receives a
+# launch-time payload of only the slot dirs it is measured against, whose
+# files the lane already reads through its own mounts. Bounded is not
+# nothing, though, so it stays a per-slot human decision, re-stated by every
+# ceremony exactly like `tag`: an approve without --store DROPS a copy the
+# slot holds today, loudly. `pinned cat` is custody's verified reader --
+# consumers must never open a slot file directly.
 #
 # THE IGNORABLE LADDER. What a slot may declare is itself gated, by two
 # root-owned policy tiers, and every rung is checked at approve AND at
@@ -191,22 +220,23 @@ usage: pinned <action> [args]
                      --tag may add an unsigned name (a clean release
                      name) that must name the same commit
   approve --file <path> [--baseline <copy>] [--ignore-json-key <key> ...]
-          [--file <path> ...] [--algo <name>]
+          [--file <path> ...] [--algo <name>] [--store]
                      (sudo) file-pin ceremony: each file is frozen,
                      displayed ROOT-SIDE, confirmed, and its hash
-                     recorded, together with a copy of the approved bytes
-                     (the slot's "approved") that later serves the
-                     ignored-key comparison; multiple --file share one
-                     authentication;
+                     recorded; multiple --file share one authentication;
                      --baseline (after its --file) diffs against a copy
                      that re-hashes to the prior record
                      --ignore-json-key (after its --file, repeatable)
                      declares a dotted JSON key whose later drift verify
                      tolerates, answering 5; the key must be granted for
                      that path by the ignorable policy or the ceremony
-                     REFUSES (see: pinned ignorable). An approve WITHOUT
-                     --ignore-json-key clears the declaration again; the
-                     copy is re-written either way.
+                     REFUSES (see: pinned ignorable)
+                     --store keeps a copy of the approved bytes in the
+                     slot -- the "approved" WITNESS: what the ignored-key
+                     comparison reads, and what pinned cat serves
+                     The ceremony RE-STATES both every time: an approve
+                     without them clears the declaration and DROPS the
+                     stored copy, loudly.
   tombstone <path>   (sudo) retire a pinned file that is GONE; if it
                      reappears, verify refuses until re-approved
   verify <path>      file-pin verdict, quiet contract for gates:
@@ -220,9 +250,20 @@ usage: pinned <action> [args]
   verify --frozen <copy> <path>
                      verify caller-frozen bytes against <path>'s record
   verify [--baseline <copy>] <path>
-                     supply the last-approved bytes for the ignored-key
-                     comparison, for a record that predates the stored
-                     copy (re-approving the path writes one)
+                     bring your own WITNESS for the ignored-key
+                     comparison -- a copy that must re-hash to the
+                     record before it is used; for a slot that keeps
+                     none of its own (see approve --store)
+  cat <path>         the approved bytes on stdout, from root custody --
+                     no sudo, writes nothing. Re-hashes the slot's
+                     stored witness against the record before emitting a
+                     byte, and prints nothing at all on any failure:
+                     0 served, 10 no record, 13 tombstoned, 16 no stored
+                     copy (approve --file --store adds one), 20 the live
+                     file is missing, 30 slot invariant, 1 error.
+                     Serves the approved bytes even when the live file
+                     has DRIFTED -- drift is verify's question, not this
+                     verb's
   sign <repo> <tag>  create signed tag <tag> at the pinned hash -- no sudo
                      (needs your SSH agent, e.g. 1Password)
   signer add [--repo <path>] (--file <pubkey> | --key '<line>') [--principal <id>]
@@ -860,11 +901,11 @@ write_slot_copy() {
 # ceremony re-states it every time, exactly like `tag`.
 clear_ignore_decl() { rm -f "$1"/ignored.*; }
 
-# Declaration AND approved copy. The copy belongs to a FILE record, so it
-# goes wherever the file record itself goes: a repo approval taking the slot
-# over, and a tombstone (retired content has no bytes to keep, and no keys to
-# tolerate). A plain file approve is NOT one of these -- it clears the
-# declaration and re-writes the copy.
+# Declaration AND stored witness -- everything the ceremony re-states. The
+# file ceremony calls this on the extras it is not carrying, and the two
+# places where a FILE record stops existing call it wholesale: a repo
+# approval taking the slot over, and a tombstone (retired content has no
+# bytes worth custody, and no keys left to tolerate).
 clear_slot_ignore() { clear_ignore_decl "$1"; rm -f "$1/approved"; }
 
 # ---- hash algorithms (file pins) -------------------------------------------
@@ -1424,11 +1465,13 @@ ignored_keys_match() {
       echo "      ${ungranted% } (byte-exact verdict stands; re-approve, or: pinned ignorable add)" >&2
       return 1 ;;
   esac
-  # The last-approved bytes. Every ceremony writes the slot's own copy, and
-  # it has already been re-hashed against the record (the slot invariant in
-  # do_verify); a caller baseline stands in only for a record written before
-  # that was so, and must prove itself here, by the same self-verifying trick
-  # the ceremony's diff uses.
+  # THE WITNESS. Root custody first: the slot's own copy has already been
+  # re-hashed against the record (the slot invariant in do_verify). A caller
+  # baseline is the same kind of evidence arriving by a different road, so it
+  # proves itself here instead, by the same self-verifying trick -- neither
+  # storage location nor custody is what makes a witness usable, the re-hash
+  # is. Custody is preferred only because it cannot be withheld or swapped
+  # between calls.
   if [ -f "$slot/approved" ]; then
     approved="$slot/approved"
   elif [ -n "$base" ]; then
@@ -1443,8 +1486,8 @@ ignored_keys_match() {
     approved="$base"
   else
     echo "note: $slot declares ignored keys but holds no approved copy, and no --baseline was" >&2
-    echo "      given; there is nothing to compare against (byte-exact verdict stands;" >&2
-    echo "      re-approve the path to write the copy)" >&2
+    echo "      given; there is no witness to compare against (byte-exact verdict stands;" >&2
+    echo "      pass verify --baseline <copy>, or re-approve with --store)" >&2
     return 1
   fi
   json_projectable "$approved" "the approved bytes" || return 1
@@ -1515,6 +1558,43 @@ read_rev() {
   [ "${#rev}" -eq 40 ] || [ "${#rev}" -eq 64 ] \
     || { echo "ERROR: rev file $slot_file has bad hash length for rev.git" >&2; return 1; }
   printf '%s\n' "$rev"
+}
+
+# The file-pin counterpart of read_rev: read and VALIDATE a slot's pin
+# record, setting REC_LABEL / REC_HEXLEN / REC_DIGEST. Refuses -- loudly,
+# return 1 -- an undeclared algorithm, a digest that is not hex or not the
+# declared function's LENGTH (declare-then-validate makes length a checkable
+# invariant), and a record naming a path other than the one asked about.
+# ONE reader for every verb that answers about a file record, so verify and
+# cat can never drift apart on what a valid record is.
+#
+# The record file's OWNERSHIP is deliberately NOT checked here: it is
+# verify_record_file's job, and the two callers answer differently for a
+# violated invariant (see do_cat's contract), so it stays at the call site.
+read_pin_record() { # $1 = state file, $2 = declared label, $3 = the path asked about
+  local f="$1" line rec_path
+  REC_LABEL="$2"
+  algo_hash_cmd "$REC_LABEL" >/dev/null 2>&1 || {
+    echo "ERROR: $f declares unknown algorithm '$REC_LABEL'; refusing" >&2
+    return 1
+  }
+  REC_HEXLEN="$(algo_hex_len "$REC_LABEL")"
+  IFS= read -r line <"$f" || line=""
+  REC_DIGEST="${line%%  *}"
+  rec_path="${line#*  }"
+  case "$REC_DIGEST" in
+    *[!0-9a-f]*|'')
+      echo "ERROR: record $f is corrupt" >&2
+      return 1 ;;
+  esac
+  [ "${#REC_DIGEST}" -eq "$REC_HEXLEN" ] || {
+    echo "ERROR: record $f: digest length ${#REC_DIGEST} does not match $REC_LABEL ($REC_HEXLEN hex); malformed record" >&2
+    return 1
+  }
+  [ "$rec_path" = "$3" ] || {
+    echo "ERROR: record $f names path '$rec_path', not '$3'; malformed record" >&2
+    return 1
+  }
 }
 
 # ---- setup -----------------------------------------------------------------
@@ -1805,7 +1885,7 @@ do_approve() {
   # nothing is pinned. k-of-n is the caller demanding whichever k tags they
   # trust.
   local trust=0 repo_arg="" sel_tag="" tag_args files file_base file_ign file_algo=sha256 algo_given=0
-  local ign_given=0 last
+  local store=0 ign_given=0 last
   tag_args=(); files=(); file_base=(); file_ign=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1842,6 +1922,14 @@ do_approve() {
         last=$((${#files[@]} - 1))
         file_ign[last]="${file_ign[last]:+${file_ign[last]} }$2"
         ign_given=1; shift 2 ;;
+      # Custody, for the whole ceremony rather than per --file: it is one
+      # disclosure decision the human is confirming, and a ceremony that
+      # stored some of its files and not others would be a decision nobody
+      # could read off the command line. FREELY COMBINABLE -- custody serves
+      # the ignored-key comparison, but also archives exactly what was
+      # approved and feeds the next ceremony's diff, so it means something on
+      # a ceremony that declares nothing.
+      --store)     store=1; shift ;;
       --algo)
         [ $# -ge 2 ] || { echo "--algo needs a value" >&2; exit 1; }
         file_algo="$2"; algo_given=1; shift 2 ;;
@@ -1860,6 +1948,7 @@ do_approve() {
     return
   fi
   [ "$algo_given" -eq 0 ] || { echo "--algo applies to the --file ceremony only" >&2; exit 1; }
+  [ "$store" -eq 0 ] || { echo "--store applies to the --file ceremony only" >&2; exit 1; }
   [ -n "$repo_arg" ] || usage
   case "$sel_tag" in
     -*) echo "invalid tag name: $sel_tag" >&2; exit 1 ;;
@@ -2119,7 +2208,7 @@ do_approve_files() {
 
   local i=0 n="${#files[@]}" f base path slot line new_digest old_digest old_label
   local base_ok recorded=0 declined=0 failed=0 answer state_note nl
-  local ign ign_json old_ign old_bad had_copy ign_note decl_changed
+  local ign ign_json old_ign old_bad had_copy copy_bad cur_copy ign_note cust_note decl_changed
   local gk gscope
   local -a hdr_opt=()
 
@@ -2203,8 +2292,8 @@ do_approve_files() {
       fi
     fi
 
-    old_digest="" old_label="" state_note="" ign_note="" decl_changed=0
-    old_ign=""; old_bad=0; had_copy=0
+    old_digest="" old_label="" state_note="" ign_note="" cust_note="" decl_changed=0
+    old_ign=""; old_bad=0; had_copy=0; copy_bad=0
     if slot_declares_ignore "$slot"; then
       # Quiet read: a broken declaration is reported by the note below and
       # replaced by this ceremony, so read_ignored_paths' own refusal text
@@ -2240,10 +2329,12 @@ do_approve_files() {
     local fro="$FROZEN_COPY"
     new_digest="$(hash_file "$file_algo" "$fro")" || exit 1
 
-    # The ceremony re-declares a slot's ignored keys EVERY time (the `tag`
-    # rule): an approve carrying no --ignore clears the declaration. So
-    # identical bytes are only a no-op when the declaration is identical too
-    # -- otherwise the human still has a narrowing or widening to confirm.
+    # THE TAG RULE, over every extra a slot can hold: the ceremony re-states
+    # ALL of them EVERY time, so an approve carrying no --ignore clears the
+    # declaration and one carrying no --store drops the stored witness.
+    # Identical bytes are therefore a no-op only when the declaration AND the
+    # custody state are identical too -- otherwise the human still has a
+    # narrowing, a widening, or a disclosure change to confirm.
     if [ "$old_bad" -eq 1 ]; then
       decl_changed=1
       ign_note="the slot's ignored-key declaration is unreadable -- this approval replaces it"
@@ -2255,13 +2346,31 @@ do_approve_files() {
         ign_note="ignored keys change: $(ign_display "$old_ign") -> $(ign_display "$ign_json")"
       fi
     fi
-    # A record holding no approved copy is not in the shape this version
-    # writes -- a record from before copies became the norm. Identical bytes
-    # are then not a no-op either: the ceremony is what writes the copy, so
-    # re-approving the path is the way such a record catches up.
-    if [ "$had_copy" -eq 0 ] && [ -n "$old_digest" ]; then
+    # A stored witness that does not re-hash to its own record is incoherent
+    # slot state, and the ceremony is the documented way out of it (verify
+    # says so by name), so it must not be short-circuited away. Same
+    # treatment as an unreadable declaration, one hash to find out.
+    if [ "$had_copy" -eq 1 ] && [ -n "$old_digest" ]; then
+      cur_copy=""
+      [ -f "$slot/approved" ] \
+        && cur_copy="$(hash_file "$old_label" "$slot/approved" 2>/dev/null || true)"
+      [ "$cur_copy" = "$old_digest" ] || copy_bad=1
+    fi
+
+    # Custody carries its own note rather than sharing the declaration's:
+    # a ceremony can be changing both at once, and each is separately worth
+    # reading before a y. Gated on there BEING a prior record -- on a first
+    # approval nothing is changing, custody is simply being chosen.
+    if [ -n "$old_digest" ] && [ "$had_copy" -ne "$store" ]; then
       decl_changed=1
-      [ -n "$ign_note" ] || ign_note="the record holds no approved copy -- this approval writes one"
+      if [ "$store" -eq 1 ]; then
+        cust_note="custody change: this approval ADDS a stored copy of the approved bytes to the slot"
+      else
+        cust_note="custody change: this approval DROPS the slot's stored copy (pass --store to keep it)"
+      fi
+    elif [ "$store" -eq 1 ] && [ "$copy_bad" -eq 1 ]; then
+      decl_changed=1
+      cust_note="the slot's stored copy does not re-hash to its record -- this approval replaces it"
     fi
 
     if [ -n "$old_digest" ] && [ "$old_label" = "$file_algo" ] && [ "$new_digest" = "$old_digest" ] \
@@ -2273,6 +2382,7 @@ do_approve_files() {
     printf '%sfile:%s       %s\n' "$C_B" "$C_OFF" "$path"
     [ -n "$state_note" ] && printf '%snote:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_YEL" "$state_note" "$C_OFF"
     [ -n "$ign_note" ] && printf '%snote:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_YEL" "$ign_note" "$C_OFF"
+    [ -n "$cust_note" ] && printf '%snote:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_YEL" "$cust_note" "$C_OFF"
     if [ -n "$old_digest" ]; then
       printf '%sapproved:%s   %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$old_digest" "$C_OFF" "$C_DIM" "$old_label" "$C_OFF"
     else
@@ -2300,8 +2410,22 @@ $(policy_grants "$POL_EFF" "$ign_json" "$path")
 EOF
       [ -z "$POL_MACHINE" ] \
         || printf '            %s(and within the machine policy at %s)%s\n' "$C_DIM" "$PINNED_MACHINE_POLICY" "$C_OFF"
-      printf '            %sa copy of these bytes is kept in the slot; it is what the%s\n' "$C_DIM" "$C_OFF"
-      printf '            %scomparison reads, here and in every lane the slot reaches%s\n' "$C_DIM" "$C_OFF"
+    fi
+    # CUSTODY, stated in both directions and always -- not only when it is
+    # changing. What the slot will hold after this y is part of what is being
+    # approved, and "no copy is kept" is as much a decision as keeping one.
+    if [ "$store" -eq 1 ]; then
+      printf '%scustody:%s    %skept in the slot%s  %s(--store)%s\n' \
+        "$C_B" "$C_OFF" "$C_CYN" "$C_OFF" "$C_DIM" "$C_OFF"
+      printf '            %sa copy of these bytes stays beside the record as a WITNESS:%s\n' "$C_DIM" "$C_OFF"
+      printf '            %swhat the ignored-key comparison reads, and what pinned cat%s\n' "$C_DIM" "$C_OFF"
+      printf '            %sserves -- readable by anything that mounts the slot, here and%s\n' "$C_DIM" "$C_OFF"
+      printf '            %sin every lane the slot reaches%s\n' "$C_DIM" "$C_OFF"
+    else
+      printf '%scustody:%s    %snone%s\n' "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
+      printf '            %sno copy is kept: the slot discloses a digest and nothing%s\n' "$C_DIM" "$C_OFF"
+      printf '            %smore, and a consumer brings its own witness (verify%s\n' "$C_DIM" "$C_OFF"
+      printf '            %s--baseline). Any copy this slot holds today is DROPPED%s\n' "$C_DIM" "$C_OFF"
     fi
     echo
 
@@ -2348,20 +2472,30 @@ EOF
     case "$answer" in
       y|Y|yes)
         write_slot_state "$slot" "pin.$file_algo" "$new_digest  $path"
-        # The copy is the frozen buffer this ceremony displayed and hashed --
-        # the same single read the record binds to, so it can never carry
-        # bytes the human did not see. Every file record keeps one: the
-        # comparison it serves must not depend on a caller having kept the
-        # right bytes, and a root-owned copy beside the digest is the only
-        # baseline nothing unprivileged can forge.
-        write_slot_copy "$slot" approved "$fro"
-        printf '%s✓ approved:%s %s%s%s -> %s %s(+approved copy)%s\n' \
-          "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$new_digest" "$C_OFF" "$slot/pin.$file_algo" "$C_DIM" "$C_OFF"
+        # The stored witness is the frozen buffer this ceremony displayed and
+        # hashed -- the same single read the record binds to, so custody can
+        # never hold bytes the human did not see. A root-owned copy beside
+        # the digest is also the one baseline nothing unprivileged can forge;
+        # everything else has to prove itself at every use.
+        if [ "$store" -eq 1 ]; then
+          write_slot_copy "$slot" approved "$fro"
+          printf '%s✓ approved:%s %s%s%s -> %s %s(+approved copy)%s\n' \
+            "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$new_digest" "$C_OFF" "$slot/pin.$file_algo" "$C_DIM" "$C_OFF"
+        else
+          rm -f "$slot/approved"
+          printf '%s✓ approved:%s %s%s%s -> %s\n' \
+            "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$new_digest" "$C_OFF" "$slot/pin.$file_algo"
+          # Losing custody is a state change worth naming after the fact too:
+          # a consumer reading through the slot stops being served here.
+          if [ "$had_copy" -eq 1 ]; then
+            printf '%snote: the stored approved copy was DROPPED -- re-approve with --store to keep one%s\n' \
+              "$C_YEL" "$C_OFF"
+          fi
+        fi
         # The declaration is re-stated from THIS ceremony every time, so the
         # absence of --ignore is itself a declaration: it clears the keys.
         # Clearing first also means a slot never ends up holding two declared
-        # formats. The copy is not part of that clearing -- it belongs to the
-        # record, not to the tolerance.
+        # formats.
         clear_ignore_decl "$slot"
         if [ -n "$ign" ]; then
           write_note "$slot" ignored.json "$ign_json"
@@ -2447,9 +2581,19 @@ do_tombstone() {
 #   13  tombstoned but the path is present (retired content resurrected)
 #   20  live pin but the file is missing
 #   30  mode/ownership invariant violated
-# The decade is the consumer's action class: teens "approve fixes it",
-# twenties "restore or tombstone", thirties "invariant". 12, 14 and 15 are
-# RETIRED and never reused; a new code takes the next free one in its class.
+# The decade is the consumer's action class, and it is ONE taxonomy across
+# the verbs that answer about a record (verify here, cat below): teens
+# "approve fixes it", twenties "restore or tombstone", thirties "invariant".
+# 12, 14 and 15 are RETIRED and never reused; 16 belongs to cat ("no stored
+# witness"). A new code takes the next free number in its class.
+#
+# THE NUMBERING RULE, settled: renumber WHOLESALE when coherence demands it
+# (as the sweep into decade classes did) and never backfill a retired slot
+# piecemeal. A retired number is a number some deployed consumer still
+# remembers; handing it a new meaning makes a running gate misread a verdict
+# it thinks it understands, silently, until the next deploy catches up. A
+# wholesale renumber is loud and lands with its consumers.
+#
 # Anything structural (malformed slot, unknown algorithm, wrong recorded
 # path, unreadable tier) is a hard error: exit 1, fail closed. The
 # common gate stays `if pinned verify <path>; then`.
@@ -2467,13 +2611,15 @@ do_tombstone() {
 #                                 verdict exists; digest from the copy, the
 #                                 mode invariant still checks the original.
 #   verify --baseline <copy> <path>
-#                                 offer the LAST-APPROVED bytes for the
-#                                 ignored-key comparison, for a record written
-#                                 before the ceremony kept an `approved` copy
-#                                 of its own. The copy must re-hash to the
-#                                 record or it is ignored; a forged one can
-#                                 only ever make verify STRICTER (the
-#                                 projection then differs).
+#                                 a CALLER-BROUGHT WITNESS for the ignored-key
+#                                 comparison, for a slot that keeps none of
+#                                 its own (approve --store is what keeps one).
+#                                 A permanent interface, not a shim: custody
+#                                 is opt-in, so a caller that held the last
+#                                 approved bytes is an ordinary case. The copy
+#                                 must re-hash to the record or it is ignored;
+#                                 a forged one can only ever make verify
+#                                 STRICTER (the projection then differs).
 # Consumer rule: PARSE content -> --emit or --frozen; gate/display only
 # -> bare form (the verdict refers to one coherent frozen moment; a
 # caller's later live read is the caller's race).
@@ -2534,37 +2680,18 @@ do_verify() {
   esac
 
   verify_record_file "$slot_file" || exit 1
-  local label="$slot_kind" hexlen rec_digest rec_path
-  algo_hash_cmd "$label" >/dev/null 2>&1 || {
-    echo "ERROR: $slot_file declares unknown algorithm '$label'; refusing" >&2
-    exit 1
-  }
-  hexlen="$(algo_hex_len "$label")"
-  IFS= read -r line <"$slot_file" || line=""
-  rec_digest="${line%%  *}"
-  rec_path="${line#*  }"
-  case "$rec_digest" in
-    *[!0-9a-f]*|'')
-      echo "ERROR: record $slot_file is corrupt" >&2
-      exit 1 ;;
-  esac
-  [ "${#rec_digest}" -eq "$hexlen" ] || {
-    echo "ERROR: record $slot_file: digest length ${#rec_digest} does not match $label ($hexlen hex); malformed record" >&2
-    exit 1
-  }
-  [ "$rec_path" = "$path" ] || {
-    echo "ERROR: record $slot_file names path '$rec_path', not '$path'; malformed record" >&2
-    exit 1
-  }
+  read_pin_record "$slot_file" "$slot_kind" "$path" || exit 1
+  local label="$REC_LABEL" rec_digest="$REC_DIGEST"
 
   # SLOT INVARIANT, checked before anything about the live file: if the
   # slot keeps an `approved` copy, that copy MUST re-hash to the record it
-  # sits beside. The copy exists to stand in for the approved bytes in the
-  # ignored-key comparison, so a copy that is not those bytes is a
-  # malformed slot, not a degraded comparison -- hard error, loudly,
-  # remediation is the ceremony. Checked eagerly (even when the live file
-  # matches byte for byte) because a slot either holds coherent state or it
-  # does not, and the moment to say so is the next time anyone looks.
+  # sits beside. Authenticating a witness before use is the rule everywhere
+  # -- what makes this a hard error rather than a quietly declined witness is
+  # WHERE these bytes are: root custody, which nothing unprivileged can have
+  # written. Bytes that are both root-owned and not the approved bytes are
+  # incoherent state, not weak evidence. Checked eagerly (even when the live
+  # file matches byte for byte) because a slot either holds coherent state or
+  # it does not, and the moment to say so is the next time anyone looks.
   if [ -e "$slot/approved" ]; then
     [ -f "$slot/approved" ] || {
       echo "ERROR: $slot/approved is not a regular file; malformed slot" >&2
@@ -2652,6 +2779,124 @@ do_verify() {
   fi
 }
 
+# ---- cat -------------------------------------------------------------------
+
+# CUSTODY'S VERIFIED READER. The moment a slot keeps an `approved` witness it
+# becomes a place to read approved bytes from, and something WILL read that
+# file directly -- which is exactly what must not happen, because nothing
+# outside pinned interprets slot contents. So custody ships with the reader
+# that authenticates before it serves: cat re-hashes the stored witness
+# against the record and only then emits it.
+#
+# Unprivileged, and writes nothing: slot dirs are group-readable by the tier
+# user, so a reader has nothing to elevate for. Root ownership of the slot
+# buys that the bytes cannot have been written by anything unprivileged; the
+# re-hash is what proves they are the APPROVED bytes.
+#
+# Exit contract, the same decade taxonomy verify uses:
+#   0   the witness re-hashed to the record; its bytes are on stdout
+#   1   error -- including a MALFORMED SLOT (a witness that does not re-hash,
+#       more than one state file), the class verify hard-errors on too
+#   10  no record for this path
+#   13  tombstoned
+#   16  the record is valid but the slot keeps NO witness (remediation:
+#       pinned approve --file <path> --store)
+#   20  the record is live but the FILE is missing
+#   30  a slot ownership/mode invariant is violated
+# NOTHING reaches stdout in any failure case: a consumer piping cat into a
+# parser gets the approved bytes or an empty stream, never a fragment and
+# never an error message.
+#
+# 30 WHERE VERIFY SAYS 1, on the same slot-ownership check: for a GATE, a
+# record it cannot trust is a structural failure of the tool; for a READER it
+# is the same class of thing as a wrong-owner live file -- an invariant to
+# fix with chown/chmod, not a record to re-approve. The LIVE file's mode is
+# not checked at all here, because cat does not serve the live file; only its
+# existence is consulted, below.
+#
+# 20 BEFORE 16, deliberately: a deleted file signals retirement, and custody
+# must not go on serving a removed file's content to consumers that never
+# notice it is gone -- restore it, or tombstone it. Answering 16 first would
+# also name a remediation that cannot run, since approve --file refuses a
+# path that is not there.
+#
+# SERVES DESPITE DRIFT, deliberately: a consumer pointed straight at the
+# slot's `approved` file reads the approved bytes regardless of what the live
+# file says today, and cat is that same access with verification added --
+# refusing here would only push such consumers back to the raw file. On this
+# rung the approved bytes ARE the authoritative content; the live file is the
+# editing surface, waiting for its next ceremony. A consumer that cares
+# whether the two agree calls verify. One job per verb.
+do_cat() {
+  [ $# -eq 1 ] || { echo "cat takes one path" >&2; usage; }
+  local path tier slot line
+  tier="$(tier_user)"
+  path="$(canon_path "$1")" || exit 1
+  slot="$(slot_dir_for "$tier" "$path")"
+  if [ ! -d "$slot" ]; then
+    # Distinguish "no slot" from "cannot see the slots", exactly as verify
+    # does: an unreadable tier must never read as unapproved.
+    if [ -d "$PINNED_ROOT/$tier" ] && [ ! -r "$PINNED_ROOT/$tier" ]; then
+      echo "ERROR: cannot read $PINNED_ROOT/$tier -- are you in group $(pin_group "$tier")?" >&2
+      exit 1
+    fi
+    echo "no slot: $path" >&2
+    exit 10
+  fi
+  inspect_slot "$slot" || exit 1
+  case "$slot_state" in
+    none)
+      echo "no slot: $path" >&2
+      exit 10 ;;
+    rev)
+      # Custody is a FILE-pin concept. A repo slot records a rev, and the
+      # content behind that rev already lives in git, addressable by it --
+      # there is nothing for pinned to hold a second copy of.
+      echo "ERROR: $path has a repo slot (rev.$slot_kind); cat serves file pins" >&2
+      echo "       a repo's content lives in git: read the approved rev from the slot" >&2
+      echo "       (pinned slot $path, or a root-owned symlink at it) and ask git --" >&2
+      echo "       git -C $path show <rev>:<file>" >&2
+      exit 1 ;;
+    tombstone)
+      IFS= read -r line <"$slot_file" || line=""
+      echo "REFUSE: $path is tombstoned ($line); there is no approved content to serve" >&2
+      exit 13 ;;
+  esac
+
+  verify_record_file "$slot_file" || exit 30
+  read_pin_record "$slot_file" "$slot_kind" "$path" || exit 1
+
+  if [ ! -e "$path" ]; then
+    echo "REFUSE: $path is pinned but MISSING -- custody does not serve a removed file" >&2
+    echo "        (restore it, or run: pinned tombstone $path)" >&2
+    exit 20
+  fi
+  [ -f "$path" ] || { echo "ERROR: not a regular file: $path" >&2; exit 1; }
+
+  if [ ! -e "$slot/approved" ]; then
+    echo "REFUSE: $slot keeps no approved copy; there is nothing to serve" >&2
+    echo "        (custody is opt-in: pinned approve --file $path --store)" >&2
+    exit 16
+  fi
+  [ -f "$slot/approved" ] || {
+    echo "ERROR: $slot/approved is not a regular file; malformed slot" >&2
+    exit 1
+  }
+  verify_record_file "$slot/approved" || exit 30
+  local copy_digest
+  copy_digest="$(hash_file "$REC_LABEL" "$slot/approved")" || exit 1
+  [ "$copy_digest" = "$REC_DIGEST" ] || {
+    echo "ERROR: $slot/approved does not re-hash to its own record; malformed slot" >&2
+    echo "  record $REC_LABEL: $REC_DIGEST" >&2
+    echo "  copy   $REC_LABEL: $copy_digest" >&2
+    echo "  re-approve the path to reset the slot: pinned approve --file $path --store" >&2
+    exit 1
+  }
+  # Only now, and raw. The bytes are the deliverable, so nothing decorates
+  # them -- and nothing else has been written to this stream to decorate.
+  cat -- "$slot/approved"
+}
+
 # ---- status ----------------------------------------------------------------
 
 do_status() {
@@ -2737,10 +2982,11 @@ do_status_file() {
             "$C_DIM" "$C_OFF" "$C_YEL" "$C_OFF"
         fi
         if [ -e "$slot/approved" ]; then
-          printf '%scopy:%s       approved bytes kept in the slot\n' "$C_DIM" "$C_OFF"
+          printf '%scopy:%s       approved bytes kept in the slot (pinned cat serves them)\n' "$C_DIM" "$C_OFF"
         else
-          printf '%scopy:%s       %snone -- re-approve to write one; until then a consumer supplies --baseline%s\n' \
+          printf '%scopy:%s       %snone -- a consumer supplies its own witness (verify --baseline),%s\n' \
             "$C_DIM" "$C_OFF" "$C_DIM" "$C_OFF"
+          printf '            %sor re-approve with --store%s\n' "$C_DIM" "$C_OFF"
         fi
       fi
       rc=0; (do_verify "$path" >/dev/null 2>&1) || rc=$?
@@ -3781,6 +4027,7 @@ case "$action" in
   approve)   do_approve "$@" ;;
   tombstone) do_tombstone "$@" ;;
   verify)    do_verify "$@" ;;
+  cat)       do_cat "$@" ;;
   sign)      do_sign "$@" ;;
   signer)    do_signer "$@" ;;
   ignorable) do_ignorable "$@" ;;

@@ -31,15 +31,15 @@ unknown declarations refuse outright.
                                       all naming one commit -> pin (--tag:
                                       an unsigned name that must agree)
     pinned approve --file <path> [--baseline <copy>] [--ignore-json-key <key> ...]
-                   [--file <path> ...] [--algo <name>]
+                   [--file <path> ...] [--algo <name>] [--store]
                                       file-pin ceremony: freeze, display
-                                      ROOT-SIDE, confirm, record the hash
-                                      and a copy of the approved bytes;
+                                      ROOT-SIDE, confirm, record the hash;
                                       several --file share one sudo
                                       (--ignore-json-key: keys whose later
                                       drift verify tolerates, each of which
                                       the ignorable policy must grant for
-                                      that path)
+                                      that path; --store keeps a copy of
+                                      the approved bytes in the slot)
     pinned verify <path>              file-pin verdict for gates: 0 ok,
                                       5 differs only in ignored keys,
                                       10 no slot, 11 mismatch,
@@ -47,9 +47,17 @@ unknown declarations refuse outright.
                                       20 missing, 30 mode
                                       (--emit prints the verified bytes;
                                       --frozen <copy> checks held bytes;
-                                      --baseline <copy> offers the last
-                                      approved bytes for the 5 comparison,
-                                      for a record that predates the copy)
+                                      --baseline <copy> brings your own
+                                      witness for the 5 comparison, for a
+                                      slot that keeps none of its own)
+    pinned cat <path>                 the approved bytes from root custody,
+                                      on stdout -- the stored witness,
+                                      re-hashed against the record first;
+                                      nothing on stdout on any failure
+                                      (0 served, 10 no record,
+                                      13 tombstoned, 16 no stored copy,
+                                      20 live file missing,
+                                      30 slot invariant, 1 error)
     pinned tombstone <path>           retire a pinned file that is GONE
     pinned sign <repo> <tag>          signed release tag at the PINNED hash
     pinned signer add|list|remove [--repo <path>] (--file <pubkey> | --key '<line>')
@@ -82,11 +90,11 @@ unknown declarations refuse outright.
 
 approve, setup, tombstone, signer add/remove and ignorable add/remove
 self-elevate via sudo (re-exec of the installed root-owned binary).
-sign and review
-run as you: sign needs your SSH agent, review writes nothing. The verb
-triple: `review` rehearses (no record), `approve` records, `verify`
+sign, review and cat
+run as you: sign needs your SSH agent, review and cat write nothing. The
+verb triple: `review` rehearses (no record), `approve` records, `verify`
 answers -- humans review, machines verify, records happen only in
-approve.
+approve. `cat` is custody's reader, and reads nothing else.
 
 Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
 
@@ -145,8 +153,15 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   when the copy re-hashes to the previously recorded digest.
 - `verify` is the one state table. Consumers never re-derive slot
   semantics; they read verify's exit code (0/5/10/11/13/20/30, stable
-  API; the decade is the action class, and 12/14/15 are retired numbers
-  that are never reused). Parsers use `--emit` (print the VERIFIED bytes, nothing on
+  API). The decade is the action class and the taxonomy is shared with
+  `cat` (which adds **16**, "no stored witness"); 12/14/15 are retired
+  numbers that are never reused. The numbering rule, settled: renumber
+  WHOLESALE when coherence demands it (as the sweep into decade classes
+  did), never backfill a retired slot piecemeal -- a retired number is
+  one some deployed consumer still remembers, and giving it a new
+  meaning makes a running gate misread a verdict it thinks it
+  understands, silently, until that consumer is redeployed.
+  Parsers use `--emit` (print the VERIFIED bytes, nothing on
   failure) or `--frozen <copy>` (verdict on caller-held bytes) so the
   bytes acted on are the bytes verified -- never verify-path-then-
   read-path. File modes are CHECKED as an invariant (owner is the tier
@@ -187,23 +202,19 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
     dot, KEYS ONLY. No array subscripts: an index is a position, not a
     name, and a tolerated position silently moves when something is
     inserted before it.
-  - Comparing needs the LAST-APPROVED bytes, so every file ceremony keeps
-    them in the slot as `approved` -- unconditionally, from the same frozen
-    buffer it displayed and hashed. Nothing is disclosed by that: the tier
-    is 0750 root:`_<user>-pinned` host-side, and a lane receives a
-    launch-time payload of only the slot dirs it is measured against,
-    whose files it already reads through its own mounts. A record written
-    before this was so holds no copy; the caller then passes
-    `verify --baseline <copy> <path>`, and the copy must re-hash to the
-    record before it is used (the same self-verifying trick the ceremony's
-    baseline diff uses -- a forged baseline can only make verify
-    STRICTER). Re-approving such a path writes the copy: a record with
-    none is not "already approved", so the ceremony runs even on identical
-    bytes.
+  - Comparing needs the LAST-APPROVED bytes -- a WITNESS (see "The record
+    and its witnesses" below). Either the slot keeps one of its own
+    (`approve --file <path> --store`) or the caller brings one
+    (`verify --baseline <copy> <path>`); with neither, verify stays at the
+    byte-exact 11. A caller-brought copy must re-hash to the record before
+    it is used -- the same self-verifying trick the ceremony's baseline
+    diff uses, so a forged baseline can only make verify STRICTER.
   - If `approved` exists it MUST re-hash to the record beside it. A
     violation is a MALFORMED SLOT (hard error, exit 1) rather than a
-    degraded comparison -- a slot either holds coherent state or it does
-    not; re-approve to reset it.
+    degraded comparison -- what makes this harder than a declined witness
+    is WHERE the bytes are: root custody, which nothing unprivileged can
+    have written, so root-owned bytes that are not the approved bytes are
+    incoherent state, not weak evidence. Re-approve to reset it.
   - PARSER DIFFERENTIALS are the reason this path is so suspicious of its
     input. A structural comparison is only as honest as the agreement
     between the parser doing the comparing and the parser that will
@@ -222,10 +233,12 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
     values are objects, where the leaf paths differ and a path-multiset
     comparison would miss them.
   - The ceremony states the declaration prominently before the y/N, and an
-    approve WITHOUT `--ignore-json-key` CLEARS the declaration -- it is
-    re-stated every time, exactly like `tag` -- with a loud note whenever
-    that narrows or widens what was there. The copy is not part of that
-    clearing: it is re-written from the bytes the ceremony just froze.
+    approve WITHOUT `--ignore-json-key` CLEARS the declaration -- with a
+    loud note whenever that narrows or widens what was there. THE TAG RULE
+    covers every extra a slot can hold: each is re-stated by every
+    ceremony, so an approve without `--store` drops a stored copy too, and
+    identical bytes are a no-op only when the declaration AND the custody
+    state are identical as well.
   - A non-JSON file simply fails the parse step and always gets the
     byte-exact verdict; pinned never restricts which KINDS of path may
     carry a declaration, only which keys (below).
@@ -361,6 +374,64 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   survives a lying shell is out-of-band: the sudo authentication
   dialog names the exact command it will run as root -- read it there.
   Given a trusted shell config, invoking bare `pinned` is fine.
+
+## The record and its witnesses
+
+Two kinds of thing live in a file slot, and keeping them apart is the
+whole model.
+
+The **record** is what was approved: a digest (`pin.<algo>`) plus the
+ceremony's declarations (`ignored.json`, `tag`). Root-owned, one shape
+always, and the only trust anchor -- nothing else in this tool
+authorizes anything.
+
+A **witness** is any bytes that re-hash to the record's digest.
+Witnesses are evidence, never authority: every reader authenticates a
+witness against the record before using it, so where a witness was
+stored, and whose hands carried it there, cannot affect a verdict. Two
+arrive by different roads and are otherwise the same kind of thing --
+the slot's own `approved` copy (root custody, written by
+`approve --file <path> --store`) and a caller-brought copy
+(`verify --baseline <copy>`). A witness can only ever NARROW a
+comparison -- enable the ignored-key projection, feed the ceremony's
+baseline diff -- and never stands in for the live file: a pinned file
+that is MISSING is exit 20 no matter how many witnesses agree on what
+it used to say.
+
+Custody is therefore OPT-IN. A stored witness serves the tolerant
+comparison, archives exactly what was approved, and feeds the display of
+what changed -- but it also turns a slot that discloses one digest into
+one that discloses the file's whole content. Disclosure is bounded (the
+host tier is 0750 root:`_<user>-pinned`, and a lane receives a
+launch-time payload of only the slot dirs it is measured against, whose
+files it already reads through its own mounts), but bounded is not
+nothing, so it stays a per-slot human decision at the ceremony.
+
+### The consumer ladder
+
+`verify` answers about a path; the consumer then has to USE the content,
+and the gap between the two is where a swap would fit. Three rungs close
+it, in descending order of what the consuming software can be told to
+do:
+
+1. **It can read a path you nominate** -> point it at root custody: the
+   slot's `approved` file, reached through a root-owned symlink at the
+   slot DIRECTORY (`sudo ln -s "$(pinned slot <path>)" /etc/<tool>/pin`,
+   then read `/etc/<tool>/pin/approved`) -- the dir, never the file, for
+   the same reason every other consumer binds a dir: each ceremony
+   renames a fresh inode into place. No gap at all: the bytes it reads
+   are the bytes root holds, and it never sees the editing surface.
+2. **It can run a command** -> `pinned cat <path>`. Same bytes, with the
+   re-hash against the record done for it, and a stdout contract:
+   approved bytes or an empty stream, never a fragment.
+3. **It reads fixed paths by its own logic** -> only the launch window
+   needs guarding, and that is the consumer's own problem, not pinned's:
+   verify immediately before handing control over, and accept that a
+   rewrite after launch is outside what a pin can speak for.
+
+Rungs 1 and 2 need custody (`--store`); rung 3 does not. Consumers that
+must PARSE content and cannot do either use `verify --emit` or
+`verify --frozen`, which bind the verdict and the bytes to one read.
 
 ## Display conventions
 
