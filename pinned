@@ -205,7 +205,7 @@ usage() {
   cat >&2 <<EOF
 usage: pinned <action> [args]
 
-  approve <repo> [options]       (sudo) review the diff since the last pin, write pin
+  approve <repo>... [options]    (sudo) review the diff since the last pin, write pin
   approve --file <path> ...      (sudo) file-pin ceremony: freeze, review, record hash
   tombstone <path>               (sudo) retire a pinned file that is GONE
   verify [options] <path>        file-pin verdict; quiet exit-code contract for gates
@@ -1601,6 +1601,30 @@ if [ -f "$INSTALL_TARGET" ]; then
   verify_ancestry "$INSTALL_TARGET" || exit 1
 fi
 
+# The exact argv sudo is about to run, colored by role the same way deploy
+# renders its commands: sudo bold, command name cyan, verb and flags plain,
+# file paths cyan (identifiers and paths are cyan everywhere; yellow stays
+# reserved for attention text). The color codes go into the DISPLAY string
+# only -- the exec sites build their argv from the variables, never from
+# this. Quote first (anything outside the safe set gets single quotes, so
+# the line stays pasteable), then color the quoted token.
+elevation_cmd_disp() { # elev action args...
+  local elev="$1" act="$2" a a_disp out
+  shift 2
+  out="${C_B}sudo${C_OFF} -- ${C_CYN}${elev}${C_OFF} $act"
+  for a in "$@"; do
+    case "$a" in
+      *[!A-Za-z0-9_/.:=-]*) a_disp="'$a'" ;;
+      *)                    a_disp="$a" ;;
+    esac
+    case "$a" in
+      -*) out="$out $a_disp" ;;
+      *)  out="$out ${C_CYN}${a_disp}${C_OFF}" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
 # Root-requiring actions self-elevate: re-exec the INSTALLED (root-owned,
 # digest-pinned) binary under sudo so the elevated code is never a copy the
 # invoker could have modified. Pre-install (setup from a checkout) falls
@@ -1633,60 +1657,80 @@ case "$action" in
       # orientation only -- the authoritative review re-derives everything
       # from the object store as root, after sudo.
       if [ "$action" = "approve" ]; then
-        preview_repo="" preview_tag="" skip_next=0 want_tag=0 file_mode=0
+        preview_repos=() preview_tag="" skip_next=0 want_tag=0 file_mode=0 have_ev=0
         for a in "$@"; do
           if [ "$want_tag" -eq 1 ]; then preview_tag="$a"; want_tag=0; continue; fi
           if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
           case "$a" in
-            --signed-tag) skip_next=1 ;;
+            --signed-tag) have_ev=1; skip_next=1 ;;
             --file) file_mode=1; skip_next=1 ;;
             --baseline|--algo) skip_next=1 ;;
-            --tag) want_tag=1 ;;
+            --tag) have_ev=1; want_tag=1 ;;
+            --trust) have_ev=1 ;;
             -*) ;;
-            *) preview_repo="$a" ;;
+            *) preview_repos+=("$a") ;;
           esac
         done
         # A bare approve -- no repo, no --file -- can only ever reach
         # usage; fail here, before authentication costs a sudo prompt.
-        if [ -z "$preview_repo" ] && [ "$file_mode" -eq 0 ]; then usage; fi
-        if [ -n "$preview_repo" ] && [ "$file_mode" -eq 0 ]; then
-          resolve_repo "$preview_repo"
-          # A bad --tag name dies HERE, pre-sudo -- failing early is the
-          # point of the preview.
-          if [ -n "$preview_tag" ]; then
-            preview_head="$(sgit rev-parse "refs/tags/${preview_tag}"'^{commit}')"
-          else
-            preview_head="$(sgit rev-parse 'HEAD^{commit}')"
-          fi
-          # Errors silenced: the tree may be root-only pre-group, and the
-          # root-side re-derivation is authoritative anyway.
-          preview_pin="$(read_rev "$default_slot" 2>/dev/null)" || preview_pin=""
-          # Same short-circuit the privileged side would take -- but here it
-          # costs no authentication. The pin is root-owned; HEAD is the
-          # repo the caller is looking at.
-          if [ -n "$preview_pin" ] && [ "$preview_pin" = "$preview_head" ]; then
-            printf '%salready pinned: %s%s\n' "$C_GRN" "$preview_head" "$C_OFF"
+        if [ "${#preview_repos[@]}" -eq 0 ] && [ "$file_mode" -eq 0 ]; then usage; fi
+        # Selector and evidence flags name ONE commit of ONE repo; a batch
+        # they cannot bind to dies here, pre-sudo (the root side re-checks).
+        if [ "${#preview_repos[@]}" -gt 1 ] && [ "$have_ev" -eq 1 ]; then
+          echo "--tag, --signed-tag and --trust bind to one repo; approve multiple repos plain" >&2
+          exit 1
+        fi
+        if [ "${#preview_repos[@]}" -gt 0 ] && [ "$file_mode" -eq 0 ]; then
+          # One preview per repo; sequential root-side ceremonies follow,
+          # sharing the single authentication below.
+          all_pinned=1 first_prev=1
+          for preview_repo in "${preview_repos[@]}"; do
+            resolve_repo "$preview_repo"
+            # A bad --tag name dies HERE, pre-sudo -- failing early is the
+            # point of the preview.
+            if [ -n "$preview_tag" ]; then
+              preview_head="$(sgit rev-parse "refs/tags/${preview_tag}"'^{commit}')"
+            else
+              preview_head="$(sgit rev-parse 'HEAD^{commit}')"
+            fi
+            # Errors silenced: the tree may be root-only pre-group, and the
+            # root-side re-derivation is authoritative anyway.
+            preview_pin="$(read_rev "$default_slot" 2>/dev/null)" || preview_pin=""
+            # Same short-circuit the privileged side would take -- but here it
+            # costs no authentication. The pin is root-owned; HEAD is the
+            # repo the caller is looking at.
+            if [ -n "$preview_pin" ] && [ "$preview_pin" = "$preview_head" ]; then
+              printf '%salready pinned:%s %s  %s%s%s\n' "$C_GRN" "$C_OFF" "$repo" "$C_DIM" "$preview_head" "$C_OFF"
+              continue
+            fi
+            all_pinned=0
+            [ "$first_prev" -eq 1 ] || echo
+            first_prev=0
+            printf '%srepo:%s       %s\n' "$C_B" "$C_OFF" "$repo"
+            if [ -n "$preview_tag" ]; then
+              printf '%stag:%s        %s\n' "$C_B" "$C_OFF" "$preview_tag"
+              printf '%scommit:%s     %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_head" "$C_OFF" \
+                "$C_DIM" "$(sgit log -1 --format=%s "$preview_head")" "$C_OFF"
+            else
+              printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_head" "$C_OFF" \
+                "$C_DIM" "$(sgit log -1 --format=%s "$preview_head")" "$C_OFF"
+            fi
+            if [ -n "$preview_pin" ]; then
+              printf '%spinned:%s     %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_pin" "$C_OFF"
+              if [ "$preview_pin" != "$preview_head" ]; then
+                echo
+                printf '%scommits since last approval:%s\n' "$C_B" "$C_OFF"
+                sgit log --format='  %h %s' "${preview_pin}..${preview_head}" || true
+              fi
+            else
+              printf '%spinned:%s     (none -- first approval)\n' "$C_B" "$C_OFF"
+            fi
+          done
+          # Every named repo is already at its pin: the whole invocation
+          # is a no-op, and it costs no authentication to say so.
+          if [ "$all_pinned" -eq 1 ]; then
             printf '%s(nothing to approve; no authentication needed)%s\n' "$C_DIM" "$C_OFF"
             exit 0
-          fi
-          printf '%srepo:%s       %s\n' "$C_B" "$C_OFF" "$repo"
-          if [ -n "$preview_tag" ]; then
-            printf '%stag:%s        %s\n' "$C_B" "$C_OFF" "$preview_tag"
-            printf '%scommit:%s     %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_head" "$C_OFF" \
-              "$C_DIM" "$(sgit log -1 --format=%s "$preview_head")" "$C_OFF"
-          else
-            printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_head" "$C_OFF" \
-              "$C_DIM" "$(sgit log -1 --format=%s "$preview_head")" "$C_OFF"
-          fi
-          if [ -n "$preview_pin" ]; then
-            printf '%spinned:%s     %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_pin" "$C_OFF"
-            if [ "$preview_pin" != "$preview_head" ]; then
-              echo
-              printf '%scommits since last approval:%s\n' "$C_B" "$C_OFF"
-              sgit log --format='  %h %s' "${preview_pin}..${preview_head}" || true
-            fi
-          else
-            printf '%spinned:%s     (none -- first approval)\n' "$C_B" "$C_OFF"
           fi
           echo
         fi
@@ -1733,26 +1777,7 @@ case "$action" in
       # details separating what was checked here (root ownership) from
       # what the system enforces at exec (the sudoers digest).
       if [ "$action" = "approve" ] && [ "$elev" = "$INSTALL_TARGET" ]; then
-        # Colored by role, the same way deploy renders its command below:
-        # sudo bold, command name cyan, verb and flags plain, file paths
-        # cyan (identifiers and paths are cyan everywhere; yellow stays
-        # reserved for attention text). The color codes go into the DISPLAY
-        # string only -- the exec below builds its argv from the variables,
-        # never from this.
-        cmd_disp="${C_B}sudo${C_OFF} -- ${C_CYN}${elev}${C_OFF} $action"
-        for a in "$@"; do
-          # Quote first (unchanged: anything outside the safe set gets
-          # single quotes, so the line stays pasteable), then color the
-          # quoted token: flags plain, everything else is a path.
-          case "$a" in
-            *[!A-Za-z0-9_/.:=-]*) a_disp="'$a'" ;;
-            *)                    a_disp="$a" ;;
-          esac
-          case "$a" in
-            -*) cmd_disp="$cmd_disp $a_disp" ;;
-            *)  cmd_disp="$cmd_disp ${C_CYN}${a_disp}${C_OFF}" ;;
-          esac
-        done
+        cmd_disp="$(elevation_cmd_disp "$elev" "$action" "$@")"
         printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
         printf '  %s\n\n' "$cmd_disp"
         printf '%ssudo asks you to authenticate; the root-side re-run shows the authoritative\n' "$C_YEL$C_B"
@@ -1772,6 +1797,39 @@ case "$action" in
     case "${1:-}" in
       add|remove)
         if [ "$EUID" -ne 0 ]; then
+          # Argv that can only ever reach a root-side argument error fails
+          # HERE, before authentication costs a sudo prompt -- the same
+          # contract as approve's preview. Grammar and content stay
+          # root-side; presence of the ceremony's object is checkable free.
+          if [ "$action" = "signer" ]; then
+            has_key=0 skip_next=0
+            for a in "$@"; do
+              if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
+              case "$a" in
+                --file|--key) has_key=1; skip_next=1 ;;
+                --repo|--principal) skip_next=1 ;;
+              esac
+            done
+            if [ "$has_key" -eq 0 ]; then
+              echo "signer $1 needs the key: --file <pubkey> or --key '<line>'" >&2
+              exit 1
+            fi
+          else
+            ign_key="" skip_next=0 first=1
+            for a in "$@"; do
+              if [ "$first" -eq 1 ]; then first=0; continue; fi
+              if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
+              case "$a" in
+                --under) skip_next=1 ;;
+                -*) ;;
+                *) ign_key="$a" ;;
+              esac
+            done
+            if [ -z "$ign_key" ]; then
+              echo "ignorable $1 needs a key, e.g. model or statusLine.command" >&2
+              exit 1
+            fi
+          fi
           elev="$INSTALL_TARGET"
           if [ -x "$elev" ]; then
             verify_root_owned_path "$elev" || exit 1
@@ -1786,6 +1844,16 @@ case "$action" in
               y|Y|yes) ;;
               *) echo "aborted."; exit 2 ;;
             esac
+          fi
+          # The pre-sudo handoff approve gives, in the same shape: the
+          # exact command, then what the authentication buys. The root
+          # side stays authoritative -- it displays the object and
+          # confirms before writing.
+          if [ "$elev" = "$INSTALL_TARGET" ]; then
+            printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
+            printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
+            printf '%ssudo asks you to authenticate; the root-side ceremony shows the %s\nand confirms -- nothing is written until you answer y after it.%s\n\n' \
+              "$C_YEL$C_B" "$([ "$action" = signer ] && echo "key" || echo "grant")" "$C_OFF"
           fi
           exec sudo -- "$elev" "$action" "$@"
         fi
@@ -1806,9 +1874,9 @@ do_approve() {
   # must verify against the allowed signers AND name the same commit, or
   # nothing is pinned. k-of-n is the caller demanding whichever k tags they
   # trust.
-  local trust=0 repo_arg="" sel_tag="" tag_args files file_base file_ign file_algo=sha256 algo_given=0
+  local trust=0 repo_args sel_tag="" tag_args files file_base file_ign file_algo=sha256 algo_given=0
   local store=0 ign_given=0 last
-  tag_args=(); files=(); file_base=(); file_ign=()
+  repo_args=(); tag_args=(); files=(); file_base=(); file_ign=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --signed-tag) tag_args+=("$2"); shift 2 ;;
@@ -1856,13 +1924,13 @@ do_approve() {
         [ $# -ge 2 ] || { echo "--algo needs a value" >&2; exit 1; }
         file_algo="$2"; algo_given=1; shift 2 ;;
       -*)           usage ;;
-      *)            repo_arg="$1"; shift ;;
+      *)            repo_args+=("$1"); shift ;;
     esac
   done
   # The file-pin ceremony is its own mode: repo selectors and evidence
   # flags say nothing about file content.
   if [ "${#files[@]}" -gt 0 ]; then
-    if [ -n "$repo_arg" ] || [ -n "$sel_tag" ] || [ "$trust" -eq 1 ] || [ "${#tag_args[@]}" -gt 0 ]; then
+    if [ "${#repo_args[@]}" -gt 0 ] || [ -n "$sel_tag" ] || [ "$trust" -eq 1 ] || [ "${#tag_args[@]}" -gt 0 ]; then
       echo "--file is its own ceremony; repo arguments and evidence flags do not combine with it" >&2
       exit 1
     fi
@@ -1871,7 +1939,7 @@ do_approve() {
   fi
   [ "$algo_given" -eq 0 ] || { echo "--algo applies to the --file ceremony only" >&2; exit 1; }
   [ "$store" -eq 0 ] || { echo "--store applies to the --file ceremony only" >&2; exit 1; }
-  [ -n "$repo_arg" ] || usage
+  [ "${#repo_args[@]}" -ge 1 ] || usage
   case "$sel_tag" in
     -*) echo "invalid tag name: $sel_tag" >&2; exit 1 ;;
   esac
@@ -1881,6 +1949,28 @@ do_approve() {
     echo "--trust adds nothing to a signature-gated approve; drop one" >&2
     exit 1
   fi
+  # Selector and evidence flags name ONE commit of ONE repo; a multi-repo
+  # batch is plain review approvals only (the pre-sudo preview refuses the
+  # same combination -- this is the authoritative re-check).
+  if [ "${#repo_args[@]}" -gt 1 ] \
+    && { [ -n "$sel_tag" ] || [ "$trust" -eq 1 ] || [ "${#tag_args[@]}" -gt 0 ]; }; then
+    echo "--tag, --signed-tag and --trust bind to one repo; approve multiple repos plain" >&2
+    exit 1
+  fi
+
+  # Create the pin tree BEFORE the ancestry checks -- approve must work on
+  # machines that never ran setup (declarative installs); ensure_tree also
+  # re-asserts ownership and modes on an existing tree.
+  ensure_tree "$inv"
+
+  # Sequential ceremonies over the named repos, one sudo authentication for
+  # the batch (the file ceremony's shape): each repo is displayed and
+  # confirmed on its own, a decline skips ONLY that repo, and a hard error
+  # aborts the batch loudly. With one repo the contract is unchanged:
+  # already-pinned exits 0, a decline exits 2.
+  local multi=0 n_approved=0 n_declined=0 n_already=0 repo_arg
+  [ "${#repo_args[@]}" -le 1 ] || multi=1
+  for repo_arg in "${repo_args[@]}"; do
   resolve_repo "$repo_arg"
   local slot="$default_slot"
   if [ -n "$sel_tag" ]; then
@@ -1895,11 +1985,6 @@ do_approve() {
       exit 1
     }
   fi
-
-  # Create the pin tree BEFORE the ancestry check -- approve must work on
-  # machines that never ran setup (declarative installs); ensure_tree also
-  # re-asserts ownership and modes on an existing tree.
-  ensure_tree "$inv"
 
   # The record must live under a root-owned ancestry or the machine gate
   # is only as strong as the weakest writable dir on the way there.
@@ -1981,6 +2066,7 @@ do_approve() {
     fi
     if [ -n "$old_hash" ] && [ "$old_hash" = "$hash" ]; then
       printf '%salready pinned: %s%s\n' "$C_GRN" "$hash" "$C_OFF"
+      if [ "$multi" -eq 1 ]; then n_already=$((n_already + 1)); continue; fi
       exit 0
     fi
     printf '%srepo:%s       %s\n' "$C_DIM" "$C_OFF" "$repo"
@@ -2016,6 +2102,7 @@ do_approve() {
 
     if [ -n "$old_hash" ] && [ "$old_hash" = "$hash" ]; then
       printf '%salready pinned: %s%s\n' "$C_GRN" "$hash" "$C_OFF"
+      if [ "$multi" -eq 1 ]; then n_already=$((n_already + 1)); continue; fi
       exit 0
     fi
 
@@ -2065,6 +2152,7 @@ do_approve() {
     *)
       printf '%saborted; pin unchanged.%s\n' "$C_YEL" "$C_OFF"
       log_action approve "$repo" "$hash" abort
+      if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
       exit 2
       ;;
   esac
@@ -2102,6 +2190,14 @@ do_approve() {
     rm -f "$slot/tag"
   fi
   log_action approve "$repo" "$hash"
+  n_approved=$((n_approved + 1))
+  done
+
+  if [ "$multi" -eq 1 ]; then
+    echo
+    printf '%s%s approved, %s declined, %s already pinned%s\n' \
+      "$C_DIM" "$n_approved" "$n_declined" "$n_already" "$C_OFF"
+  fi
 }
 
 # The file-pin ceremony (the claude-trust-append port). The CEREMONY is
@@ -3724,7 +3820,8 @@ do_ignorable_list() {
 # Inputs with no pin slot deploy as hand-edited and are surfaced loudly,
 # not blocked; non-local inputs (github:...) are not pinned's to speak for.
 do_deploy() {
-  local DRY=0 YES=0 FLAKE_ARG=""
+  local DRY=0 YES=0 FLAKE_ARG="" stale_repos upd_cmd p
+  stale_repos=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --dry-run) DRY=1; shift ;;
@@ -3870,8 +3967,7 @@ EOF
       if [ "$ahead" != 0 ]; then
         printf '  %-*s  %sgit HEAD is %s commit(s) past the pin (unapproved)%s\n' \
           "$width" '' "$C_DIM" "$ahead" "$C_OFF"
-        printf '  %-*s  %sto update: pinned approve %s%s\n' \
-          "$width" '' "$C_DIM" "$path" "$C_OFF"
+        stale_repos+=("$path")
       fi
       if ! git -C "$path" diff --no-ext-diff --no-textconv --quiet 2>/dev/null \
         || ! git -C "$path" diff --no-ext-diff --no-textconv --cached --quiet 2>/dev/null; then
@@ -3883,6 +3979,16 @@ EOF
 $inputs
 EOF
   printf '\n'
+
+  # The update path, pasteable: ONE batch approve (sequential ceremonies,
+  # one authentication), then rerun deploy. Approval stays its own
+  # ceremony -- deploy only points at it.
+  if [ "${#stale_repos[@]}" -gt 0 ]; then
+    upd_cmd="pinned approve"
+    for p in "${stale_repos[@]}"; do upd_cmd="$upd_cmd $p"; done
+    printf '%sto update (review each, then rerun deploy):%s\n' "$C_B" "$C_OFF"
+    printf '  %s\n\n' "$upd_cmd"
+  fi
 
   if [ "$updates" -eq 0 ]; then
     if [ "$unpinned" -gt 0 ]; then

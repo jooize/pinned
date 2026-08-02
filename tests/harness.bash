@@ -681,6 +681,85 @@ assert_exit "$RC" 0 "list survives a corrupt rev slot"
 assert_contains "$OUT" "CORRUPT" "list flags a corrupt rev slot instead of printing a digest"
 
 # ---------------------------------------------------------------------------
+say "S8b: batch repo approve (multiple repos, one invocation)"
+# ---------------------------------------------------------------------------
+if [ "$GIT_OK" -eq 1 ]; then
+  bgit() { # repo git-args... -- scrubbed git against ONE named fixture repo
+    local r="$1"; shift
+    env -i PATH="$PATH" HOME=/var/empty \
+      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -C "$r" -c init.defaultBranch=main -c user.name=harness \
+      -c user.email=harness@example.invalid -c commit.gpgsign=false \
+      -c core.hooksPath=/dev/null "$@"
+  }
+  REPO_A="$FIX/batch-a"; REPO_B="$FIX/batch-b"
+  mkdir -p "$REPO_A" "$REPO_B"
+  bgit "$REPO_A" init -q; printf 'a1\n' > "$REPO_A/f"; bgit "$REPO_A" add f; bgit "$REPO_A" commit -q -m a1
+  bgit "$REPO_B" init -q; printf 'b1\n' > "$REPO_B/f"; bgit "$REPO_B" add f; bgit "$REPO_B" commit -q -m b1
+  A_SLOT="$(slot_of "$REPO_A")"; B_SLOT="$(slot_of "$REPO_B")"
+
+  # Two first-ever approvals in ONE invocation: sequential ceremonies, two
+  # answers on one stdin, one summary line.
+  ANS='y
+y
+'
+  run_pinned approve "$REPO_A" "$REPO_B"
+  assert_exit "$RC" 0 "batch approve of two repos exits 0"
+  assert_file "$A_SLOT/rev.git" "first repo's rev.git written"
+  assert_file "$B_SLOT/rev.git" "second repo's rev.git written"
+  assert_eq "$(cat "$A_SLOT/rev.git")" "$(bgit "$REPO_A" rev-parse 'HEAD^{commit}')" "first pin holds repo A's HEAD"
+  assert_eq "$(cat "$B_SLOT/rev.git")" "$(bgit "$REPO_B" rev-parse 'HEAD^{commit}')" "second pin holds repo B's HEAD"
+  assert_contains "$OUT" "2 approved, 0 declined, 0 already pinned" "batch summary counts both"
+
+  # A decline skips ONLY that repo (the file ceremony's contract): repo A
+  # declined keeps its old pin, repo B is approved, exit stays 0.
+  A_OLD="$(cat "$A_SLOT/rev.git")"
+  printf 'a2\n' > "$REPO_A/f"; bgit "$REPO_A" commit -q -am a2
+  printf 'b2\n' > "$REPO_B/f"; bgit "$REPO_B" commit -q -am b2
+  ANS='n
+y
+'
+  run_pinned approve "$REPO_A" "$REPO_B"
+  assert_exit "$RC" 0 "a mid-batch decline does not abort the batch"
+  assert_eq "$(cat "$A_SLOT/rev.git")" "$A_OLD" "declined repo keeps its old pin"
+  assert_eq "$(cat "$B_SLOT/rev.git")" "$(bgit "$REPO_B" rev-parse 'HEAD^{commit}')" "later repo still approved"
+  assert_contains "$OUT" "1 approved, 1 declined, 0 already pinned" "summary counts the decline"
+
+  # Already-pinned repos are counted, never re-asked: catch repo A up, then
+  # run the batch again -- both at their pins, no answer is consumed.
+  ANS='y
+'
+  run_pinned approve "$REPO_A"
+  assert_exit "$RC" 0 "catch-up approve of the declined repo"
+  ANS=""
+  run_pinned approve "$REPO_A" "$REPO_B"
+  assert_exit "$RC" 0 "an all-pinned batch exits 0"
+  assert_contains "$OUT" "0 approved, 0 declined, 2 already pinned" "summary counts already-pinned repos"
+
+  # SINGLE-repo contract unchanged: already-pinned exits 0 with no summary
+  # line; a decline still exits 2.
+  ANS=""
+  run_pinned approve "$REPO_A"
+  assert_exit "$RC" 0 "single already-pinned repo still exits 0"
+  assert_missing "$OUT" "declined," "single-repo approve prints no batch summary"
+  printf 'a3\n' > "$REPO_A/f"; bgit "$REPO_A" commit -q -am a3
+  ANS='n
+'
+  run_pinned approve "$REPO_A"
+  assert_exit "$RC" 2 "a single-repo decline still exits 2"
+  assert_contains "$OUT" "aborted; pin unchanged." "single decline keeps its message"
+
+  # Selector and evidence flags bind to one repo; a batch refuses them.
+  ANS=""
+  run_pinned approve "$REPO_A" "$REPO_B" --tag v1
+  assert_exit "$RC" 1 "--tag with two repos is refused"
+  assert_contains "$OUT" "bind to one repo" "the refusal names the rule"
+  ANS=""
+  run_pinned approve "$REPO_A" "$REPO_B" --trust
+  assert_exit "$RC" 1 "--trust with two repos is refused"
+fi
+
+# ---------------------------------------------------------------------------
 say "S9: ignored keys (ignored.json / approved / exit 5)"
 # ---------------------------------------------------------------------------
 # The tolerance path is jq-driven by construction (structural comparison of

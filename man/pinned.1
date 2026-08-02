@@ -34,17 +34,28 @@ The
 .B signer
 and
 .B ignorable
-ceremonies must currently be invoked under sudo explicitly.
+add/remove ceremonies self-elevate the same way; their
+.B list
+forms, like every reading verb, run unprivileged.
 .SH COMMANDS
 .SS Repository approval
 .TP
-.B approve \fIrepo\fP [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP]
+.B approve \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP]
 (sudo) Review the diff since the last pin (the full tree on a first
 approval), approve, write the pin.
-Before any sudo prompt, an unprivileged preview shows the repo, the
+Before any sudo prompt, an unprivileged preview shows each repo, the
 commit about to be reviewed, and the commits since the last approval;
 the authoritative review re-derives everything from the object store
 as root, after sudo.
+.IP
+Several repos run as sequential ceremonies under ONE authentication:
+each is displayed and confirmed on its own, a decline skips only that
+repo, and a summary line closes the batch.
+.BR \-\-tag ,
+.BR \-\-signed\-tag ,
+and
+.B \-\-trust
+bind to a single repo \(em a batch takes plain review approvals only.
 .RS
 .TP
 .BI \-\-tag " tag"
@@ -214,11 +225,12 @@ existence answer.
 .B deploy [\-\-dry\-run] [\-\-yes] [\-\-flake \fIpath\fP]
 Sync every git+file input of the system flake to its approved rev and
 rebuild; always shows the root commands first (never self-elevates).
-An input whose git HEAD has moved past the pin is reported unapproved,
-with the
+Inputs whose git HEAD has moved past the pin are reported unapproved,
+and one pasteable
 .B pinned approve
-invocation that would update it \(em approval is deliberately a
-separate ceremony, never a deploy flag.
+line naming all of them closes the report \(em a single authentication
+covers the whole batch, but approval stays a separate ceremony, never
+a deploy flag.
 .TP
 .B setup [\-\-yes]
 (sudo) Provision the sudoers digest pin; self-install.
@@ -286,10 +298,11 @@ On macOS:
     log show \-\-predicate 'eventMessage CONTAINS "pinned:"'
 .fi
 .SH EXAMPLES
-Approve a repository's new commits, then make the system match:
+Approve new commits in two repositories (one authentication, one
+ceremony per repo), then make the system match:
 .PP
 .nf
-    pinned approve ~/Projects/some\-repo
+    pinned approve ~/Projects/some\-repo ~/Projects/other\-repo
     pinned deploy
 .fi
 .PP
