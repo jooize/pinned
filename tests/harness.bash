@@ -846,6 +846,29 @@ EOF
   assert_contains "$OUT" "no single release tag at HEAD" "several tags at HEAD route to manual"
   bgit "$REPO_B" tag -d v12 >/dev/null; bgit "$REPO_B" tag -d v13 >/dev/null
 
+  # Availability probe: a pin the checkout no longer holds is warned about
+  # EARLY (status and deploy's scan), instead of surfacing as a nix fetch
+  # error mid-rebuild. A warning, never a refusal: nix's store cache may
+  # still satisfy the input.
+  REPO_C="$FIX/batch-c"
+  mkdir -p "$REPO_C"
+  bgit "$REPO_C" init -q; printf 'c1\n' > "$REPO_C/f"; bgit "$REPO_C" add f; bgit "$REPO_C" commit -q -m c1
+  FAKE_REV="1234567890abcdef1234567890abcdef12345678"
+  seed_state "$REPO_C" rev.git "$FAKE_REV"
+  ANS=""
+  run_pinned status "$REPO_C"
+  assert_exit "$RC" 0 "status on a repo whose pin is gone still reports"
+  assert_contains "$OUT" "MISSING from this checkout" "status warns the pinned rev is unfetchable"
+  cat > "$FIX/flake2.nix" <<EOF
+{
+  inputs.batch-c.url = "git+file://$REPO_C?rev=$FAKE_REV";
+}
+EOF
+  ANS=""
+  run_pinned deploy --flake "$FIX/flake2.nix" --dry-run
+  assert_exit "$RC" 0 "deploy dry run tolerates the missing rev"
+  assert_contains "$OUT" "missing from the checkout" "deploy warns early about the unfetchable pin"
+
   # Malformed argv dies before anything runs.
   ANS=""
   run_pinned upgrade --bogus

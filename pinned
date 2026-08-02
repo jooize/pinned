@@ -3066,6 +3066,14 @@ do_status() {
   else
     printf '%sstate:%s      %s✗ never approved%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF"
   fi
+  # Availability, not trust: the pin means what it means regardless of the
+  # checkout (content-addressed), but a rev the object store no longer
+  # holds cannot be RE-FETCHED -- surface that here instead of as a nix
+  # error mid-rebuild. (nix may still deploy from its store cache.)
+  if [ -n "$hash" ] && ! sgit cat-file -e "${hash}^{commit}" 2>/dev/null; then
+    printf '%swarning: the pinned rev is MISSING from this checkout (rewritten history or gc?) --%s\n' "$C_RED$C_B" "$C_OFF"
+    printf '%s         a deploy that needs to re-fetch it will fail; restore the commit or re-approve%s\n' "$C_RED$C_B" "$C_OFF"
+  fi
   if ! sgit_diff --quiet 2>/dev/null || ! sgit_diff --cached --quiet 2>/dev/null; then
     printf '%swarning: work tree is dirty (uncommitted changes are never approved)%s\n' "$C_YEL" "$C_OFF"
   fi
@@ -4082,6 +4090,15 @@ EOF
     # safe.directory keeps the answers honest when upgrade runs this as
     # root on user-owned checkouts.
     if [ -d "$path" ] && git -C "$path" -c safe.directory="$path" rev-parse --git-dir >/dev/null 2>&1; then
+      # Availability probe: a pin the checkout no longer holds (rewritten
+      # history, gc) surfaces here as a warning, not as a nix fetch error
+      # mid-rebuild. A warning and not a refusal: nix may still hold the
+      # input in its store cache, in which case the rebuild succeeds
+      # without touching the repo.
+      if ! git -C "$path" -c safe.directory="$path" cat-file -e "${approved}^{commit}" 2>/dev/null; then
+        printf '  %-*s  %s! pinned rev is missing from the checkout -- a rebuild that needs to re-fetch it will fail; restore the commit or re-approve%s\n' \
+          "$width" '' "$C_YEL" "$C_OFF"
+      fi
       ahead="$(git -C "$path" -c safe.directory="$path" rev-list --count "${approved}..HEAD" 2>/dev/null || echo '?')"
       if [ "$ahead" != 0 ]; then
         printf '  %-*s  %sgit HEAD is %s commit(s) past the pin (unapproved)%s\n' \
@@ -4112,12 +4129,16 @@ EOF
 
   if [ "$updates" -eq 0 ]; then
     if [ "$unpinned" -gt 0 ]; then
-      printf '%sPinned inputs all at their approved revs%s %s(%s without a pin slot)%s %s-- rebuilding so the system matches.%s\n\n' \
-        "$C_GRN" "$C_OFF" "$C_YEL" "$unpinned" "$C_OFF" "$C_GRN" "$C_OFF"
+      printf '%sPinned inputs all at their approved revs%s %s(%s without a pin slot)%s.\n' \
+        "$C_GRN" "$C_OFF" "$C_YEL" "$unpinned" "$C_OFF"
     else
-      printf '%sAll inputs at their approved revs -- rebuilding so the system matches.%s\n\n' \
-        "$C_GRN" "$C_OFF"
+      printf '%sAll inputs at their approved revs.%s\n' "$C_GRN" "$C_OFF"
     fi
+    # Rebuild unconditionally, and say why: the flake being in sync says
+    # NOTHING about what the running system was built from (live-fired
+    # 2026-07-28: an in-sync early exit left a stale system in place).
+    printf '%sRebuilding anyway -- the flake says nothing about what the RUNNING system was built from; if it is already current, this is a fast no-op.%s\n\n' \
+      "$C_DIM" "$C_OFF"
   fi
 
   # Display structurally: what is shown is the exact shell spelling of the

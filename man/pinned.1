@@ -199,7 +199,9 @@ with its scope.
 .SS Inspection
 .TP
 .B status \fIrepo\fP|\fIfile\fP
-Repo: pinned hash vs HEAD, dirty-tree warning.
+Repo: pinned hash vs HEAD, dirty-tree warning, and an early warning
+when the checkout no longer holds the pinned rev (rewritten history or
+gc \(em a deploy that needs to re-fetch it would fail).
 File: record vs live state.
 .TP
 .B review \fIfile\fP [\-\-algo \fIname\fP] [\-\-length \fIbits\fP]
