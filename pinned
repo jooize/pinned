@@ -1744,7 +1744,7 @@ case "$action" in
           esac
         done
         [ "$upg_next" -eq 0 ] || { echo "--flake needs a path" >&2; exit 1; }
-        [ -n "$upg_flake" ] || upg_flake="${NIX_DARWIN_FLAKE:-$(default_flake_file)}"
+        [ -n "$upg_flake" ] || upg_flake="$(default_flake_file)"
         [ -r "$upg_flake" ] || {
           printf '%serror: cannot read %s -- pass --flake.%s\n' "$C_RED" "$upg_flake" "$C_OFF" >&2
           exit 1
@@ -3977,7 +3977,10 @@ do_deploy() {
       "$C_RED" "$REBUILD" "$C_OFF" >&2
     exit 1
   }
-  FLAKE="${FLAKE_ARG:-${NIX_DARWIN_FLAKE:-$DEFAULT_FLAKE}}"
+  # --flake is the ONLY override: an env knob would not survive sudo's
+  # env_reset, so upgrade's pre-sudo plan and its root-side ceremonies
+  # could silently read DIFFERENT flakes. Argv crosses the boundary.
+  FLAKE="${FLAKE_ARG:-$DEFAULT_FLAKE}"
   [ -r "$FLAKE" ] || {
     printf '%serror: cannot read %s -- pass --flake.%s\n' "$C_RED" "$FLAKE" "$C_OFF" >&2
     exit 1
@@ -4220,7 +4223,7 @@ do_upgrade() {
   done
   [ "$expect_flake" -eq 0 ] || { echo "--flake needs a path" >&2; exit 1; }
   local FLAKE
-  FLAKE="${FLAKE_ARG:-${NIX_DARWIN_FLAKE:-$(default_flake_file)}}"
+  FLAKE="${FLAKE_ARG:-$(default_flake_file)}"
   [ -r "$FLAKE" ] || {
     printf '%serror: cannot read %s -- pass --flake.%s\n' "$C_RED" "$FLAKE" "$C_OFF" >&2
     exit 1
