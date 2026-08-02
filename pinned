@@ -218,6 +218,7 @@ usage: pinned <action> [args]
   list [--under <dir>]           live pins in your tier
   slot <path>                    print the slot directory for a path
   deploy [--dry-run] [--yes]     sync system flake inputs to approved revs, rebuild
+  upgrade [--dry-run] [--yes]    (sudo) approve every stale flake input, then deploy
   setup [--yes]                  (sudo) provision sudoers digest pin; self-install
 
 full options, exit codes, and the contract: man pinned
@@ -1625,17 +1626,102 @@ elevation_cmd_disp() { # elev action args...
   printf '%s' "$out"
 }
 
+# Per-OS system flake file; deploy and upgrade share one default.
+default_flake_file() {
+  if [ "$(uname -s)" = Darwin ]; then
+    printf '/etc/nix-darwin/flake.nix'
+  else
+    printf '/etc/nixos/flake.nix'
+  fi
+}
+
+# The system flake's git+file inputs whose CHECKOUT moved past the approved
+# pin: `<path>|<declared-tag-or-empty>` per line -- upgrade's work list and
+# its pre-sudo plan. Only new-commit drift counts: no slot, no checkout, or
+# HEAD at the pin is not this function's business (deploy reports those
+# states), and a malformed slot is skipped here only to refuse loudly in
+# deploy's own read. The declared tag rides along because upgrade must NOT
+# plain-approve a tag-declared slot: a plain approve clears the declaration,
+# and deploy would leave ref= aimed at a tag that no longer names the rev.
+stale_flake_repos() { # <flakefile> [tier-user]
+  local flake="$1" tu="${2:-$(id -un)}" url p r slot approved ahead tag
+  grep -oE 'git\+file:///[^"]+' "$flake" | while IFS= read -r url; do
+    p="${url#git+file://}"; p="${p%%\?*}"
+    r="$(printf '%s' "$url" | grep -oE '[?&]rev=[0-9a-f]{40,128}' | head -n1 | cut -d= -f2 || true)"
+    [ -n "$r" ] || continue
+    slot="$(slot_dir_for "$tu" "$p")"
+    approved="$(read_rev "$slot" 2>/dev/null)" || continue
+    [ -n "$approved" ] || continue
+    { [ -d "$p" ] && git -C "$p" rev-parse --git-dir >/dev/null 2>&1; } || continue
+    ahead="$(git -C "$p" rev-list --count "${approved}..HEAD" 2>/dev/null || echo 0)"
+    { [ "$ahead" != 0 ] && [ "$ahead" != '?' ]; } || continue
+    tag=""
+    if [ -f "$slot/tag" ]; then tag="$(cat "$slot/tag" 2>/dev/null || true)"; fi
+    printf '%s|%s\n' "$p" "$tag"
+  done || true
+}
+
+# Render stale_flake_repos output for humans: plain repos as the approve
+# list, tag-declared ones as explicit manual work.
+print_upgrade_plan() { # <stale-lines>
+  local line p tag plain=0
+  if [ -z "$1" ]; then
+    printf '%snothing to approve -- every pinned input is at its approved rev.%s\n' "$C_DIM" "$C_OFF"
+    return 0
+  fi
+  while IFS='|' read -r p tag; do
+    if [ -z "$tag" ]; then
+      if [ "$plain" -eq 0 ]; then printf '%swill review + approve:%s\n' "$C_B" "$C_OFF"; fi
+      plain=1
+      printf '  %s%s%s\n' "$C_CYN" "$p" "$C_OFF"
+    fi
+  done <<EOF
+$1
+EOF
+  while IFS='|' read -r p tag; do
+    if [ -n "$tag" ]; then
+      printf '%sskipped:%s %s %s(declares release tag %s; approve --tag by hand)%s\n' \
+        "$C_YEL" "$C_OFF" "$p" "$C_DIM" "$tag" "$C_OFF"
+    fi
+  done <<EOF
+$1
+EOF
+}
+
 # Root-requiring actions self-elevate: re-exec the INSTALLED (root-owned,
 # digest-pinned) binary under sudo so the elevated code is never a copy the
 # invoker could have modified. Pre-install (setup from a checkout) falls
 # back to this script's own path. Sits after the helper definitions so the
 # approve preview below can reuse them.
 case "$action" in
-  approve|setup|tombstone)
+  approve|setup|tombstone|upgrade)
     if [ "$EUID" -ne 0 ]; then
       # tombstone without exactly its <path> can only ever reach usage --
       # fail here, before authentication costs a sudo prompt.
       if [ "$action" = "tombstone" ] && [ $# -ne 1 ]; then usage; fi
+      # upgrade: the plan, free of charge -- which inputs the root-side
+      # ceremonies will cover. Orientation only: everything is re-derived
+      # as root after sudo, the same contract as approve's preview.
+      # Malformed argv dies here too, before authentication.
+      if [ "$action" = "upgrade" ]; then
+        upg_flake="" upg_next=0
+        for a in "$@"; do
+          if [ "$upg_next" -eq 1 ]; then upg_flake="$a"; upg_next=0; continue; fi
+          case "$a" in
+            --flake) upg_next=1 ;;
+            --dry-run|--yes) ;;
+            *) usage ;;
+          esac
+        done
+        [ "$upg_next" -eq 0 ] || { echo "--flake needs a path" >&2; exit 1; }
+        [ -n "$upg_flake" ] || upg_flake="${NIX_DARWIN_FLAKE:-$(default_flake_file)}"
+        [ -r "$upg_flake" ] || {
+          printf '%serror: cannot read %s -- pass --flake.%s\n' "$C_RED" "$upg_flake" "$C_OFF" >&2
+          exit 1
+        }
+        print_upgrade_plan "$(stale_flake_repos "$upg_flake")"
+        printf '%sthen: deploy (sync flake revs to the pins + rebuild).%s\n\n' "$C_DIM" "$C_OFF"
+      fi
       # setup: show the plan and confirm BEFORE sudo, so reading what it
       # will do never costs an authentication.
       if [ "$action" = "setup" ]; then
@@ -1776,7 +1862,7 @@ case "$action" in
       # deploy's shape: the exact command, one highlighted headline, dim
       # details separating what was checked here (root ownership) from
       # what the system enforces at exec (the sudoers digest).
-      if [ "$action" = "approve" ] && [ "$elev" = "$INSTALL_TARGET" ]; then
+      if { [ "$action" = "approve" ] || [ "$action" = "upgrade" ]; } && [ "$elev" = "$INSTALL_TARGET" ]; then
         cmd_disp="$(elevation_cmd_disp "$elev" "$action" "$@")"
         printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
         printf '  %s\n\n' "$cmd_disp"
@@ -1967,9 +2053,11 @@ do_approve() {
   # the batch (the file ceremony's shape): each repo is displayed and
   # confirmed on its own, a decline skips ONLY that repo, and a hard error
   # aborts the batch loudly. With one repo the contract is unchanged:
-  # already-pinned exits 0, a decline exits 2.
+  # already-pinned exits 0, a decline exits 2. upgrade forces the batch
+  # contract even for one repo (APPROVE_BATCH): its decline must fall
+  # through to the deploy step, never abort it.
   local multi=0 n_approved=0 n_declined=0 n_already=0 repo_arg
-  [ "${#repo_args[@]}" -le 1 ] || multi=1
+  [ "${#repo_args[@]}" -le 1 ] && [ "${APPROVE_BATCH:-0}" -eq 0 ] || multi=1
   for repo_arg in "${repo_args[@]}"; do
     resolve_repo "$repo_arg"
     local slot="$default_slot"
@@ -3840,11 +3928,10 @@ do_deploy() {
   # exactly when run from a bootstrap checkout (live-fired 2026-07-28).
   # The absolute path also makes the displayed sudo command unambiguous.
   local DEFAULT_FLAKE REBUILD FLAKE
+  DEFAULT_FLAKE="$(default_flake_file)"
   if [ "$(uname -s)" = Darwin ]; then
-    DEFAULT_FLAKE="/etc/nix-darwin/flake.nix"
     REBUILD="/run/current-system/sw/bin/darwin-rebuild"
   else
-    DEFAULT_FLAKE="/etc/nixos/flake.nix"
     REBUILD="/run/current-system/sw/bin/nixos-rebuild"
   fi
   [ -x "$REBUILD" ] || {
@@ -3980,14 +4067,15 @@ $inputs
 EOF
   printf '\n'
 
-  # The update path, pasteable: ONE batch approve (sequential ceremonies,
-  # one authentication), then rerun deploy. Approval stays its own
-  # ceremony -- deploy only points at it.
+  # The update path: upgrade chains the batch of approve ceremonies and
+  # this deploy behind one authentication; the selective form stays
+  # pasteable. Approval remains its own ceremony -- deploy only points.
   if [ "${#stale_repos[@]}" -gt 0 ]; then
     upd_cmd="pinned approve"
     for p in "${stale_repos[@]}"; do upd_cmd="$upd_cmd $p"; done
-    printf '%sto update (review each, then rerun deploy):%s\n' "$C_B" "$C_OFF"
-    printf '  %s\n\n' "$upd_cmd"
+    printf '%sto update (each repo still reviewed):%s\n' "$C_B" "$C_OFF"
+    printf '  pinned upgrade\n'
+    printf '  %s(selective: %s, then rerun deploy)%s\n\n' "$C_DIM" "$upd_cmd" "$C_OFF"
   fi
 
   if [ "$updates" -eq 0 ]; then
@@ -4053,6 +4141,65 @@ EOF
   printf '%s✓ rebuild complete%s\n' "$C_GRN" "$C_OFF"
 }
 
+# ---- upgrade ---------------------------------------------------------------
+
+# approve + deploy, chained: every git+file input whose checkout moved past
+# its pin gets the SAME review ceremony `approve` runs -- upgrade removes
+# typing, never scrutiny -- then deploy syncs the flake to the approved
+# revs and rebuilds. The whole verb runs behind ONE self-elevation, so the
+# batch of ceremonies and the rebuild cost a single authentication
+# (deploy's own sudo calls are no-ops for root). A declined repo is
+# skipped, not fatal: deploy simply keeps its old rev. Tag-declared slots
+# are never plain-approved (that would clear the declaration and strand
+# the input's ref=); they are listed for a manual approve --tag instead.
+do_upgrade() {
+  require_root upgrade
+  local args a expect_flake=0 DRY=0 FLAKE_ARG=""
+  args=("$@")
+  for a in "$@"; do
+    if [ "$expect_flake" -eq 1 ]; then FLAKE_ARG="$a"; expect_flake=0; continue; fi
+    case "$a" in
+      --dry-run) DRY=1 ;;
+      --yes) ;;
+      --flake) expect_flake=1 ;;
+      *) echo "unknown upgrade option: $a" >&2; usage ;;
+    esac
+  done
+  [ "$expect_flake" -eq 0 ] || { echo "--flake needs a path" >&2; exit 1; }
+  local FLAKE
+  FLAKE="${FLAKE_ARG:-${NIX_DARWIN_FLAKE:-$(default_flake_file)}}"
+  [ -r "$FLAKE" ] || {
+    printf '%serror: cannot read %s -- pass --flake.%s\n' "$C_RED" "$FLAKE" "$C_OFF" >&2
+    exit 1
+  }
+
+  # Authoritative re-derivation: the pre-sudo plan was orientation, this
+  # is what the ceremonies actually cover.
+  local stale p tag repos
+  repos=()
+  stale="$(stale_flake_repos "$FLAKE" "$(tier_user)")"
+  print_upgrade_plan "$stale"
+  echo
+  if [ -n "$stale" ]; then
+    while IFS='|' read -r p tag; do
+      if [ -z "$tag" ]; then repos+=("$p"); fi
+    done <<EOF
+$stale
+EOF
+  fi
+  if [ "${#repos[@]}" -gt 0 ]; then
+    if [ "$DRY" -eq 1 ]; then
+      printf '%sdry run: no ceremonies; deploy preview follows.%s\n\n' "$C_DIM" "$C_OFF"
+    else
+      APPROVE_BATCH=1
+      do_approve ${repos[@]+"${repos[@]}"}
+      APPROVE_BATCH=0
+      echo
+    fi
+  fi
+  do_deploy ${args[@]+"${args[@]}"}
+}
+
 case "$action" in
   approve)   do_approve "$@" ;;
   tombstone) do_tombstone "$@" ;;
@@ -4066,5 +4213,6 @@ case "$action" in
   slot)      do_slot "$@" ;;
   review)    do_review "$@" ;;
   deploy)    do_deploy "$@" ;;
+  upgrade)   do_upgrade "$@" ;;
   *)         usage ;;
 esac

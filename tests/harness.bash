@@ -760,6 +760,79 @@ y
 fi
 
 # ---------------------------------------------------------------------------
+say "S8c: upgrade (approve stale flake inputs, then deploy)"
+# ---------------------------------------------------------------------------
+# upgrade chains into deploy, and deploy hard-requires the per-OS rebuild
+# tool; skip the section on a machine without one (deploy itself is a
+# documented harness gap -- these cases cover upgrade's ceremony phase and
+# the dry-run/refusal surface, never an actual rebuild).
+REBUILD_TOOL="/run/current-system/sw/bin/darwin-rebuild"
+[ -x "$REBUILD_TOOL" ] || REBUILD_TOOL="/run/current-system/sw/bin/nixos-rebuild"
+if [ "$GIT_OK" -eq 1 ] && [ -x "$REBUILD_TOOL" ]; then
+  A_PIN="$(cat "$A_SLOT/rev.git")"
+  B_PIN="$(cat "$B_SLOT/rev.git")"
+  cat > "$FIX/flake.nix" <<EOF
+{
+  inputs.batch-a.url = "git+file://$REPO_A?ref=refs/heads/main&rev=$A_PIN";
+  inputs.batch-b.url = "git+file://$REPO_B?ref=refs/heads/main&rev=$B_PIN";
+}
+EOF
+
+  # Dry run: the stale repo is named, no ceremony runs, nothing recorded.
+  ANS=""
+  run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
+  assert_exit "$RC" 0 "upgrade --dry-run exits 0"
+  assert_contains "$OUT" "will review + approve:" "dry run shows the plan"
+  assert_contains "$OUT" "$REPO_A" "the stale repo is named"
+  assert_contains "$OUT" "dry run: no ceremonies" "no ceremony in a dry run"
+  assert_contains "$OUT" "Dry run -- nothing executed." "deploy stays a preview"
+  assert_eq "$(cat "$A_SLOT/rev.git")" "$A_PIN" "dry run records nothing"
+
+  # Full run: the ceremony approves the stale repo (forced batch contract:
+  # a summary even for one repo, so a decline could fall through to
+  # deploy), then deploy wants to sync the flake and stops at its
+  # confirmation gate -- the harness has no tty, so that gate is the
+  # no-tty refusal, and no root command ever runs.
+  ANS='y
+'
+  run_pinned upgrade --flake "$FIX/flake.nix"
+  assert_exit "$RC" 2 "deploy's confirmation gate aborts with 2"
+  assert_eq "$(cat "$A_SLOT/rev.git")" "$(bgit "$REPO_A" rev-parse 'HEAD^{commit}')" "the ceremony pinned the stale repo"
+  assert_contains "$OUT" "1 approved, 0 declined, 0 already pinned" "upgrade forces the batch contract for one repo"
+  assert_contains "$OUT" "no tty for confirmation" "deploy stops at its confirmation gate"
+  assert_contains "$FIX/flake.nix" "rev=$A_PIN" "the flake file was not rewritten"
+
+  # Nothing stale: the second round has no ceremonies to offer.
+  ANS=""
+  run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
+  assert_exit "$RC" 0 "an up-to-date upgrade dry run exits 0"
+  assert_contains "$OUT" "nothing to approve" "no stale inputs reported"
+
+  # A tag-declared slot is never plain-approved: it is listed for manual
+  # approve --tag and the plain-approve list stays empty. The tag is a
+  # REAL one at the approved rev -- deploy's own live-tag cross-check
+  # refuses a declared tag it cannot find (a distinct, correct refusal
+  # this case is not about).
+  printf 'b3\n' > "$REPO_B/f"; bgit "$REPO_B" commit -q -am b3
+  bgit "$REPO_B" tag v9 "$B_PIN"
+  printf 'v9\n' > "$B_SLOT/tag"
+  ANS=""
+  run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
+  assert_exit "$RC" 0 "a tag-declared stale input does not break upgrade"
+  assert_contains "$OUT" "approve --tag by hand" "tag-declared slot routed to manual approval"
+  assert_missing "$OUT" "will review + approve:" "no plain-approve list when only tag-declared slots are stale"
+  rm -f "$B_SLOT/tag"
+  bgit "$REPO_B" tag -d v9 >/dev/null
+
+  # Malformed argv dies before anything runs.
+  ANS=""
+  run_pinned upgrade --bogus
+  assert_exit "$RC" 1 "unknown upgrade option is usage"
+else
+  say "S8c: SKIPPED (no git fixture or no rebuild tool)"
+fi
+
+# ---------------------------------------------------------------------------
 say "S9: ignored keys (ignored.json / approved / exit 5)"
 # ---------------------------------------------------------------------------
 # The tolerance path is jq-driven by construction (structural comparison of

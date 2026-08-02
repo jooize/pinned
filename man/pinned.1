@@ -232,6 +232,28 @@ line naming all of them closes the report \(em a single authentication
 covers the whole batch, but approval stays a separate ceremony, never
 a deploy flag.
 .TP
+.B upgrade [\-\-dry\-run] [\-\-yes] [\-\-flake \fIpath\fP]
+(sudo)
+.B approve
++
+.BR deploy ,
+chained: every git+file input whose checkout moved past its pin gets
+the same review ceremony
+.B approve
+runs \(em upgrade removes typing, never scrutiny \(em then deploy
+syncs the flake to the approved revs and rebuilds, all behind ONE
+authentication.
+An unprivileged plan precedes the sudo prompt.
+A declined repo is skipped, not fatal: deploy keeps its old rev.
+A slot that declares a release tag is never plain-approved (that would
+clear the declaration and strand the input's ref=); it is listed for a
+manual
+.B approve \-\-tag
+instead.
+With
+.B \-\-dry\-run
+no ceremony runs and deploy only previews.
+.TP
 .B setup [\-\-yes]
 (sudo) Provision the sudoers digest pin; self-install.
 Shows the full plan and confirms before any authentication.
@@ -298,8 +320,14 @@ On macOS:
     log show \-\-predicate 'eventMessage CONTAINS "pinned:"'
 .fi
 .SH EXAMPLES
-Approve new commits in two repositories (one authentication, one
-ceremony per repo), then make the system match:
+Bring the system up to date \(em review every stale input, one
+ceremony per repo, one authentication, then rebuild:
+.PP
+.nf
+    pinned upgrade
+.fi
+.PP
+The same, selectively:
 .PP
 .nf
     pinned approve ~/Projects/some\-repo ~/Projects/other\-repo
