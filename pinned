@@ -205,106 +205,22 @@ usage() {
   cat >&2 <<EOF
 usage: pinned <action> [args]
 
-  approve <repo> [--tag <tag>] [--trust]
-                     (sudo) review the diff since the last pin (full tree
-                     on a first approval), approve, write pin
-                     --tag reviews and pins the tag's commit, not HEAD
-                     --trust skips a FIRST approval's full-tree review,
-                     loudly; later approves always show the diff
-  approve <repo> --signed-tag <tag> [--signed-tag <tag> ...] [--tag <tag>]
-                     (sudo) verify signed tag(s) against root-owned
-                     allowed signers (the slot's own
-                     signers/allowed_signers, else the user tier's
-                     policy/allowed_signers); all tags must name the
-                     same commit; approve, pin
-                     --tag may add an unsigned name (a clean release
-                     name) that must name the same commit
-  approve --file <path> [--baseline <copy>] [--ignore-json-key <key> ...]
-          [--file <path> ...] [--algo <name>] [--store]
-                     (sudo) file-pin ceremony: each file is frozen,
-                     displayed ROOT-SIDE, confirmed, and its hash
-                     recorded; multiple --file share one authentication;
-                     --baseline (after its --file) diffs against a copy
-                     that re-hashes to the prior record
-                     --ignore-json-key (after its --file, repeatable)
-                     declares a dotted JSON key whose later drift verify
-                     tolerates, answering 5; the key must be granted for
-                     that path by the ignorable policy or the ceremony
-                     REFUSES (see: pinned ignorable)
-                     --store keeps a copy of the approved bytes in the
-                     slot -- the "approved" WITNESS: what the ignored-key
-                     comparison reads, and what pinned cat serves
-                     The ceremony RE-STATES both every time: an approve
-                     without them clears the declaration and DROPS the
-                     stored copy, loudly.
-  tombstone <path>   (sudo) retire a pinned file that is GONE; if it
-                     reappears, verify refuses until re-approved
-  verify <path>      file-pin verdict, quiet contract for gates:
-                     0 ok, 5 differs ONLY in declared ignored keys,
-                     10 no slot, 11 mismatch, 13 tombstoned-but-present,
-                     20 pinned-but-missing, 30 mode/owner
-  verify --emit <path>
-                     verify, then print the VERIFIED bytes on stdout
-                     (nothing on failure) -- the parse-safely form
-                     (byte-exact only: never answers 5)
-  verify --frozen <copy> <path>
-                     verify caller-frozen bytes against <path>'s record
-  verify [--baseline <copy>] <path>
-                     bring your own WITNESS for the ignored-key
-                     comparison -- a copy that must re-hash to the
-                     record before it is used; for a slot that keeps
-                     none of its own (see approve --store)
-  cat <path>         the approved bytes on stdout, from root custody --
-                     no sudo, writes nothing. Re-hashes the slot's
-                     stored witness against the record before emitting a
-                     byte, and prints nothing at all on any failure:
-                     0 served, 10 no record, 13 tombstoned, 16 no stored
-                     copy (approve --file --store adds one), 20 the live
-                     file is missing, 30 slot invariant, 1 error.
-                     Serves the approved bytes even when the live file
-                     has DRIFTED -- drift is verify's question, not this
-                     verb's
-  sign <repo> <tag>  create signed tag <tag> at the pinned hash -- no sudo
-                     (needs your SSH agent, e.g. 1Password)
-  signer add [--repo <path>] (--file <pubkey> | --key '<line>') [--principal <id>]
-                     (sudo) allowed-signers ceremony: fingerprint,
-                     confirm, root-owned write; a bare public key needs
-                     --principal (the label signature verification
-                     matches); --repo targets the per-repo override
-  signer remove [--repo <path>] (--file <pubkey> | --key '<line>')
-                     (sudo) remove that key's entries (key compromise
-                     must not be the hand-edited path)
-  signer list [--repo <path>]
-                     principals, key types, fingerprints
-  ignorable add <key> [--under <dir>]
-                     (sudo) grant a dotted JSON key that approve --file
-                     may then declare ignored; --under scopes the grant
-                     to that directory's subtree, omitted means everywhere
-  ignorable remove <key> [--under <dir>]
-                     (sudo) withdraw exactly that grant (same key, same
-                     scope); slots recording it fall back to byte-exact
-  ignorable list     machine tier, user tier and the effective
-                     intersection, each entry with its scope
-  status <repo|file> repo: pinned hash vs HEAD, dirty-tree warning
-                     file: record vs live state
-  review <file> [--algo <name>] [--length <bits>]
-                     trusted review of a non-repo file: display and hash one
-                     read, print the hash + a fail-closed wrapper -- no sudo
-                     names: sha256 sha384 sha512, blake2b-256/-384/-512,
-                     blake3 (--length: blake3 only, default 256); blake2b
-                     and blake3 need b2sum / b3sum in the trusted PATH
-  list [--under <dir>]
-                     live pins in your tier: kind, digest, decoded path
-                     (--under: only paths below that directory)
-  slot <path>        print the slot directory for any path -- repo, file,
-                     existing or not; a name resolver for consumer
-                     symlinks and lane payloads, never an existence answer
-  deploy [--dry-run] [--yes] [--flake <path>]
-                     sync every git+file input of the system flake to its
-                     approved rev and rebuild; always shows the root
-                     commands first (never self-elevates)
-  setup [--yes]      (sudo) provision sudoers digest pin; self-install
+  approve <repo> [options]       (sudo) review the diff since the last pin, write pin
+  approve --file <path> ...      (sudo) file-pin ceremony: freeze, review, record hash
+  tombstone <path>               (sudo) retire a pinned file that is GONE
+  verify [options] <path>        file-pin verdict; quiet exit-code contract for gates
+  cat <path>                     the approved bytes, from root custody; fail-closed
+  sign <repo> <tag>              create a signed tag at the pinned hash
+  signer add|remove|list ...     (sudo) allowed-signers ceremonies
+  ignorable add|remove|list ...  (sudo) ignorable-JSON-key grants
+  status <repo|file>             record vs live state
+  review <file> [options]        trusted review + hash of a non-repo file
+  list [--under <dir>]           live pins in your tier
+  slot <path>                    print the slot directory for a path
+  deploy [--dry-run] [--yes]     sync system flake inputs to approved revs, rebuild
+  setup [--yes]                  (sudo) provision sudoers digest pin; self-install
 
+full options, exit codes, and the contract: man pinned
 approval history: log show --predicate 'eventMessage CONTAINS "pinned:"'
 EOF
   exit 1
@@ -1693,6 +1609,9 @@ fi
 case "$action" in
   approve|setup|tombstone)
     if [ "$EUID" -ne 0 ]; then
+      # tombstone without exactly its <path> can only ever reach usage --
+      # fail here, before authentication costs a sudo prompt.
+      if [ "$action" = "tombstone" ] && [ $# -ne 1 ]; then usage; fi
       # setup: show the plan and confirm BEFORE sudo, so reading what it
       # will do never costs an authentication.
       if [ "$action" = "setup" ]; then
@@ -1727,6 +1646,9 @@ case "$action" in
             *) preview_repo="$a" ;;
           esac
         done
+        # A bare approve -- no repo, no --file -- can only ever reach
+        # usage; fail here, before authentication costs a sudo prompt.
+        if [ -z "$preview_repo" ] && [ "$file_mode" -eq 0 ]; then usage; fi
         if [ -n "$preview_repo" ] && [ "$file_mode" -eq 0 ]; then
           resolve_repo "$preview_repo"
           # A bad --tag name dies HERE, pre-sudo -- failing early is the
@@ -3948,6 +3870,8 @@ EOF
       if [ "$ahead" != 0 ]; then
         printf '  %-*s  %sgit HEAD is %s commit(s) past the pin (unapproved)%s\n' \
           "$width" '' "$C_DIM" "$ahead" "$C_OFF"
+        printf '  %-*s  %sto update: pinned approve %s%s\n' \
+          "$width" '' "$C_DIM" "$path" "$C_OFF"
       fi
       if ! git -C "$path" diff --no-ext-diff --no-textconv --quiet 2>/dev/null \
         || ! git -C "$path" diff --no-ext-diff --no-textconv --cached --quiet 2>/dev/null; then
