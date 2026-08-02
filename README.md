@@ -95,9 +95,11 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       approve every stale flake input
                                       (the same per-repo ceremonies),
                                       then deploy -- one authentication
-                                      for the whole round; tag-declared
-                                      slots are listed for a manual
-                                      approve --tag, never auto-approved
+                                      for the whole round; a tag-declared
+                                      slot joins only when HEAD carries
+                                      exactly one release tag (approved
+                                      under that name), else it is listed
+                                      for a manual approve --tag
 
 approve, setup, tombstone, upgrade, signer add/remove and ignorable
 add/remove self-elevate via sudo (re-exec of the installed root-owned

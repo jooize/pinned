@@ -1652,8 +1652,11 @@ stale_flake_repos() { # <flakefile> [tier-user]
     slot="$(slot_dir_for "$tu" "$p")"
     approved="$(read_rev "$slot" 2>/dev/null)" || continue
     [ -n "$approved" ] || continue
-    { [ -d "$p" ] && git -C "$p" rev-parse --git-dir >/dev/null 2>&1; } || continue
-    ahead="$(git -C "$p" rev-list --count "${approved}..HEAD" 2>/dev/null || echo 0)"
+    # safe.directory: upgrade runs this as root on user-owned checkouts;
+    # without it git's dubious-ownership refusal would silently read every
+    # repo as not-stale (same fix sgit carries).
+    { [ -d "$p" ] && git -C "$p" -c safe.directory="$p" rev-parse --git-dir >/dev/null 2>&1; } || continue
+    ahead="$(git -C "$p" -c safe.directory="$p" rev-list --count "${approved}..HEAD" 2>/dev/null || echo 0)"
     { [ "$ahead" != 0 ] && [ "$ahead" != '?' ]; } || continue
     tag=""
     if [ -f "$slot/tag" ]; then tag="$(cat "$slot/tag" 2>/dev/null || true)"; fi
@@ -1661,26 +1664,53 @@ stale_flake_repos() { # <flakefile> [tier-user]
   done || true
 }
 
-# Render stale_flake_repos output for humans: plain repos as the approve
-# list, tag-declared ones as explicit manual work.
+# The single release tag at a repo's HEAD, if there is EXACTLY one and it
+# passes the declared-name grammar -- upgrade's deterministic selector for
+# tag-declared slots. Empty output = no unambiguous release at HEAD (none,
+# several, or an out-of-grammar name): route to a manual approve --tag,
+# never guess. A name-sorted "latest release" search is deliberately NOT
+# offered: version sort is a convention, and the tag namespace is
+# attacker-writable repo content -- an invented v99 or a backward-pointing
+# tag must never CHOOSE what a ceremony reviews. A tag AT HEAD adds only a
+# name to the commit a plain approve would already review.
+head_release_tag() { # <repo-path>
+  local t n
+  t="$(git -C "$1" -c safe.directory="$1" tag --points-at HEAD 2>/dev/null || true)"
+  [ -n "$t" ] || return 0
+  n="$(printf '%s\n' "$t" | grep -c . || true)"
+  [ "$n" = 1 ] || return 0
+  validate_tag_name "$t" || return 0
+  printf '%s' "$t"
+}
+
+# Render stale_flake_repos output for humans: the approve list (plain
+# repos, and tag-declared ones whose HEAD carries their next release), and
+# the tag-declared remainder as explicit manual work.
 print_upgrade_plan() { # <stale-lines>
-  local line p tag plain=0
+  local line p tag ht plain=0
   if [ -z "$1" ]; then
     printf '%snothing to approve -- every pinned input is at its approved rev.%s\n' "$C_DIM" "$C_OFF"
     return 0
   fi
   while IFS='|' read -r p tag; do
-    if [ -z "$tag" ]; then
-      if [ "$plain" -eq 0 ]; then printf '%swill review + approve:%s\n' "$C_B" "$C_OFF"; fi
-      plain=1
+    ht=""
+    if [ -n "$tag" ]; then
+      ht="$(head_release_tag "$p")"
+      if [ -z "$ht" ]; then continue; fi
+    fi
+    if [ "$plain" -eq 0 ]; then printf '%swill review + approve:%s\n' "$C_B" "$C_OFF"; fi
+    plain=1
+    if [ -n "$ht" ]; then
+      printf '  %s%s%s  %s(release tag %s)%s\n' "$C_CYN" "$p" "$C_OFF" "$C_DIM" "$ht" "$C_OFF"
+    else
       printf '  %s%s%s\n' "$C_CYN" "$p" "$C_OFF"
     fi
   done <<EOF
 $1
 EOF
   while IFS='|' read -r p tag; do
-    if [ -n "$tag" ]; then
-      printf '%sskipped:%s %s %s(declares release tag %s; approve --tag by hand)%s\n' \
+    if [ -n "$tag" ] && [ -z "$(head_release_tag "$p")" ]; then
+      printf '%sskipped:%s %s %s(declared tag %s; no single release tag at HEAD -- approve --tag by hand)%s\n' \
         "$C_YEL" "$C_OFF" "$p" "$C_DIM" "$tag" "$C_OFF"
     fi
   done <<EOF
@@ -4047,17 +4077,19 @@ EOF
       fi
     fi
     # Context only -- approvals gate the build, the checkout gates nothing.
-    # Direct git (not sgit: that is bound to one resolved repo), unprivileged,
-    # rendering nothing; the dirty checks still carry the driver-proof flags.
-    if [ -d "$path" ] && git -C "$path" rev-parse --git-dir >/dev/null 2>&1; then
-      ahead="$(git -C "$path" rev-list --count "${approved}..HEAD" 2>/dev/null || echo '?')"
+    # Direct git (not sgit: that is bound to one resolved repo), rendering
+    # nothing; the dirty checks still carry the driver-proof flags, and
+    # safe.directory keeps the answers honest when upgrade runs this as
+    # root on user-owned checkouts.
+    if [ -d "$path" ] && git -C "$path" -c safe.directory="$path" rev-parse --git-dir >/dev/null 2>&1; then
+      ahead="$(git -C "$path" -c safe.directory="$path" rev-list --count "${approved}..HEAD" 2>/dev/null || echo '?')"
       if [ "$ahead" != 0 ]; then
         printf '  %-*s  %sgit HEAD is %s commit(s) past the pin (unapproved)%s\n' \
           "$width" '' "$C_DIM" "$ahead" "$C_OFF"
         stale_repos+=("$path")
       fi
-      if ! git -C "$path" diff --no-ext-diff --no-textconv --quiet 2>/dev/null \
-        || ! git -C "$path" diff --no-ext-diff --no-textconv --cached --quiet 2>/dev/null; then
+      if ! git -C "$path" -c safe.directory="$path" diff --no-ext-diff --no-textconv --quiet 2>/dev/null \
+        || ! git -C "$path" -c safe.directory="$path" diff --no-ext-diff --no-textconv --cached --quiet 2>/dev/null; then
         printf '  %-*s  %swork tree is dirty (uncommitted changes never deploy)%s\n' \
           "$width" '' "$C_DIM" "$C_OFF"
       fi
@@ -4174,25 +4206,39 @@ do_upgrade() {
   }
 
   # Authoritative re-derivation: the pre-sudo plan was orientation, this
-  # is what the ceremonies actually cover.
-  local stale p tag repos
-  repos=()
+  # is what the ceremonies actually cover. Tag-declared repos join only
+  # when HEAD carries their next release (head_release_tag); each of
+  # those is its own do_approve call because --tag binds to one repo.
+  local stale p tag ht repos tagged_p tagged_t i
+  repos=(); tagged_p=(); tagged_t=()
   stale="$(stale_flake_repos "$FLAKE" "$(tier_user)")"
   print_upgrade_plan "$stale"
   echo
   if [ -n "$stale" ]; then
     while IFS='|' read -r p tag; do
-      if [ -z "$tag" ]; then repos+=("$p"); fi
+      if [ -z "$tag" ]; then
+        repos+=("$p")
+      else
+        ht="$(head_release_tag "$p")"
+        if [ -n "$ht" ]; then tagged_p+=("$p"); tagged_t+=("$ht"); fi
+      fi
     done <<EOF
 $stale
 EOF
   fi
-  if [ "${#repos[@]}" -gt 0 ]; then
+  if [ "${#repos[@]}" -gt 0 ] || [ "${#tagged_p[@]}" -gt 0 ]; then
     if [ "$DRY" -eq 1 ]; then
       printf '%sdry run: no ceremonies; deploy preview follows.%s\n\n' "$C_DIM" "$C_OFF"
     else
       APPROVE_BATCH=1
-      do_approve ${repos[@]+"${repos[@]}"}
+      if [ "${#repos[@]}" -gt 0 ]; then
+        do_approve ${repos[@]+"${repos[@]}"}
+      fi
+      i=0
+      while [ "$i" -lt "${#tagged_p[@]}" ]; do
+        do_approve "${tagged_p[$i]}" --tag "${tagged_t[$i]}"
+        i=$((i + 1))
+      done
       APPROVE_BATCH=0
       echo
     fi

@@ -824,6 +824,28 @@ EOF
   rm -f "$B_SLOT/tag"
   bgit "$REPO_B" tag -d v9 >/dev/null
 
+  # A tag-declared slot whose HEAD carries EXACTLY ONE release tag joins
+  # the batch: the ceremony approves that commit under that name, and the
+  # declaration follows the release (v9 -> v10).
+  printf 'v9\n' > "$B_SLOT/tag"
+  bgit "$REPO_B" tag v10
+  ANS='y
+'
+  run_pinned upgrade --flake "$FIX/flake.nix"
+  assert_exit "$RC" 2 "tagged upgrade reaches deploy's confirmation gate"
+  assert_contains "$OUT" "(release tag v10)" "the plan names the HEAD release"
+  assert_eq "$(cat "$B_SLOT/rev.git")" "$(bgit "$REPO_B" rev-parse 'HEAD^{commit}')" "the tagged repo pinned at its release"
+  assert_eq "$(cat "$B_SLOT/tag")" "v10" "the declaration followed the release"
+
+  # Several tags at HEAD is ambiguity, never a guess.
+  printf 'b4\n' > "$REPO_B/f"; bgit "$REPO_B" commit -q -am b4
+  bgit "$REPO_B" tag v12; bgit "$REPO_B" tag v13
+  ANS=""
+  run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
+  assert_exit "$RC" 0 "ambiguous HEAD tags do not break upgrade"
+  assert_contains "$OUT" "no single release tag at HEAD" "several tags at HEAD route to manual"
+  bgit "$REPO_B" tag -d v12 >/dev/null; bgit "$REPO_B" tag -d v13 >/dev/null
+
   # Malformed argv dies before anything runs.
   ANS=""
   run_pinned upgrade --bogus

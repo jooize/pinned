@@ -246,10 +246,16 @@ authentication.
 An unprivileged plan precedes the sudo prompt.
 A declined repo is skipped, not fatal: deploy keeps its old rev.
 A slot that declares a release tag is never plain-approved (that would
-clear the declaration and strand the input's ref=); it is listed for a
-manual
+clear the declaration and strand the input's ref=).
+When its HEAD carries exactly one release tag, upgrade approves that
+commit under that name \(em the release-at-HEAD rule, the same commit a
+plain approve would review; otherwise (no tag at HEAD, several, or an
+out-of-grammar name) the repo is listed for a manual
 .B approve \-\-tag
 instead.
+There is deliberately no latest-tag search: version sort is a
+convention, and the tag namespace is repo content \(em content must
+never choose what a ceremony reviews.
 With
 .B \-\-dry\-run
 no ceremony runs and deploy only previews.
