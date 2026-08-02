@@ -1,0 +1,314 @@
+.TH PINNED 1 "2026-08-02" "pinned" "User Commands"
+.SH NAME
+pinned \- review-and-pin trust gate for git repositories and files
+.SH SYNOPSIS
+.B pinned
+.I action
+.RI [ args ]
+.SH DESCRIPTION
+.B pinned
+keeps root-owned approval records behind a human gate.
+An approval ceremony shows the human exactly what is being trusted
+(the diff since the last approval, or a file's bytes), then records a
+pin \(em a git commit hash for a repository, a content digest for a
+file \(em under root custody in
+.IR /var/db/pinned .
+Verification verbs answer against those records with quiet, stable
+exit codes, so consumers (build gates, launchers, lanes) can fail
+closed without re-deciding trust.
+.PP
+Actions marked
+.B (sudo)
+run as root.
+.BR approve ,
+.BR tombstone ,
+and
+.B setup
+self-elevate when invoked unprivileged: they re-exec the installed,
+root-owned binary under
+.BR sudo (8),
+whose sudoers entry is digest-pinned to the installed bytes (a swapped
+binary makes sudo refuse).
+There is no NOPASSWD \(em sudo authenticates every invocation.
+The
+.B signer
+and
+.B ignorable
+ceremonies must currently be invoked under sudo explicitly.
+.SH COMMANDS
+.SS Repository approval
+.TP
+.B approve \fIrepo\fP [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP]
+(sudo) Review the diff since the last pin (the full tree on a first
+approval), approve, write the pin.
+Before any sudo prompt, an unprivileged preview shows the repo, the
+commit about to be reviewed, and the commits since the last approval;
+the authoritative review re-derives everything from the object store
+as root, after sudo.
+.RS
+.TP
+.BI \-\-tag " tag"
+Review and pin the tag's commit, not HEAD.
+.TP
+.B \-\-trust
+Skip a FIRST approval's full-tree review, loudly.
+Later approvals always show the diff.
+.RE
+.TP
+.B approve \fIrepo\fP \fB\-\-signed\-tag\fP \fItag\fP [\fB\-\-signed\-tag\fP \fItag\fP ...] [\fB\-\-tag\fP \fItag\fP]
+(sudo) Verify signed tag(s) against root-owned allowed signers (the
+slot's own
+.IR signers/allowed_signers ,
+else the user tier's
+.IR policy/allowed_signers ).
+All tags must name the same commit; approve, pin.
+.B \-\-tag
+may add an unsigned name (a clean release name) that must name the
+same commit.
+.SS File approval
+.TP
+.B approve \-\-file \fIpath\fP [\fB\-\-baseline\fP \fIcopy\fP] [\fB\-\-ignore\-json\-key\fP \fIkey\fP ...] [\fB\-\-file\fP \fIpath\fP ...] [\fB\-\-algo\fP \fIname\fP] [\fB\-\-store\fP]
+(sudo) File-pin ceremony: each file is frozen, displayed ROOT-SIDE,
+confirmed, and its hash recorded.
+Multiple
+.B \-\-file
+arguments share one authentication.
+.IP
+The ceremony RE-STATES
+.B \-\-ignore\-json\-key
+and
+.B \-\-store
+every time: an approval without them clears the declaration and drops
+the stored copy, loudly.
+.RS
+.TP
+.BI \-\-baseline " copy"
+(after its
+.BR \-\-file )
+Diff against a copy that must re-hash to the prior record.
+.TP
+.BI \-\-ignore\-json\-key " key"
+(after its
+.BR \-\-file ,
+repeatable)
+Declare a dotted JSON key whose later drift
+.B verify
+tolerates, answering exit code 5.
+The key must be granted for that path by the ignorable policy or the
+ceremony REFUSES (see
+.BR ignorable ).
+.TP
+.BI \-\-algo " name"
+Hash algorithm; see
+.B review
+for the recognized names.
+.TP
+.B \-\-store
+Keep a copy of the approved bytes in the slot \(em the "approved"
+WITNESS: what the ignored-key comparison reads, and what
+.B pinned cat
+serves.
+.RE
+.TP
+.B tombstone \fIpath\fP
+(sudo) Retire a pinned file that is GONE.
+If it reappears,
+.B verify
+refuses until it is re-approved.
+.SS Verification and serving
+.TP
+.B verify \fIpath\fP
+File-pin verdict; a quiet exit-code contract for gates.
+See EXIT STATUS.
+.TP
+.B verify \-\-emit \fIpath\fP
+Verify, then print the VERIFIED bytes on stdout (nothing on failure)
+\(em the parse-safely form.
+Byte-exact only: never answers 5.
+.TP
+.B verify \-\-frozen \fIcopy\fP \fIpath\fP
+Verify caller-frozen bytes against
+.IR path 's
+record.
+.TP
+.B verify [\-\-baseline \fIcopy\fP] \fIpath\fP
+Bring your own WITNESS for the ignored-key comparison \(em a copy that
+must re-hash to the record before it is used; for a slot that keeps
+none of its own (see
+.BR "approve \-\-store" ).
+.TP
+.B cat \fIpath\fP
+The approved bytes on stdout, from root custody \(em no sudo, writes
+nothing.
+Re-hashes the slot's stored witness against the record before emitting
+a byte, and prints nothing at all on any failure (see EXIT STATUS).
+Serves the approved bytes even when the live file has DRIFTED \(em
+drift is
+.BR verify 's
+question, not this verb's.
+.SS Signing
+.TP
+.B sign \fIrepo\fP \fItag\fP
+Create signed tag
+.I tag
+at the pinned hash \(em no sudo (needs your SSH agent, e.g. 1Password).
+.TP
+.B signer add [\-\-repo \fIpath\fP] (\-\-file \fIpubkey\fP | \-\-key \fIline\fP) [\-\-principal \fIid\fP]
+(sudo) Allowed-signers ceremony: fingerprint, confirm, root-owned
+write.
+A bare public key needs
+.B \-\-principal
+(the label signature verification matches);
+.B \-\-repo
+targets the per-repo override.
+.TP
+.B signer remove [\-\-repo \fIpath\fP] (\-\-file \fIpubkey\fP | \-\-key \fIline\fP)
+(sudo) Remove that key's entries (key compromise must not be the
+hand-edited path).
+.TP
+.B signer list [\-\-repo \fIpath\fP]
+Principals, key types, fingerprints.
+.SS Ignorable-key policy
+.TP
+.B ignorable add \fIkey\fP [\-\-under \fIdir\fP]
+(sudo) Grant a dotted JSON key that
+.B approve \-\-file
+may then declare ignored.
+.B \-\-under
+scopes the grant to that directory's subtree; omitted means
+everywhere.
+.TP
+.B ignorable remove \fIkey\fP [\-\-under \fIdir\fP]
+(sudo) Withdraw exactly that grant (same key, same scope).
+Slots recording it fall back to byte-exact.
+.TP
+.B ignorable list
+Machine tier, user tier and the effective intersection, each entry
+with its scope.
+.SS Inspection
+.TP
+.B status \fIrepo\fP|\fIfile\fP
+Repo: pinned hash vs HEAD, dirty-tree warning.
+File: record vs live state.
+.TP
+.B review \fIfile\fP [\-\-algo \fIname\fP] [\-\-length \fIbits\fP]
+Trusted review of a non-repo file: display and hash one read, print
+the hash plus a fail-closed wrapper \(em no sudo.
+Algorithm names: sha256, sha384, sha512, blake2b-256, blake2b-384,
+blake2b-512, blake3
+.RB ( \-\-length :
+blake3 only, default 256).
+blake2b and blake3 need b2sum / b3sum in the trusted PATH.
+.TP
+.B list [\-\-under \fIdir\fP]
+Live pins in your tier: kind, digest, decoded path.
+.B \-\-under
+restricts to paths below that directory.
+.TP
+.B slot \fIpath\fP
+Print the slot directory for any path \(em repo or file, existing or
+not; a name resolver for consumer symlinks and lane payloads, never an
+existence answer.
+.SS Deployment
+.TP
+.B deploy [\-\-dry\-run] [\-\-yes] [\-\-flake \fIpath\fP]
+Sync every git+file input of the system flake to its approved rev and
+rebuild; always shows the root commands first (never self-elevates).
+An input whose git HEAD has moved past the pin is reported unapproved,
+with the
+.B pinned approve
+invocation that would update it \(em approval is deliberately a
+separate ceremony, never a deploy flag.
+.TP
+.B setup [\-\-yes]
+(sudo) Provision the sudoers digest pin; self-install.
+Shows the full plan and confirms before any authentication.
+.SH EXIT STATUS
+Ceremonies exit 0 on success, 1 on usage or internal error, and 2 when
+the human declines.
+.PP
+.B verify
+answers:
+.TS
+l l.
+0	ok
+5	differs ONLY in declared ignored keys
+10	no slot
+11	mismatch
+13	tombstoned-but-present
+20	pinned-but-missing
+30	mode/owner violation
+.TE
+.PP
+.B cat
+answers:
+.TS
+l l.
+0	served
+10	no record
+13	tombstoned
+16	no stored copy (approve \-\-file \-\-store adds one)
+20	the live file is missing
+30	slot invariant violation
+1	error
+.TE
+.SH FILES
+.TP
+.I /var/db/pinned
+Root-owned record tree.
+Each user's tier lives at
+.IR /var/db/pinned/<user> ,
+readable to that user through the
+.I _<user>\-pinned
+group.
+.TP
+.I /etc/pinned/ignorable.json
+Machine tier of the ignorable-key policy.
+.TP
+.I /etc/sudoers.d/pinned
+Digest-pinned sudo grant, written by
+.B setup
+or by the nix module.
+.TP
+.I /usr/local/sbin/pinned
+Default manual install target.
+The nix module installs
+.I /run/current-system/sw/bin/pinned
+instead.
+.SH APPROVAL HISTORY
+Every ceremony logs through
+.BR logger (1)
+with tag
+.BR pinned .
+On macOS:
+.PP
+.nf
+    log show \-\-predicate 'eventMessage CONTAINS "pinned:"'
+.fi
+.SH EXAMPLES
+Approve a repository's new commits, then make the system match:
+.PP
+.nf
+    pinned approve ~/Projects/some\-repo
+    pinned deploy
+.fi
+.PP
+Pin a config file, keeping a served witness and tolerating one key:
+.PP
+.nf
+    sudo pinned ignorable add statusLine.command
+    pinned approve \-\-file ~/.claude/settings.json \e
+        \-\-ignore\-json\-key statusLine.command \-\-store
+.fi
+.PP
+Gate a consumer on the approved bytes only:
+.PP
+.nf
+    pinned verify \-\-emit /etc/thing.json | consumer \-\-stdin
+.fi
+.SH SEE ALSO
+.BR sudo (8),
+.BR sudoers (5),
+.BR git (1),
+.BR ssh\-keygen (1),
+.BR log (1)

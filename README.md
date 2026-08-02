@@ -19,6 +19,9 @@ unknown declarations refuse outright.
 
 ## Commands
 
+Full reference: `man pinned` — installed by the nix module; in-repo:
+`man man/pinned.1`.
+
     pinned setup [--yes]              self-install + digest-pinned sudoers
     pinned approve <repo> [--tag <tag>] [--trust]
                                       human gate: review diff -> pin

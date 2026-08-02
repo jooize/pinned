@@ -48,6 +48,12 @@ let
 
   package = pkgs.writeScriptBin "pinned" scriptText;
 
+  # The man page is its own store path, deliberately outside scriptText:
+  # documentation edits must never move the sudoers digest.
+  manPage = pkgs.runCommand "pinned-man" { } ''
+    install -D -m 444 ${../man/pinned.1} $out/share/man/man1/pinned.1
+  '';
+
   digest = builtins.hashString "sha256" scriptText;
 
   sudoersText = lib.concatMapStrings
@@ -133,7 +139,7 @@ in
         }
       ];
 
-      environment.systemPackages = [ package ];
+      environment.systemPackages = [ package manPage ];
 
       environment.etc."sudoers.d/pinned".source = sudoersFile;
     }
