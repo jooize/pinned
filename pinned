@@ -1971,226 +1971,226 @@ do_approve() {
   local multi=0 n_approved=0 n_declined=0 n_already=0 repo_arg
   [ "${#repo_args[@]}" -le 1 ] || multi=1
   for repo_arg in "${repo_args[@]}"; do
-  resolve_repo "$repo_arg"
-  local slot="$default_slot"
-  if [ -n "$sel_tag" ]; then
-    sgit check-ref-format "refs/tags/$sel_tag" \
-      || { echo "invalid tag name: $sel_tag" >&2; exit 1; }
-    # An explicitly selected tag is also the DECLARED name; refuse
-    # upfront if it cannot be declared (the fallback declaration from a
-    # signed tag merely degrades to rev-only, but an explicit request
-    # that cannot be honored must not half-succeed).
-    validate_tag_name "$sel_tag" || {
-      echo "ERROR: tag name '$sel_tag' is outside the declared-name grammar [A-Za-z0-9._/+-]" >&2
-      exit 1
-    }
-  fi
-
-  # The record must live under a root-owned ancestry or the machine gate
-  # is only as strong as the weakest writable dir on the way there.
-  # Walk from the deepest component that EXISTS, exactly like the file
-  # ceremony below: a first-ever approval has not created the slot yet
-  # (write_slot_state creates it root-owned when it records), and walking
-  # through the not-yet-existing dir read an empty owner as "not root" --
-  # refusing every brand-new repo with a chown remediation for a directory
-  # that did not exist.
-  if [ -d "$slot" ]; then
-    verify_ancestry "$slot/rev.git" || exit 1
-  else
-    verify_ancestry "$slot" || exit 1
-  fi
-
-  local hash old_hash diff_out
-  old_hash="$(read_rev "$slot")" || exit 1
-
-  ceremony_banner
-
-  if [ "${#tag_args[@]}" -gt 0 ]; then
-    # Signature gate: verify normally-signed release tags (git tag -s;
-    # nothing pinned-specific in the repo) against ROOT-OWNED allowed
-    # signers, then pin the commit they name. This is the second-machine
-    # bootstrap: clone anywhere, install the signer key once, approve the tag.
-    local t
-    for t in "${tag_args[@]}"; do
-      case "$t" in
-        -*) echo "invalid tag name: $t" >&2; exit 1 ;;
-      esac
-    done
-    # Per-slot signers take precedence; the user-tier file is the
-    # fallback. A key trusted to vouch for one repo shouldn't implicitly
-    # vouch for every repo on the machine; keep machine-wide keys in the
-    # user-tier file deliberately.
-    local signers="$slot/signers/allowed_signers"
-    [ -f "$signers" ] || signers="$(policy_dir_for "$inv")/allowed_signers"
-    if [ ! -f "$signers" ]; then
-      echo "ERROR: no allowed signers for this repo" >&2
-      echo "  install the signer's public key with the signer ceremony:" >&2
-      echo "    per-repo: pinned signer add --repo $repo --file <pubkey> --principal <id>" >&2
-      echo "    user:     pinned signer add --file <pubkey> --principal <id>" >&2
-      echo "  obtain the key OUT OF BAND (printed card, password manager," >&2
-      echo "  existing trusted machine) -- never from this repo." >&2
-      exit 1
-    fi
-    verify_root_owned_path "$PINNED_ROOT" || exit 1
-    verify_record_file "$signers" || exit 1
-    # Every tag must verify AND name the same commit -- all-or-nothing;
-    # a single failure leaves the pin unchanged.
-    local t_hash
-    hash=""
-    for t in "${tag_args[@]}"; do
-      if ! sgit -c gpg.ssh.allowedSignersFile="$signers" verify-tag "$t"; then
-        printf '%sERROR: signature verification FAILED for tag %s; pin unchanged%s\n' "$C_RED$C_B" "$t" "$C_OFF" >&2
-        log_action approve "$repo" "$t" verify-failed
-        exit 1
-      fi
-      t_hash="$(sgit rev-parse "refs/tags/${t}"'^{commit}')"
-      if [ -z "$hash" ]; then
-        hash="$t_hash"
-      elif [ "$hash" != "$t_hash" ]; then
-        printf '%sERROR: tags disagree: %s is at %s, expected %s; pin unchanged%s\n' \
-          "$C_RED$C_B" "$t" "$t_hash" "$hash" "$C_OFF" >&2
-        log_action approve "$repo" "$t" tags-disagree
-        exit 1
-      fi
-    done
-    # An unsigned --tag selector (e.g. the clean release name) joins the
-    # agreement rule: it must name the commit the signed set verified.
+    resolve_repo "$repo_arg"
+    local slot="$default_slot"
     if [ -n "$sel_tag" ]; then
-      t_hash="$(sgit rev-parse "refs/tags/${sel_tag}"'^{commit}')"
-      if [ "$t_hash" != "$hash" ]; then
-        printf '%sERROR: tags disagree: %s is at %s, expected %s; pin unchanged%s\n' \
-          "$C_RED$C_B" "$sel_tag" "$t_hash" "$hash" "$C_OFF" >&2
-        log_action approve "$repo" "$sel_tag" tags-disagree
+      sgit check-ref-format "refs/tags/$sel_tag" \
+        || { echo "invalid tag name: $sel_tag" >&2; exit 1; }
+      # An explicitly selected tag is also the DECLARED name; refuse
+      # upfront if it cannot be declared (the fallback declaration from a
+      # signed tag merely degrades to rev-only, but an explicit request
+      # that cannot be honored must not half-succeed).
+      validate_tag_name "$sel_tag" || {
+        echo "ERROR: tag name '$sel_tag' is outside the declared-name grammar [A-Za-z0-9._/+-]" >&2
         exit 1
-      fi
+      }
     fi
-    if [ -n "$old_hash" ] && [ "$old_hash" = "$hash" ]; then
-      printf '%salready pinned: %s%s\n' "$C_GRN" "$hash" "$C_OFF"
-      if [ "$multi" -eq 1 ]; then n_already=$((n_already + 1)); continue; fi
-      exit 0
-    fi
-    printf '%srepo:%s       %s\n' "$C_DIM" "$C_OFF" "$repo"
-    for t in "${tag_args[@]}"; do
-      printf '%stag:%s     %s  %s✓ signature verified against %s%s\n' "$C_DIM" "$C_OFF" "$t" "$C_GRN" "$signers" "$C_OFF"
-    done
-    [ -n "$sel_tag" ] \
-      && printf '%stag:%s     %s  %s(unsigned; names the verified commit)%s\n' "$C_DIM" "$C_OFF" "$sel_tag" "$C_DIM" "$C_OFF"
-    [ "${#tag_args[@]}" -gt 1 ] \
-      && printf '%s%d/%d tags agree on the commit below%s\n' "$C_GRN" "${#tag_args[@]}" "${#tag_args[@]}" "$C_OFF"
-    printf '%scommit:%s  %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
-      "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
-    if [ -n "$old_hash" ]; then
-      printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
-      # Free orientation on any machine with the clone (that is, every
-      # machine approve runs on); the signature stays the gate.
-      echo
-      printf '%s--- commits since last approval ---%s\n' "$C_B" "$C_OFF"
-      sgit log --format='%h %s' "${old_hash}..${hash}" || true
-    fi
-  else
-    # Human gate: read the diff since the last pin from the object store,
-    # at HEAD or at the --tag selector's commit.
-    if [ -n "$sel_tag" ]; then
-      hash="$(sgit rev-parse "refs/tags/${sel_tag}"'^{commit}')"
+
+    # The record must live under a root-owned ancestry or the machine gate
+    # is only as strong as the weakest writable dir on the way there.
+    # Walk from the deepest component that EXISTS, exactly like the file
+    # ceremony below: a first-ever approval has not created the slot yet
+    # (write_slot_state creates it root-owned when it records), and walking
+    # through the not-yet-existing dir read an empty owner as "not root" --
+    # refusing every brand-new repo with a chown remediation for a directory
+    # that did not exist.
+    if [ -d "$slot" ]; then
+      verify_ancestry "$slot/rev.git" || exit 1
     else
-      hash="$(sgit rev-parse 'HEAD^{commit}')"
+      verify_ancestry "$slot" || exit 1
     fi
 
-    if ! sgit_diff --quiet 2>/dev/null || ! sgit_diff --cached --quiet 2>/dev/null; then
-      echo "note: work tree is dirty; only COMMITTED content at $hash is being approved" >&2
-    fi
+    local hash old_hash diff_out
+    old_hash="$(read_rev "$slot")" || exit 1
 
-    if [ -n "$old_hash" ] && [ "$old_hash" = "$hash" ]; then
-      printf '%salready pinned: %s%s\n' "$C_GRN" "$hash" "$C_OFF"
-      if [ "$multi" -eq 1 ]; then n_already=$((n_already + 1)); continue; fi
-      exit 0
-    fi
+    ceremony_banner
 
-    printf '%srepo:%s       %s\n' "$C_DIM" "$C_OFF" "$repo"
-    if [ -n "$sel_tag" ]; then
-      printf '%stag:%s        %s\n' "$C_DIM" "$C_OFF" "$sel_tag"
-      printf '%scommit:%s     %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
+    if [ "${#tag_args[@]}" -gt 0 ]; then
+      # Signature gate: verify normally-signed release tags (git tag -s;
+      # nothing pinned-specific in the repo) against ROOT-OWNED allowed
+      # signers, then pin the commit they name. This is the second-machine
+      # bootstrap: clone anywhere, install the signer key once, approve the tag.
+      local t
+      for t in "${tag_args[@]}"; do
+        case "$t" in
+          -*) echo "invalid tag name: $t" >&2; exit 1 ;;
+        esac
+      done
+      # Per-slot signers take precedence; the user-tier file is the
+      # fallback. A key trusted to vouch for one repo shouldn't implicitly
+      # vouch for every repo on the machine; keep machine-wide keys in the
+      # user-tier file deliberately.
+      local signers="$slot/signers/allowed_signers"
+      [ -f "$signers" ] || signers="$(policy_dir_for "$inv")/allowed_signers"
+      if [ ! -f "$signers" ]; then
+        echo "ERROR: no allowed signers for this repo" >&2
+        echo "  install the signer's public key with the signer ceremony:" >&2
+        echo "    per-repo: pinned signer add --repo $repo --file <pubkey> --principal <id>" >&2
+        echo "    user:     pinned signer add --file <pubkey> --principal <id>" >&2
+        echo "  obtain the key OUT OF BAND (printed card, password manager," >&2
+        echo "  existing trusted machine) -- never from this repo." >&2
+        exit 1
+      fi
+      verify_root_owned_path "$PINNED_ROOT" || exit 1
+      verify_record_file "$signers" || exit 1
+      # Every tag must verify AND name the same commit -- all-or-nothing;
+      # a single failure leaves the pin unchanged.
+      local t_hash
+      hash=""
+      for t in "${tag_args[@]}"; do
+        if ! sgit -c gpg.ssh.allowedSignersFile="$signers" verify-tag "$t"; then
+          printf '%sERROR: signature verification FAILED for tag %s; pin unchanged%s\n' "$C_RED$C_B" "$t" "$C_OFF" >&2
+          log_action approve "$repo" "$t" verify-failed
+          exit 1
+        fi
+        t_hash="$(sgit rev-parse "refs/tags/${t}"'^{commit}')"
+        if [ -z "$hash" ]; then
+          hash="$t_hash"
+        elif [ "$hash" != "$t_hash" ]; then
+          printf '%sERROR: tags disagree: %s is at %s, expected %s; pin unchanged%s\n' \
+            "$C_RED$C_B" "$t" "$t_hash" "$hash" "$C_OFF" >&2
+          log_action approve "$repo" "$t" tags-disagree
+          exit 1
+        fi
+      done
+      # An unsigned --tag selector (e.g. the clean release name) joins the
+      # agreement rule: it must name the commit the signed set verified.
+      if [ -n "$sel_tag" ]; then
+        t_hash="$(sgit rev-parse "refs/tags/${sel_tag}"'^{commit}')"
+        if [ "$t_hash" != "$hash" ]; then
+          printf '%sERROR: tags disagree: %s is at %s, expected %s; pin unchanged%s\n' \
+            "$C_RED$C_B" "$sel_tag" "$t_hash" "$hash" "$C_OFF" >&2
+          log_action approve "$repo" "$sel_tag" tags-disagree
+          exit 1
+        fi
+      fi
+      if [ -n "$old_hash" ] && [ "$old_hash" = "$hash" ]; then
+        printf '%salready pinned: %s%s\n' "$C_GRN" "$hash" "$C_OFF"
+        if [ "$multi" -eq 1 ]; then n_already=$((n_already + 1)); continue; fi
+        exit 0
+      fi
+      printf '%srepo:%s       %s\n' "$C_DIM" "$C_OFF" "$repo"
+      for t in "${tag_args[@]}"; do
+        printf '%stag:%s     %s  %s✓ signature verified against %s%s\n' "$C_DIM" "$C_OFF" "$t" "$C_GRN" "$signers" "$C_OFF"
+      done
+      [ -n "$sel_tag" ] \
+        && printf '%stag:%s     %s  %s(unsigned; names the verified commit)%s\n' "$C_DIM" "$C_OFF" "$sel_tag" "$C_DIM" "$C_OFF"
+      [ "${#tag_args[@]}" -gt 1 ] \
+        && printf '%s%d/%d tags agree on the commit below%s\n' "$C_GRN" "${#tag_args[@]}" "${#tag_args[@]}" "$C_OFF"
+      printf '%scommit:%s  %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
         "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
+      if [ -n "$old_hash" ]; then
+        printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
+        # Free orientation on any machine with the clone (that is, every
+        # machine approve runs on); the signature stays the gate.
+        echo
+        printf '%s--- commits since last approval ---%s\n' "$C_B" "$C_OFF"
+        sgit log --format='%h %s' "${old_hash}..${hash}" || true
+      fi
     else
-      printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
-        "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
+      # Human gate: read the diff since the last pin from the object store,
+      # at HEAD or at the --tag selector's commit.
+      if [ -n "$sel_tag" ]; then
+        hash="$(sgit rev-parse "refs/tags/${sel_tag}"'^{commit}')"
+      else
+        hash="$(sgit rev-parse 'HEAD^{commit}')"
+      fi
+
+      if ! sgit_diff --quiet 2>/dev/null || ! sgit_diff --cached --quiet 2>/dev/null; then
+        echo "note: work tree is dirty; only COMMITTED content at $hash is being approved" >&2
+      fi
+
+      if [ -n "$old_hash" ] && [ "$old_hash" = "$hash" ]; then
+        printf '%salready pinned: %s%s\n' "$C_GRN" "$hash" "$C_OFF"
+        if [ "$multi" -eq 1 ]; then n_already=$((n_already + 1)); continue; fi
+        exit 0
+      fi
+
+      printf '%srepo:%s       %s\n' "$C_DIM" "$C_OFF" "$repo"
+      if [ -n "$sel_tag" ]; then
+        printf '%stag:%s        %s\n' "$C_DIM" "$C_OFF" "$sel_tag"
+        printf '%scommit:%s     %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
+          "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
+      else
+        printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
+          "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
+      fi
+      if [ -n "$old_hash" ]; then
+        printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
+        echo
+        printf '%s--- commits since last approval ---%s\n' "$C_B" "$C_OFF"
+        sgit log --format='%h %s' "${old_hash}..${hash}" || true
+        echo
+        printf '%s--- diff %.10s..%.10s (from object store) ---%s\n' "$C_B" "$old_hash" "$hash" "$C_OFF"
+        # Capture first so a git failure aborts (set -e) BEFORE anything is
+        # shown as reviewable; then page. Early pager quit (SIGPIPE) is the
+        # reviewer's own act -- the diff itself already succeeded.
+        diff_out="$(sgit_diff "$old_hash" "$hash")"
+        printf '%s\n' "$diff_out" | page || true
+      elif [ "$trust" -eq 1 ]; then
+        printf '%spinned:%s     (none)\n' "$C_DIM" "$C_OFF"
+        echo
+        printf '%s!!! FIRST APPROVAL WITH --trust !!!%s\n' "$C_RED$C_B" "$C_OFF"
+        printf '%s!!! The full tree at %s is being approved WITHOUT review. !!!%s\n' "$C_RED$C_B" "$hash" "$C_OFF"
+        printf '%s!!! Everything already in this repo becomes trusted as-is. !!!%s\n' "$C_RED$C_B" "$C_OFF"
+      else
+        printf '%spinned:%s     (none -- first approval: full tree review)\n' "$C_DIM" "$C_OFF"
+        echo
+        printf '%s--- full tree at %.10s (diff from empty) ---%s\n' "$C_B" "$hash" "$C_OFF"
+        # 4b825d... is git's well-known empty tree; this shows every approved byte.
+        diff_out="$(sgit_diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
+        printf '%s\n' "$diff_out" | page || true
+      fi
     fi
-    if [ -n "$old_hash" ]; then
-      printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
-      echo
-      printf '%s--- commits since last approval ---%s\n' "$C_B" "$C_OFF"
-      sgit log --format='%h %s' "${old_hash}..${hash}" || true
-      echo
-      printf '%s--- diff %.10s..%.10s (from object store) ---%s\n' "$C_B" "$old_hash" "$hash" "$C_OFF"
-      # Capture first so a git failure aborts (set -e) BEFORE anything is
-      # shown as reviewable; then page. Early pager quit (SIGPIPE) is the
-      # reviewer's own act -- the diff itself already succeeded.
-      diff_out="$(sgit_diff "$old_hash" "$hash")"
-      printf '%s\n' "$diff_out" | page || true
-    elif [ "$trust" -eq 1 ]; then
-      printf '%spinned:%s     (none)\n' "$C_DIM" "$C_OFF"
-      echo
-      printf '%s!!! FIRST APPROVAL WITH --trust !!!%s\n' "$C_RED$C_B" "$C_OFF"
-      printf '%s!!! The full tree at %s is being approved WITHOUT review. !!!%s\n' "$C_RED$C_B" "$hash" "$C_OFF"
-      printf '%s!!! Everything already in this repo becomes trusted as-is. !!!%s\n' "$C_RED$C_B" "$C_OFF"
+    echo
+
+    local answer
+    printf '%sapprove %s%s%s? [y/N]%s ' "$C_B" "$C_CYN" "$hash" "$C_OFF$C_B" "$C_OFF"
+    read -r answer </dev/tty
+    case "$answer" in
+      y|Y|yes) ;;
+      *)
+        printf '%saborted; pin unchanged.%s\n' "$C_YEL" "$C_OFF"
+        log_action approve "$repo" "$hash" abort
+        if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
+        exit 2
+        ;;
+    esac
+
+    write_slot_state "$slot" rev.git "$hash"
+    # A repo pin has no JSON keys to tolerate: taking the slot over from a
+    # file pin drops any ignored-key declaration with it.
+    clear_slot_ignore "$slot"
+    # Say so. The --file ceremony has always confirmed each record; the repo
+    # ceremony printed nothing unless a tag happened to be declared, so a plain
+    # approve answered `y` and returned to the prompt in silence -- which reads
+    # exactly like a no-op in the one place a user most needs to know a record
+    # was written.
+    printf '%s✓ approved:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" "$slot/rev.git"
+    # The declared release name (optional `tag` annotation, repo slots
+    # only): deploy syncs the input's ref= to it after cross-checking the
+    # live tag still names the pinned rev. The --tag selector is the
+    # declared name; with only --signed-tag evidence the first signed name
+    # is the fallback; a plain review approve with no tag CLEARS any prior
+    # declaration (no declaration -> rev-only sync, a supported shape).
+    local decl_tag="$sel_tag"
+    if [ -z "$decl_tag" ] && [ "${#tag_args[@]}" -gt 0 ]; then
+      decl_tag="${tag_args[0]}"
+    fi
+    if [ -n "$decl_tag" ]; then
+      if ! validate_tag_name "$decl_tag"; then
+        printf '%snote: tag name %s is outside the declared-name grammar [A-Za-z0-9._/+-]; not declaring it (rev-only slot)%s\n' \
+          "$C_YEL" "$decl_tag" "$C_OFF"
+        rm -f "$slot/tag"
+      else
+        write_note "$slot" tag "$decl_tag"
+        printf '%s✓ declared:%s %s -> %s\n' "$C_GRN" "$C_OFF" "$decl_tag" "$slot/tag"
+      fi
     else
-      printf '%spinned:%s     (none -- first approval: full tree review)\n' "$C_DIM" "$C_OFF"
-      echo
-      printf '%s--- full tree at %.10s (diff from empty) ---%s\n' "$C_B" "$hash" "$C_OFF"
-      # 4b825d... is git's well-known empty tree; this shows every approved byte.
-      diff_out="$(sgit_diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
-      printf '%s\n' "$diff_out" | page || true
-    fi
-  fi
-  echo
-
-  local answer
-  printf '%sapprove %s%s%s? [y/N]%s ' "$C_B" "$C_CYN" "$hash" "$C_OFF$C_B" "$C_OFF"
-  read -r answer </dev/tty
-  case "$answer" in
-    y|Y|yes) ;;
-    *)
-      printf '%saborted; pin unchanged.%s\n' "$C_YEL" "$C_OFF"
-      log_action approve "$repo" "$hash" abort
-      if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
-      exit 2
-      ;;
-  esac
-
-  write_slot_state "$slot" rev.git "$hash"
-  # A repo pin has no JSON keys to tolerate: taking the slot over from a
-  # file pin drops any ignored-key declaration with it.
-  clear_slot_ignore "$slot"
-  # Say so. The --file ceremony has always confirmed each record; the repo
-  # ceremony printed nothing unless a tag happened to be declared, so a plain
-  # approve answered `y` and returned to the prompt in silence -- which reads
-  # exactly like a no-op in the one place a user most needs to know a record
-  # was written.
-  printf '%s✓ approved:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" "$slot/rev.git"
-  # The declared release name (optional `tag` annotation, repo slots
-  # only): deploy syncs the input's ref= to it after cross-checking the
-  # live tag still names the pinned rev. The --tag selector is the
-  # declared name; with only --signed-tag evidence the first signed name
-  # is the fallback; a plain review approve with no tag CLEARS any prior
-  # declaration (no declaration -> rev-only sync, a supported shape).
-  local decl_tag="$sel_tag"
-  if [ -z "$decl_tag" ] && [ "${#tag_args[@]}" -gt 0 ]; then
-    decl_tag="${tag_args[0]}"
-  fi
-  if [ -n "$decl_tag" ]; then
-    if ! validate_tag_name "$decl_tag"; then
-      printf '%snote: tag name %s is outside the declared-name grammar [A-Za-z0-9._/+-]; not declaring it (rev-only slot)%s\n' \
-        "$C_YEL" "$decl_tag" "$C_OFF"
       rm -f "$slot/tag"
-    else
-      write_note "$slot" tag "$decl_tag"
-      printf '%s✓ declared:%s %s -> %s\n' "$C_GRN" "$C_OFF" "$decl_tag" "$slot/tag"
     fi
-  else
-    rm -f "$slot/tag"
-  fi
-  log_action approve "$repo" "$hash"
-  n_approved=$((n_approved + 1))
+    log_action approve "$repo" "$hash"
+    n_approved=$((n_approved + 1))
   done
 
   if [ "$multi" -eq 1 ]; then
