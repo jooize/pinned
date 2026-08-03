@@ -352,7 +352,7 @@ seed_pin "$SUB/v/vanish.txt" "$(digest_of "$SUB/v/vanish.txt")"
 rm -f "$SUB/v/vanish.txt"
 run_pinned verify "$SUB/v/vanish.txt"
 assert_exit "$RC" 20 "pinned but missing -> 20"
-assert_contains "$OUT" "pinned but MISSING" "20 names the absence"
+assert_contains "$OUT" "pinned but missing" "20 names the absence"
 
 printf 'back from the dead\n' > "$SUB/v/risen.txt"
 seed_tombstone "$SUB/v/risen.txt"
@@ -397,7 +397,7 @@ assert_eq "$(count_state "$FIRST_SLOT")" 1 "slot holds exactly one state file"
 assert_absent "$FIRST_SLOT/approved" "a plain approve keeps no stored copy"
 assert_missing "$OUT" "(+approved copy)" "and does not claim to have written one"
 assert_contains "$OUT" "custody:" "the ceremony states custody in both directions"
-assert_contains "$OUT" "no copy is kept" "and says what 'none' means before the confirm"
+assert_contains "$OUT" "No copy is kept at rest" "and says what 'none' means before the confirm"
 run_pinned verify "$SUB/a/first.txt"
 assert_exit "$RC" 0 "the approved file verifies"
 
@@ -413,7 +413,7 @@ ANS='y
 run_pinned approve --file "$SUB/a/first.txt" --store
 assert_exit "$RC" 0 "adding --store to a copy-less slot runs"
 assert_missing "$OUT" "already approved" "adding custody defeats the no-op short-circuit"
-assert_contains "$OUT" "ADDS a stored copy" "the note names the custody delta and its direction"
+assert_contains "$OUT" "adds a stored copy" "the note names the custody delta and its direction"
 assert_contains "$OUT" "(+approved copy)" "the success line names the copy it wrote"
 assert_file "$FIRST_SLOT/approved" "--store writes the witness"
 assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(digest_of "$SUB/a/first.txt")" \
@@ -436,8 +436,8 @@ ANS='y
 run_pinned approve --file "$SUB/a/first.txt"
 assert_exit "$RC" 0 "re-approving a custody slot without --store runs"
 assert_missing "$OUT" "already approved" "dropping custody defeats the no-op short-circuit"
-assert_contains "$OUT" "DROPS the slot's stored copy" "the pre-confirm note says the copy is going"
-assert_contains "$OUT" "was DROPPED" "the result line says it went"
+assert_contains "$OUT" "drops the slot's stored copy" "the pre-confirm note says the copy is going"
+assert_contains "$OUT" "was dropped" "the result line says it went"
 assert_absent "$FIRST_SLOT/approved" "a plain re-approve drops the stored copy"
 
 # What custody holds is always what the LAST ceremony displayed.
@@ -652,7 +652,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   ANS=""
   run_pinned status "$REPO_FIX"
   assert_exit "$RC" 0 "status after a new commit exits 0"
-  assert_contains "$OUT" "HEAD is NOT approved" "status reports drift from the pin"
+  assert_contains "$OUT" "HEAD is not approved" "status reports drift from the pin"
 
   run_pinned list
   assert_contains "$OUT" "git" "list shows the repo pin's declared kind"
@@ -747,7 +747,7 @@ y
 '
   run_pinned approve "$REPO_A"
   assert_exit "$RC" 2 "a single-repo decline still exits 2"
-  assert_contains "$OUT" "aborted; pin unchanged." "single decline keeps its message"
+  assert_contains "$OUT" "aborted; pin unchanged" "single decline keeps its message"
 
   # Selector and evidence flags bind to one repo; a batch refuses them.
   ANS=""
@@ -782,10 +782,10 @@ EOF
   ANS=""
   run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
   assert_exit "$RC" 0 "upgrade --dry-run exits 0"
-  assert_contains "$OUT" "will review + approve:" "dry run shows the plan"
+  assert_contains "$OUT" "Will review + approve:" "dry run shows the plan"
   assert_contains "$OUT" "$REPO_A" "the stale repo is named"
-  assert_contains "$OUT" "dry run: no ceremonies" "no ceremony in a dry run"
-  assert_contains "$OUT" "Dry run -- nothing executed." "deploy stays a preview"
+  assert_contains "$OUT" "Dry run: no ceremonies" "no ceremony in a dry run"
+  assert_contains "$OUT" "Dry run -- nothing executed" "deploy stays a preview"
   assert_eq "$(cat "$A_SLOT/rev.git")" "$A_PIN" "dry run records nothing"
 
   # Full run: the ceremony approves the stale repo (forced batch contract:
@@ -820,7 +820,7 @@ EOF
   run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
   assert_exit "$RC" 0 "a tag-declared stale input does not break upgrade"
   assert_contains "$OUT" "approve --tag by hand" "tag-declared slot routed to manual approval"
-  assert_missing "$OUT" "will review + approve:" "no plain-approve list when only tag-declared slots are stale"
+  assert_missing "$OUT" "Will review + approve:" "no plain-approve list when only tag-declared slots are stale"
   rm -f "$B_SLOT/tag"
   bgit "$REPO_B" tag -d v9 >/dev/null
 
@@ -858,7 +858,7 @@ EOF
   ANS=""
   run_pinned status "$REPO_C"
   assert_exit "$RC" 0 "status on a repo whose pin is gone still reports"
-  assert_contains "$OUT" "MISSING from this checkout" "status warns the pinned rev is unfetchable"
+  assert_contains "$OUT" "missing from this checkout" "status warns the pinned rev is unfetchable"
   cat > "$FIX/flake2.nix" <<EOF
 {
   inputs.batch-c.url = "git+file://$REPO_C?rev=$FAKE_REV";
@@ -906,7 +906,7 @@ assert_contains "$OUT" "ignored:" "ceremony displays the proposed ignored keys"
 assert_contains "$OUT" "model, effortLevel" "ceremony names them before the confirm"
 assert_contains "$OUT" "may drift without re-approval" "ceremony states what ignoring means"
 assert_contains "$OUT" "model -- user policy, everywhere" "ceremony shows each key's grant provenance"
-assert_contains "$OUT" "no copy is kept" "ceremony states the custody consequence"
+assert_contains "$OUT" "No copy is kept at rest" "ceremony states the custody consequence"
 assert_file "$(slot_file_of "$SUB/ig/nocopy.json" ignored.json)" "ignored.json recorded"
 assert_eq "$(cat "$(slot_file_of "$SUB/ig/nocopy.json" ignored.json)")" '[["model"],["effortLevel"]]' \
           "ignored.json holds the jq path array, in declaration order"
@@ -957,7 +957,7 @@ assert_missing "$OUT" "sonnet" "--emit prints nothing on a mismatch"
 printf '{\n  "model": "sonnet",\n  "effortLevel": "high",\n  "permissions": {"deny": []}\n}\n' > "$SUB/ig/copy.json"
 run_pinned verify "$SUB/ig/copy.json"
 assert_exit "$RC" 11 "drift outside the ignored keys -> 11"
-assert_contains "$OUT" "differences remain OUTSIDE" "the refusal says where the difference is"
+assert_contains "$OUT" "differences remain outside" "the refusal says where the difference is"
 
 # A slot that keeps no witness of its own needs a CALLER-BROUGHT one; without
 # any witness it stays strict. --baseline is a permanent interface, not a
@@ -982,7 +982,7 @@ printf '{"model": "sonnet", "effortLevel": "high", "effortLevel": "low", "permis
   > "$SUB/ig/copy.json"
 run_pinned verify "$SUB/ig/copy.json"
 assert_exit "$RC" 11 "duplicate object keys refuse the tolerance path -> 11"
-assert_contains "$OUT" "DUPLICATE object keys" "the refusal names the duplication"
+assert_contains "$OUT" "duplicate object keys" "the refusal names the duplication"
 
 # A non-JSON file simply never parses, so it always falls back to strict.
 printf 'container\n' > "$SUB/ig/lane"
@@ -1055,7 +1055,7 @@ run_pinned approve --file "$SUB/ig/clear.json"
 assert_exit "$RC" 0 "re-approving identical bytes without a declaration still runs"
 assert_missing  "$OUT" "already approved" "a changed declaration defeats the no-op short-circuit"
 assert_contains "$OUT" "clearing the ignored keys" "the ceremony says the tolerance is being withdrawn"
-assert_contains "$OUT" "DROPS the slot's stored copy" "and that custody is going with it"
+assert_contains "$OUT" "drops the slot's stored copy" "and that custody is going with it"
 assert_absent "$CLEAR_SLOT/ignored.json" "a plain approve clears the declaration"
 assert_absent "$CLEAR_SLOT/approved" "a plain approve drops the stored copy"
 printf '{"model": "sonnet", "keep": 1}\n' > "$SUB/ig/clear.json"
@@ -1088,7 +1088,7 @@ assert_exit "$RC" 0 "status exits 0"
 assert_contains "$OUT" "model, effortLevel" "status reports the declared keys"
 assert_contains "$OUT" "re-approve with --store" "status says how a copy-less slot gets custody"
 run_pinned status "$SUB/ig/copy.json"
-assert_contains "$OUT" "live file DIFFERS" "status agrees with verify on a real mismatch"
+assert_contains "$OUT" "live file differs" "status agrees with verify on a real mismatch"
 
 # Argument surface.
 ANS=""
@@ -1186,7 +1186,7 @@ ANS='y
 '
 run_pinned ignorable add model --under "relative/dir"
 assert_exit "$RC" 1 "a relative --under is refused"
-assert_contains "$OUT" "ABSOLUTE" "the refusal names the requirement"
+assert_contains "$OUT" "absolute" "the refusal names the requirement"
 ANS='y
 '
 run_pinned ignorable remove effortLevel --under "$SUB/pol/in"

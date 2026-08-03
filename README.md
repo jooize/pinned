@@ -61,7 +61,7 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       13 tombstoned, 16 no stored copy,
                                       20 live file missing,
                                       30 slot invariant, 1 error)
-    pinned tombstone <path>           retire a pinned file that is GONE
+    pinned tombstone <path>           retire a pinned file that is gone
     pinned sign <repo> <tag>          signed release tag at the PINNED hash
     pinned signer add|list|remove [--repo <path>] (--file <pubkey> | --key '<line>')
                                       allowed-signers ceremony:

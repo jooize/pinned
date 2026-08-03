@@ -1,4 +1,4 @@
-.TH PINNED 1 "2026-08-02" "pinned" "User Commands"
+.TH PINNED 1 "2026-08-03" "pinned" "User Commands"
 .SH NAME
 pinned \- review-and-pin trust gate for git repositories and files
 .SH SYNOPSIS
@@ -48,7 +48,7 @@ commit about to be reviewed, and the commits since the last approval;
 the authoritative review re-derives everything from the object store
 as root, after sudo.
 .IP
-Several repos run as sequential ceremonies under ONE authentication:
+Several repos run as sequential ceremonies under one authentication:
 each is displayed and confirmed on its own, a decline skips only that
 repo, and a summary line closes the batch.
 .BR \-\-tag ,
@@ -62,7 +62,7 @@ bind to a single repo \(em a batch takes plain review approvals only.
 Review and pin the tag's commit, not HEAD.
 .TP
 .B \-\-trust
-Skip a FIRST approval's full-tree review, loudly.
+Skip a first approval's full-tree review, loudly.
 Later approvals always show the diff.
 .RE
 .TP
@@ -79,13 +79,13 @@ same commit.
 .SS File approval
 .TP
 .B approve \-\-file \fIpath\fP [\fB\-\-baseline\fP \fIcopy\fP] [\fB\-\-ignore\-json\-key\fP \fIkey\fP ...] [\fB\-\-file\fP \fIpath\fP ...] [\fB\-\-algo\fP \fIname\fP] [\fB\-\-store\fP]
-(sudo) File-pin ceremony: each file is frozen, displayed ROOT-SIDE,
+(sudo) File-pin ceremony: each file is frozen, displayed root-side,
 confirmed, and its hash recorded.
 Multiple
 .B \-\-file
 arguments share one authentication.
 .IP
-The ceremony RE-STATES
+The ceremony re-states
 .B \-\-ignore\-json\-key
 and
 .B \-\-store
@@ -106,7 +106,7 @@ Declare a dotted JSON key whose later drift
 .B verify
 tolerates, answering exit code 5.
 The key must be granted for that path by the ignorable policy or the
-ceremony REFUSES (see
+ceremony refuses (see
 .BR ignorable ).
 .TP
 .BI \-\-algo " name"
@@ -116,13 +116,13 @@ for the recognized names.
 .TP
 .B \-\-store
 Keep a copy of the approved bytes in the slot \(em the "approved"
-WITNESS: what the ignored-key comparison reads, and what
+witness: what the ignored-key comparison reads, and what
 .B pinned cat
 serves.
 .RE
 .TP
 .B tombstone \fIpath\fP
-(sudo) Retire a pinned file that is GONE.
+(sudo) Retire a pinned file that is gone.
 If it reappears,
 .B verify
 refuses until it is re-approved.
@@ -133,7 +133,7 @@ File-pin verdict; a quiet exit-code contract for gates.
 See EXIT STATUS.
 .TP
 .B verify \-\-emit \fIpath\fP
-Verify, then print the VERIFIED bytes on stdout (nothing on failure)
+Verify, then print the verified bytes on stdout (nothing on failure)
 \(em the parse-safely form.
 Byte-exact only: never answers 5.
 .TP
@@ -143,7 +143,7 @@ Verify caller-frozen bytes against
 record.
 .TP
 .B verify [\-\-baseline \fIcopy\fP] \fIpath\fP
-Bring your own WITNESS for the ignored-key comparison \(em a copy that
+Bring your own witness for the ignored-key comparison \(em a copy that
 must re-hash to the record before it is used; for a slot that keeps
 none of its own (see
 .BR "approve \-\-store" ).
@@ -153,7 +153,7 @@ The approved bytes on stdout, from root custody \(em no sudo, writes
 nothing.
 Re-hashes the slot's stored witness against the record before emitting
 a byte, and prints nothing at all on any failure (see EXIT STATUS).
-Serves the approved bytes even when the live file has DRIFTED \(em
+Serves the approved bytes even when the live file has drifted \(em
 drift is
 .BR verify 's
 question, not this verb's.
@@ -243,7 +243,7 @@ chained: every git+file input whose checkout moved past its pin gets
 the same review ceremony
 .B approve
 runs \(em upgrade removes typing, never scrutiny \(em then deploy
-syncs the flake to the approved revs and rebuilds, all behind ONE
+syncs the flake to the approved revs and rebuilds, all behind one
 authentication.
 An unprivileged plan precedes the sudo prompt.
 A declined repo is skipped, not fatal: deploy keeps its old rev.
@@ -274,7 +274,7 @@ answers:
 .TS
 l l.
 0	ok
-5	differs ONLY in declared ignored keys
+5	differs only in declared ignored keys
 10	no slot
 11	mismatch
 13	tombstoned-but-present

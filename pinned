@@ -207,7 +207,7 @@ usage: pinned <action> [args]
 
   approve <repo>... [options]    (sudo) review the diff since the last pin, write pin
   approve --file <path> ...      (sudo) file-pin ceremony: freeze, review, record hash
-  tombstone <path>               (sudo) retire a pinned file that is GONE
+  tombstone <path>               (sudo) retire a pinned file that is gone
   verify [options] <path>        file-pin verdict; quiet exit-code contract for gates
   cat <path>                     the approved bytes, from root custody; fail-closed
   sign <repo> <tag>              create a signed tag at the pinned hash
@@ -1336,7 +1336,7 @@ json_projectable() {
   n_raw="$(jq --stream -c . <"$f" 2>/dev/null | wc -l)"
   n_canon="$(jq -c . <"$f" 2>/dev/null | jq --stream -c . 2>/dev/null | wc -l)"
   if [ "$n_raw" -lt 1 ] || [ "$n_raw" -ne "$n_canon" ]; then
-    echo "REFUSE: $side contains DUPLICATE object keys -- parsers disagree on which one wins," >&2
+    echo "REFUSE: $side contains duplicate object keys -- parsers disagree on which one wins," >&2
     echo "        so no structural comparison of it can be trusted (byte-exact verdict stands)" >&2
     return 1
   fi
@@ -1418,7 +1418,7 @@ ignored_keys_match() {
   pa="$(jq -S -c --argjson p "$paths" 'delpaths($p)' <"$approved" 2>/dev/null)" || return 1
   pb="$(jq -S -c --argjson p "$paths" 'delpaths($p)' <"$live" 2>/dev/null)" || return 1
   if [ -z "$pa" ] || [ "$pa" != "$pb" ]; then
-    echo "note: differences remain OUTSIDE the declared ignored keys ($(ign_display "$paths"))" >&2
+    echo "note: differences remain outside the declared ignored keys ($(ign_display "$paths"))" >&2
     return 1
   fi
   # Report which declared keys actually moved -- the caller's whole reason
@@ -1536,7 +1536,7 @@ do_setup() {
     read -r answer </dev/tty
     case "$answer" in
       y|Y|yes) ;;
-      *) echo "aborted; nothing installed."; exit 2 ;;
+      *) echo "aborted; nothing installed"; exit 2 ;;
     esac
   fi
 
@@ -1585,7 +1585,7 @@ do_setup() {
 
   log_action setup
   echo
-  echo "setup complete."
+  echo "setup complete"
   echo "  next: sudo pinned approve <repo>"
 }
 
@@ -1689,7 +1689,7 @@ head_release_tag() { # <repo-path>
 print_upgrade_plan() { # <stale-lines>
   local line p tag ht plain=0
   if [ -z "$1" ]; then
-    printf '%snothing to approve -- every pinned input is at its approved rev.%s\n' "$C_DIM" "$C_OFF"
+    printf '%snothing to approve -- every pinned input is at its approved rev%s\n' "$C_DIM" "$C_OFF"
     return 0
   fi
   while IFS='|' read -r p tag; do
@@ -1698,12 +1698,15 @@ print_upgrade_plan() { # <stale-lines>
       ht="$(head_release_tag "$p")"
       if [ -z "$ht" ]; then continue; fi
     fi
-    if [ "$plain" -eq 0 ]; then printf '%swill review + approve:%s\n' "$C_B" "$C_OFF"; fi
+    if [ "$plain" -eq 0 ]; then printf '%sWill review + approve:%s\n' "$C_B" "$C_OFF"; fi
     plain=1
+    # The repos are the plan's payload -- bold cyan, the palette's own
+    # emphasis on an identifier (cyan everywhere; yellow stays attention
+    # text), so the list reads before the parentheticals do.
     if [ -n "$ht" ]; then
-      printf '  %s%s%s  %s(release tag %s)%s\n' "$C_CYN" "$p" "$C_OFF" "$C_DIM" "$ht" "$C_OFF"
+      printf '  %s%s%s  %s(release tag %s)%s\n' "$C_CYN$C_B" "$p" "$C_OFF" "$C_DIM" "$ht" "$C_OFF"
     else
-      printf '  %s%s%s\n' "$C_CYN" "$p" "$C_OFF"
+      printf '  %s%s%s\n' "$C_CYN$C_B" "$p" "$C_OFF"
     fi
   done <<EOF
 $1
@@ -1746,11 +1749,11 @@ case "$action" in
         [ "$upg_next" -eq 0 ] || { echo "--flake needs a path" >&2; exit 1; }
         [ -n "$upg_flake" ] || upg_flake="$(default_flake_file)"
         [ -r "$upg_flake" ] || {
-          printf '%serror: cannot read %s -- pass --flake.%s\n' "$C_RED" "$upg_flake" "$C_OFF" >&2
+          printf '%serror: cannot read %s -- pass --flake%s\n' "$C_RED" "$upg_flake" "$C_OFF" >&2
           exit 1
         }
         print_upgrade_plan "$(stale_flake_repos "$upg_flake")"
-        printf '%sthen: deploy (sync flake revs to the pins + rebuild).%s\n\n' "$C_DIM" "$C_OFF"
+        printf '%sThen: deploy (sync flake revs to the pins + rebuild)%s\n\n' "$C_DIM" "$C_OFF"
       fi
       # setup: show the plan and confirm BEFORE sudo, so reading what it
       # will do never costs an authentication.
@@ -1763,7 +1766,7 @@ case "$action" in
           read -r answer </dev/tty
           case "$answer" in
             y|Y|yes) ;;
-            *) echo "aborted; nothing installed."; exit 2 ;;
+            *) echo "aborted; nothing installed"; exit 2 ;;
           esac
           set -- --yes "$@"
         fi
@@ -1867,7 +1870,7 @@ case "$action" in
         elev="$(readlink -f "$0")"
         if [ "$action" != "setup" ]; then
           printf '%swarning: pinned is not installed at %s.%s\n' "$C_YEL$C_B" "$INSTALL_TARGET" "$C_OFF"
-          printf '%s  About to run the UNINSTALLED, user-writable copy at%s\n' "$C_YEL" "$C_OFF"
+          printf '%s  About to run the uninstalled, user-writable copy at%s\n' "$C_YEL" "$C_OFF"
           printf '%s  %s as root.%s\n' "$C_YEL" "$elev" "$C_OFF"
           printf '%s  Only proceed if you have just read this exact file and%s\n' "$C_YEL" "$C_OFF"
           printf '%s  trust your user-space not to have swapped it since.%s\n' "$C_YEL" "$C_OFF"
@@ -1884,7 +1887,7 @@ case "$action" in
           read -r answer </dev/tty
           case "$answer" in
             y|Y|yes) ;;
-            *) echo "aborted." ; exit 2 ;;
+            *) echo "aborted" ; exit 2 ;;
           esac
         fi
       fi
@@ -1958,7 +1961,7 @@ case "$action" in
             read -r answer </dev/tty
             case "$answer" in
               y|Y|yes) ;;
-              *) echo "aborted."; exit 2 ;;
+              *) echo "aborted"; exit 2 ;;
             esac
           fi
           # The pre-sudo handoff approve gives, in the same shape: the
@@ -2145,7 +2148,7 @@ do_approve() {
         echo "  install the signer's public key with the signer ceremony:" >&2
         echo "    per-repo: pinned signer add --repo $repo --file <pubkey> --principal <id>" >&2
         echo "    user:     pinned signer add --file <pubkey> --principal <id>" >&2
-        echo "  obtain the key OUT OF BAND (printed card, password manager," >&2
+        echo "  obtain the key out of band (printed card, password manager," >&2
         echo "  existing trusted machine) -- never from this repo." >&2
         exit 1
       fi
@@ -2157,7 +2160,7 @@ do_approve() {
       hash=""
       for t in "${tag_args[@]}"; do
         if ! sgit -c gpg.ssh.allowedSignersFile="$signers" verify-tag "$t"; then
-          printf '%sERROR: signature verification FAILED for tag %s; pin unchanged%s\n' "$C_RED$C_B" "$t" "$C_OFF" >&2
+          printf '%sERROR: signature verification failed for tag %s; pin unchanged%s\n' "$C_RED$C_B" "$t" "$C_OFF" >&2
           log_action approve "$repo" "$t" verify-failed
           exit 1
         fi
@@ -2215,7 +2218,7 @@ do_approve() {
       fi
 
       if ! sgit_diff --quiet 2>/dev/null || ! sgit_diff --cached --quiet 2>/dev/null; then
-        echo "note: work tree is dirty; only COMMITTED content at $hash is being approved" >&2
+        echo "note: work tree is dirty; only committed content at $hash is being approved" >&2
       fi
 
       if [ -n "$old_hash" ] && [ "$old_hash" = "$hash" ]; then
@@ -2249,7 +2252,7 @@ do_approve() {
         printf '%spinned:%s     (none)\n' "$C_DIM" "$C_OFF"
         echo
         printf '%s!!! FIRST APPROVAL WITH --trust !!!%s\n' "$C_RED$C_B" "$C_OFF"
-        printf '%s!!! The full tree at %s is being approved WITHOUT review. !!!%s\n' "$C_RED$C_B" "$hash" "$C_OFF"
+        printf '%s!!! The full tree at %s is being approved without review. !!!%s\n' "$C_RED$C_B" "$hash" "$C_OFF"
         printf '%s!!! Everything already in this repo becomes trusted as-is. !!!%s\n' "$C_RED$C_B" "$C_OFF"
       else
         printf '%spinned:%s     (none -- first approval: full tree review)\n' "$C_DIM" "$C_OFF"
@@ -2268,7 +2271,7 @@ do_approve() {
     case "$answer" in
       y|Y|yes) ;;
       *)
-        printf '%saborted; pin unchanged.%s\n' "$C_YEL" "$C_OFF"
+        printf '%saborted; pin unchanged%s\n' "$C_YEL" "$C_OFF"
         log_action approve "$repo" "$hash" abort
         if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
         exit 2
@@ -2397,7 +2400,7 @@ do_approve_files() {
     esac
     if [ ! -f "$path" ]; then
       echo "ERROR: not a regular file: $path" >&2
-      echo "       (a pinned file that is GONE is retired with: pinned tombstone $path)" >&2
+      echo "       (a pinned file that is gone is retired with: pinned tombstone $path)" >&2
       failed=$((failed + 1)); continue
     fi
     slot="$(slot_dir_for "$inv" "$path")"
@@ -2500,9 +2503,9 @@ do_approve_files() {
     if [ -n "$old_digest" ] && [ "$had_copy" -ne "$store" ]; then
       decl_changed=1
       if [ "$store" -eq 1 ]; then
-        cust_note="custody change: this approval ADDS a stored copy of the approved bytes to the slot"
+        cust_note="custody change: this approval adds a stored copy of the approved bytes to the slot"
       else
-        cust_note="custody change: this approval DROPS the slot's stored copy (pass --store to keep it)"
+        cust_note="custody change: this approval drops the slot's stored copy (pass --store to keep it)"
       fi
     elif [ "$store" -eq 1 ] && [ "$copy_bad" -eq 1 ]; then
       decl_changed=1
@@ -2553,15 +2556,17 @@ EOF
     if [ "$store" -eq 1 ]; then
       printf '%scustody:%s    %skept in the slot%s  %s(--store)%s\n' \
         "$C_B" "$C_OFF" "$C_CYN" "$C_OFF" "$C_DIM" "$C_OFF"
-      printf '            %sa copy of these bytes stays beside the record as a WITNESS:%s\n' "$C_DIM" "$C_OFF"
-      printf '            %swhat the ignored-key comparison reads, and what pinned cat%s\n' "$C_DIM" "$C_OFF"
-      printf '            %sserves -- readable by anything that mounts the slot, here and%s\n' "$C_DIM" "$C_OFF"
-      printf '            %sin every lane the slot reaches%s\n' "$C_DIM" "$C_OFF"
+      printf '            %sA copy of these bytes is kept beside the record as the%s\n' "$C_DIM" "$C_OFF"
+      printf '            %switness: what the ignored-key comparison reads, and what%s\n' "$C_DIM" "$C_OFF"
+      printf '            %spinned cat serves. It is readable by anything that mounts%s\n' "$C_DIM" "$C_OFF"
+      printf '            %sthe slot, here and in every lane the slot reaches.%s\n' "$C_DIM" "$C_OFF"
     else
       printf '%scustody:%s    %snone%s\n' "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
-      printf '            %sno copy is kept: the slot discloses a digest and nothing%s\n' "$C_DIM" "$C_OFF"
-      printf '            %smore, and a consumer brings its own witness (verify%s\n' "$C_DIM" "$C_OFF"
-      printf '            %s--baseline). Any copy this slot holds today is DROPPED%s\n' "$C_DIM" "$C_OFF"
+      printf '            %sNo copy is kept at rest: the slot records the digest and%s\n' "$C_DIM" "$C_OFF"
+      printf '            %sdiscloses nothing more, so pinned cat has nothing to serve.%s\n' "$C_DIM" "$C_OFF"
+      printf '            %sA consumer that wants the ignored-key comparison brings its%s\n' "$C_DIM" "$C_OFF"
+      printf '            %sown witness (verify --baseline). Any copy this slot holds%s\n' "$C_DIM" "$C_OFF"
+      printf '            %stoday is dropped by this approval.%s\n' "$C_DIM" "$C_OFF"
     fi
     echo
 
@@ -2624,7 +2629,7 @@ EOF
           # Losing custody is a state change worth naming after the fact too:
           # a consumer reading through the slot stops being served here.
           if [ "$had_copy" -eq 1 ]; then
-            printf '%snote: the stored approved copy was DROPPED -- re-approve with --store to keep one%s\n' \
+            printf '%snote: the stored approved copy was dropped -- re-approve with --store to keep one%s\n' \
               "$C_YEL" "$C_OFF"
           fi
         fi
@@ -2642,7 +2647,7 @@ EOF
         recorded=$((recorded + 1))
         ;;
       *)
-        printf '%sdeclined; record unchanged.%s\n' "$C_YEL" "$C_OFF"
+        printf '%sdeclined; record unchanged%s\n' "$C_YEL" "$C_OFF"
         log_action approve-file "$path" "$new_digest" abort
         declined=$((declined + 1))
         ;;
@@ -2688,12 +2693,12 @@ do_tombstone() {
   esac
   printf '%spath:%s       %s %s(gone)%s\n' "$C_B" "$C_OFF" "$path" "$C_DIM" "$C_OFF"
   printf '%sslot:%s       %s state: %s\n' "$C_B" "$C_OFF" "$slot" "$slot_state"
-  printf '%stombstone %s%s%s? its reappearance will then REFUSE until re-approved [y/N]%s ' \
+  printf '%stombstone %s%s%s? verify will then refuse it until re-approved [y/N]%s ' \
     "$C_B" "$C_CYN" "$path" "$C_OFF$C_B" "$C_OFF"
   read -r answer </dev/tty
   case "$answer" in
     y|Y|yes) ;;
-    *) echo "aborted; slot unchanged."; log_action tombstone "$path" "" abort; exit 2 ;;
+    *) echo "aborted; slot unchanged"; log_action tombstone "$path" "" abort; exit 2 ;;
   esac
   write_slot_state "$slot" tombstone "$(date -u +%Y-%m-%dT%H:%M:%SZ) retired by $inv"
   rm -f "$slot/tag"   # a declared release name has no meaning on a tombstone
@@ -2808,7 +2813,7 @@ do_verify() {
       verify_record_file "$slot_file" || exit 1
       if [ -e "$path" ]; then
         IFS= read -r line <"$slot_file" || line=""
-        echo "REFUSE: $path is tombstoned ($line) but PRESENT -- retired content resurrected" >&2
+        echo "REFUSE: $path is tombstoned ($line) but present -- retired content resurrected" >&2
         exit 13
       fi
       exit 0 ;;
@@ -2854,7 +2859,7 @@ do_verify() {
     subject="$frozen"
   else
     if [ ! -e "$path" ]; then
-      echo "REFUSE: $path is pinned but MISSING (restore it, or run: pinned tombstone $path)" >&2
+      echo "REFUSE: $path is pinned but missing (restore it, or run: pinned tombstone $path)" >&2
       exit 20
     fi
     [ -f "$path" ] || { echo "ERROR: not a regular file: $path" >&2; exit 1; }
@@ -3003,7 +3008,7 @@ do_cat() {
   read_pin_record "$slot_file" "$slot_kind" "$path" || exit 1
 
   if [ ! -e "$path" ]; then
-    echo "REFUSE: $path is pinned but MISSING -- custody does not serve a removed file" >&2
+    echo "REFUSE: $path is pinned but missing -- custody does not serve a removed file" >&2
     echo "        (restore it, or run: pinned tombstone $path)" >&2
     exit 20
   fi
@@ -3061,7 +3066,7 @@ do_status() {
   if [ -n "$hash" ] && [ "$hash" = "$head_hash" ]; then
     printf '%sstate:%s      %s✓ HEAD is approved%s\n' "$C_DIM" "$C_OFF" "$C_GRN" "$C_OFF"
   elif [ -n "$hash" ]; then
-    printf '%sstate:%s      %s✗ HEAD is NOT approved (%s commits ahead of pin)%s\n' "$C_DIM" "$C_OFF" \
+    printf '%sstate:%s      %s✗ HEAD is not approved (%s commits ahead of pin)%s\n' "$C_DIM" "$C_OFF" \
       "$C_RED" "$(sgit rev-list --count "${hash}..${head_hash}" 2>/dev/null || echo '?')" "$C_OFF"
   else
     printf '%sstate:%s      %s✗ never approved%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF"
@@ -3071,7 +3076,7 @@ do_status() {
   # holds cannot be RE-FETCHED -- surface that here instead of as a nix
   # error mid-rebuild. (nix may still deploy from its store cache.)
   if [ -n "$hash" ] && ! sgit cat-file -e "${hash}^{commit}" 2>/dev/null; then
-    printf '%swarning: the pinned rev is MISSING from this checkout (rewritten history or gc?) --%s\n' "$C_RED$C_B" "$C_OFF"
+    printf '%swarning: the pinned rev is missing from this checkout (rewritten history or gc?) --%s\n' "$C_RED$C_B" "$C_OFF"
     printf '%s         a deploy that needs to re-fetch it will fail; restore the commit or re-approve%s\n' "$C_RED$C_B" "$C_OFF"
   fi
   if ! sgit_diff --quiet 2>/dev/null || ! sgit_diff --cached --quiet 2>/dev/null; then
@@ -3089,7 +3094,7 @@ do_status_file() {
   printf '%sfile:%s       %s\n' "$C_DIM" "$C_OFF" "$path"
   printf '%sslot:%s       %s\n' "$C_DIM" "$C_OFF" "$slot"
   if ! inspect_slot "$slot" 2>/dev/null; then
-    printf '%sstate:%s      %s✗ MALFORMED slot -- inspect it by hand%s\n' "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF"
+    printf '%sstate:%s      %s✗ malformed slot -- inspect it by hand%s\n' "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF"
     exit 1
   fi
   case "$slot_state" in
@@ -3106,7 +3111,7 @@ do_status_file() {
       IFS= read -r line <"$slot_file" || line=""
       printf '%spinned:%s     tombstoned %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_DIM" "$line" "$C_OFF"
       if [ -e "$path" ]; then
-        printf '%sstate:%s      %s✗ tombstoned but PRESENT (retired content resurrected)%s\n' \
+        printf '%sstate:%s      %s✗ tombstoned but present (retired content resurrected)%s\n' \
           "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF"
       else
         printf '%sstate:%s      %s✓ tombstoned and absent%s\n' "$C_DIM" "$C_OFF" "$C_GRN" "$C_OFF"
@@ -3137,8 +3142,8 @@ do_status_file() {
       case "$rc" in
         0)  printf '%sstate:%s      %s✓ live file matches the record%s\n' "$C_DIM" "$C_OFF" "$C_GRN" "$C_OFF" ;;
         5)  printf '%sstate:%s      %s~ live file matches except in the ignored keys%s\n' "$C_DIM" "$C_OFF" "$C_YEL" "$C_OFF" ;;
-        11) printf '%sstate:%s      %s✗ live file DIFFERS from the record%s\n' "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF" ;;
-        20) printf '%sstate:%s      %s✗ pinned but MISSING (restore, or tombstone)%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF" ;;
+        11) printf '%sstate:%s      %s✗ live file differs from the record%s\n' "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF" ;;
+        20) printf '%sstate:%s      %s✗ pinned but missing (restore, or tombstone)%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF" ;;
         30) printf '%sstate:%s      %s✗ mode/ownership invariant violated%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF" ;;
         *)  printf '%sstate:%s      %s✗ verify error (exit %s)%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$rc" "$C_OFF" ;;
       esac ;;
@@ -3156,7 +3161,7 @@ do_sign() {
   # which sudo strips. The agent popup is blind (shows key use, not
   # content) -- the binding to content is this code path, plus the rule
   # that an unprompted popup is always denied.
-  [ "$EUID" -ne 0 ] || { echo "run sign WITHOUT sudo (it needs your SSH agent)" >&2; exit 1; }
+  [ "$EUID" -ne 0 ] || { echo "run sign without sudo (it needs your SSH agent)" >&2; exit 1; }
   inv="$(id -un)"
   [ $# -eq 2 ] || usage
   local tag_name="$2"
@@ -3678,12 +3683,12 @@ EOF
     printf '%starget:%s      %s\n' "$C_B" "$C_OFF" "$target"
     printf '%sentry:%s       %s\n' "$C_B" "$C_OFF" "$entry"
     printf '%sfingerprint:%s %s\n' "$C_B" "$C_OFF" "$fp"
-    printf '%s(obtain the key OUT OF BAND -- printed card, password manager, existing\ntrusted machine -- never from the repo it will vouch for.)%s\n' "$C_DIM" "$C_OFF"
+    printf '%s(obtain the key out of band -- printed card, password manager, existing\ntrusted machine -- never from the repo it will vouch for.)%s\n' "$C_DIM" "$C_OFF"
     printf '%strust this key to vouch? [y/N]%s ' "$C_B" "$C_OFF"
     read -r answer </dev/tty
     case "$answer" in
       y|Y|yes) ;;
-      *) echo "aborted; signers unchanged."; log_action signer-add "$target" "" abort; exit 2 ;;
+      *) echo "aborted; signers unchanged"; log_action signer-add "$target" "" abort; exit 2 ;;
     esac
     tmp="$(mktemp "$tdir/.stage.XXXXXX")"
     { [ -f "$target" ] && cat "$target"; printf '%s\n' "$entry"; } >"$tmp"
@@ -3707,7 +3712,7 @@ EOF
     read -r answer </dev/tty
     case "$answer" in
       y|Y|yes) ;;
-      *) echo "aborted; signers unchanged."; log_action signer-remove "$target" "" abort; exit 2 ;;
+      *) echo "aborted; signers unchanged"; log_action signer-remove "$target" "" abort; exit 2 ;;
     esac
     tmp="$(mktemp "$tdir/.stage.XXXXXX")"
     grep -vF "$keyblob" "$target" >"$tmp" || true   # empty result is fine: verifies nothing, fail closed
@@ -3801,7 +3806,7 @@ do_ignorable() {
   if [ -n "$under" ]; then
     case "$under" in
       /*) ;;
-      *)  echo "ERROR: --under needs an ABSOLUTE directory (a grant is not relative to a cwd)" >&2
+      *)  echo "ERROR: --under needs an absolute directory (a grant is not relative to a cwd)" >&2
           exit 1 ;;
     esac
     [ -d "$under" ] && under="$(readlink -f "$under")"
@@ -3841,7 +3846,7 @@ do_ignorable() {
   else
     [ "$dup" -gt 0 ] || {
       echo "REFUSE: no such grant to withdraw: $key, $scope_disp" >&2
-      echo "        remove takes the EXACT entry -- same key AND same scope; the entries are" >&2
+      echo "        remove takes the exact entry -- same key and same scope; the entries are" >&2
       echo "        listed by: pinned ignorable list" >&2
       exit 1
     }
@@ -3859,7 +3864,7 @@ do_ignorable() {
     if [ "$covered" -eq 0 ]; then
       printf '%snote:%s        %sthe machine policy (%s) does not cover this scope --\n' \
         "$C_B" "$C_OFF" "$C_YEL" "$PINNED_MACHINE_POLICY"
-      printf '            the entry will be recorded but will NOT be effective%s\n' "$C_OFF"
+      printf '            the entry will be recorded but will not be effective%s\n' "$C_OFF"
     fi
   else
     printf '            %sany slot that records this key falls back to a byte-exact%s\n' "$C_DIM" "$C_OFF"
@@ -3873,7 +3878,7 @@ do_ignorable() {
   read -r answer </dev/tty
   case "$answer" in
     y|Y|yes) ;;
-    *) echo "aborted; policy unchanged."; log_action "ignorable-$sub" "$key" "" abort; exit 2 ;;
+    *) echo "aborted; policy unchanged"; log_action "ignorable-$sub" "$key" "" abort; exit 2 ;;
   esac
   write_note "$(policy_dir_for "$inv")" ignorable.json "$new_json"
   if [ "$sub" = add ]; then
@@ -3926,7 +3931,7 @@ do_ignorable_list() {
     policy_print_entries "$POL_USER"
   fi
   echo
-  printf '%seffective%s %s(machine INTERSECT user -- what approve and verify check)%s\n' \
+  printf '%seffective%s %s(machine intersect user -- what approve and verify check)%s\n' \
     "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
   policy_print_entries "$POL_EFF"
 }
@@ -3982,7 +3987,7 @@ do_deploy() {
   # could silently read DIFFERENT flakes. Argv crosses the boundary.
   FLAKE="${FLAKE_ARG:-$DEFAULT_FLAKE}"
   [ -r "$FLAKE" ] || {
-    printf '%serror: cannot read %s -- pass --flake.%s\n' "$C_RED" "$FLAKE" "$C_OFF" >&2
+    printf '%serror: cannot read %s -- pass --flake%s\n' "$C_RED" "$FLAKE" "$C_OFF" >&2
     exit 1
   }
 
@@ -3997,7 +4002,7 @@ do_deploy() {
     [ -n "$r" ] && printf '%s|%s|%s\n' "$p" "$r" "$ref"
   done || true)"
   [ -n "$inputs" ] || {
-    printf '%serror: no git+file inputs with rev= in %s -- nothing deploy manages.%s\n' \
+    printf '%serror: no git+file inputs with rev= in %s -- nothing deploy manages%s\n' \
       "$C_RED" "$FLAKE" "$C_OFF" >&2
     exit 1
   }
@@ -4049,14 +4054,14 @@ EOF
       verify_record_file "$slot/tag" || exit 1
       IFS= read -r decl_tag <"$slot/tag" || decl_tag=""
       validate_tag_name "$decl_tag" || {
-        printf '%serror: %s declares an invalid tag name; refusing.%s\n' \
+        printf '%serror: %s declares an invalid tag name; refusing%s\n' \
           "$C_RED$C_B" "$slot/tag" "$C_OFF" >&2
         exit 1
       }
       live_tag="$(git -C "$path" rev-parse -q --verify "refs/tags/${decl_tag}^{commit}" 2>/dev/null || true)"
       if [ "$live_tag" != "$approved" ]; then
         if [ -z "$live_tag" ]; then tag_detail="is missing from the checkout"; else tag_detail="names ${live_tag:0:10}, not the approved ${approved:0:10}"; fi
-        printf '%serror: slot for %s declares tag %s, but the live tag %s -- refusing (moved or deleted tags do not deploy).%s\n' \
+        printf '%serror: slot for %s declares tag %s, but the live tag %s -- refusing (moved or deleted tags do not deploy)%s\n' \
           "$C_RED$C_B" "$name" "$decl_tag" "$tag_detail" "$C_OFF" >&2
         exit 1
       fi
@@ -4130,22 +4135,22 @@ EOF
   if [ "${#stale_repos[@]}" -gt 0 ]; then
     upd_cmd="pinned approve"
     for p in "${stale_repos[@]}"; do upd_cmd="$upd_cmd $p"; done
-    printf '%sto update (each repo still reviewed):%s\n' "$C_B" "$C_OFF"
+    printf '%sTo update (each repo still reviewed):%s\n' "$C_B" "$C_OFF"
     printf '  pinned upgrade\n'
     printf '  %s(selective: %s, then rerun deploy)%s\n\n' "$C_DIM" "$upd_cmd" "$C_OFF"
   fi
 
   if [ "$updates" -eq 0 ]; then
     if [ "$unpinned" -gt 0 ]; then
-      printf '%sPinned inputs all at their approved revs%s %s(%s without a pin slot)%s.\n' \
+      printf '%sPinned inputs all at their approved revs%s %s(%s without a pin slot)%s\n' \
         "$C_GRN" "$C_OFF" "$C_YEL" "$unpinned" "$C_OFF"
     else
-      printf '%sAll inputs at their approved revs.%s\n' "$C_GRN" "$C_OFF"
+      printf '%sAll inputs at their approved revs%s\n' "$C_GRN" "$C_OFF"
     fi
     # Rebuild unconditionally, and say why: the flake being in sync says
     # NOTHING about what the running system was built from (live-fired
     # 2026-07-28: an in-sync early exit left a stale system in place).
-    printf '%sRebuilding anyway -- the flake says nothing about what the RUNNING system was built from; if it is already current, this is a fast no-op.%s\n\n' \
+    printf '%sRebuilding anyway -- the flake says nothing about what the running system\nwas built from; if it is already current, this is a fast no-op.%s\n\n' \
       "$C_DIM" "$C_OFF"
   fi
 
@@ -4176,21 +4181,21 @@ EOF
   printf '\n'
 
   if [ "$DRY" -eq 1 ]; then
-    printf '%sDry run -- nothing executed.%s\n' "$C_YEL" "$C_OFF"
+    printf '%sDry run -- nothing executed%s\n' "$C_YEL" "$C_OFF"
     exit 0
   fi
 
   if [ "$YES" -eq 0 ]; then
     if [ ! -t 0 ]; then
-      printf '%serror: no tty for confirmation -- pass --yes to proceed non-interactively.%s\n' \
+      printf '%serror: no tty for confirmation -- pass --yes to proceed non-interactively%s\n' \
         "$C_RED" "$C_OFF" >&2
       exit 2
     fi
-    printf '%sProceed? [y/N]%s ' "$C_B" "$C_OFF"
+    printf '%sproceed? [y/N]%s ' "$C_B" "$C_OFF"
     IFS= read -r answer
     case "$answer" in
       y|Y|yes|YES) ;;
-      *) printf '%sAborted.%s\n' "$C_YEL" "$C_OFF"; exit 2 ;;
+      *) printf '%saborted%s\n' "$C_YEL" "$C_OFF"; exit 2 ;;
     esac
   fi
 
@@ -4230,7 +4235,7 @@ do_upgrade() {
   local FLAKE
   FLAKE="${FLAKE_ARG:-$(default_flake_file)}"
   [ -r "$FLAKE" ] || {
-    printf '%serror: cannot read %s -- pass --flake.%s\n' "$C_RED" "$FLAKE" "$C_OFF" >&2
+    printf '%serror: cannot read %s -- pass --flake%s\n' "$C_RED" "$FLAKE" "$C_OFF" >&2
     exit 1
   }
 
@@ -4257,7 +4262,7 @@ EOF
   fi
   if [ "${#repos[@]}" -gt 0 ] || [ "${#tagged_p[@]}" -gt 0 ]; then
     if [ "$DRY" -eq 1 ]; then
-      printf '%sdry run: no ceremonies; deploy preview follows.%s\n\n' "$C_DIM" "$C_OFF"
+      printf '%sDry run: no ceremonies; deploy preview follows%s\n\n' "$C_DIM" "$C_OFF"
     else
       APPROVE_BATCH=1
       if [ "${#repos[@]}" -gt 0 ]; then
