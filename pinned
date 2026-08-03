@@ -3131,9 +3131,9 @@ do_status_file() {
             "$C_DIM" "$C_OFF" "$C_YEL" "$C_OFF"
         fi
         if [ -e "$slot/approved" ]; then
-          printf '%scopy:%s       approved bytes kept in the slot (pinned cat serves them)\n' "$C_DIM" "$C_OFF"
+          printf '%scustody:%s    approved bytes kept in the slot (pinned cat serves them)\n' "$C_DIM" "$C_OFF"
         else
-          printf '%scopy:%s       %snone -- a consumer supplies its own witness (verify --baseline),%s\n' \
+          printf '%scustody:%s    %snone -- a consumer supplies its own witness (verify --baseline),%s\n' \
             "$C_DIM" "$C_OFF" "$C_DIM" "$C_OFF"
           printf '            %sor re-approve with --store%s\n' "$C_DIM" "$C_OFF"
         fi
