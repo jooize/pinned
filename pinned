@@ -3036,7 +3036,7 @@ do_cat() {
 # ---- status ----------------------------------------------------------------
 
 do_status() {
-  inv="$(id -un)"
+  inv="$(tier_user)"  # not id -un: correct tier under sudo (root has none)
   [ $# -ge 1 ] || usage
   # A directory is a repo; anything else (present or not) is a file pin.
   if [ ! -d "$1" ]; then
@@ -3210,7 +3210,7 @@ do_list() {
   # line: declared kind (git / sha256 / ...), digest, decoded path.
   # Unprivileged -- reading needs membership in the tier's group. Slot
   # names never leave this function: consumers get decoded paths.
-  inv="$(id -un)"
+  inv="$(tier_user)"  # not id -un: correct tier under sudo (root has none)
   local under=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -4024,7 +4024,12 @@ EOF
   printf '%sgit+file inputs%s %s(%s)%s\n' "$C_B" "$C_OFF" "$C_DIM" "$FLAKE" "$C_OFF"
   while IFS='|' read -r path flake_rev flake_ref; do
     name="${path##*/}"
-    slot="$(slot_dir_for "$(id -un)" "$path")"
+    # tier_user, not id -un: under `pinned upgrade` this scan runs in the
+    # self-elevated ROOT process, where id -un names a tier that does not
+    # exist (/var/db/pinned/root) -- every input then read "no pin slot"
+    # and deploy synced nothing (live-fired 2026-08-03, first root-context
+    # deploy). Standalone unprivileged deploy never hit it.
+    slot="$(slot_dir_for "$(tier_user)" "$path")"
     # read_rev refuses tombstoned/malformed/unknown-VCS slots -- a
     # deploy through a retired or undeclared record must not proceed.
     approved="$(read_rev "$slot")" || exit 1
