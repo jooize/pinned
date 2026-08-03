@@ -21,7 +21,7 @@
 #                                             custody, re-hashed against the
 #                                             record before a byte is emitted
 #   pinned tombstone <path>                   retire a pinned file that is GONE
-#   pinned sign <repo> <tag>                  signed release tag at the PINNED hash
+#   pinned sign <repo> <tag>                  signed release tag at the pinned hash
 #   pinned signer add|list|remove             allowed-signers ceremony
 #   pinned ignorable add|remove|list          which keys a ceremony may declare
 #                                             ignored, and where (the policy)
