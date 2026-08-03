@@ -447,6 +447,26 @@ Rungs 1 and 2 need custody (`--store`); rung 3 does not. Consumers that
 must PARSE content and cannot do either use `verify --emit` or
 `verify --frozen`, which bind the verdict and the bytes to one read.
 
+## Glossary
+
+The names above in one place -- the same bytes seen from different
+sides, which is exactly where they get confused.
+
+- **record** -- the root-owned slot content: digest plus declarations
+  (ignored keys, tag). Always the authority.
+- **witness** -- any bytes that re-hash to the record, at the moment
+  they do; evidence that narrows a comparison, never authority. Earned
+  per use, not a stored status.
+- **`approved` (the slot copy)** -- the root-custody copy written at the
+  ceremony, named for its provenance. Becomes a witness each time it
+  re-hashes clean.
+- **`pinned-baselines`** -- the consumer-owned candidate store (diff
+  baselines for orientation displays); entries can go stale, and each
+  becomes a witness only when a verify re-hashes it clean.
+- **custody** -- who holds bytes at rest (root slot copy vs consumer
+  store): a disclosure and trust fact about location, distinct from the
+  record's authority.
+
 ## Display conventions
 
 A trust ceremony is mostly a display, so the display has rules. They are
