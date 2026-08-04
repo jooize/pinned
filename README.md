@@ -78,6 +78,17 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       20 live file missing,
                                       30 slot invariant, 1 error)
     pinned tombstone <path>           retire a pinned file that is gone
+    pinned mv <old> <new>             re-key a record to the path its
+                                      content has moved to: the rev or
+                                      digest and every annotation travel
+                                      verbatim, the content at <new>
+                                      must already answer to the record
+                                      (repo: a work-tree root whose
+                                      object store holds the pinned
+                                      commit; file: a re-hash to the
+                                      recorded digest, or drift confined
+                                      to the keys the slot already
+                                      ignores), and <old> is tombstoned
     pinned sign <repo> <tag>          signed release tag at the pinned hash
     pinned signer add|list|remove [--repo <path>] (--file <pubkey> | --key '<line>')
                                       allowed-signers ceremony:
@@ -127,7 +138,7 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       ones are listed as refused with the
                                       flag that would declare them
 
-approve, setup, tombstone, upgrade, signer add/remove and ignorable
+approve, setup, tombstone, mv, upgrade, signer add/remove and ignorable
 add/remove self-elevate via sudo (re-exec of the installed root-owned
 binary).
 sign, review and cat
@@ -352,6 +363,15 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   file that vanished refuses until restored or ceremonially tombstoned,
   and a tombstoned path that REAPPEARS refuses until re-approved --
   retired content resurrected must not read as merely new.
+- A PATH IS A RECORD'S IDENTITY, and `mv` is how an identity changes
+  hands without trust changing with it. The record travels verbatim and
+  the machine -- not the human -- establishes the one new claim it makes:
+  the content already at the new path must be exactly what the record
+  names, or the ceremony refuses. So the only thing the human confirms is
+  the thing the ceremony displays, and nothing becomes trusted that was
+  not trusted a moment earlier. The old slot is tombstoned (not deleted)
+  by the same move, because something reappearing at a formerly trusted
+  path is exactly what has to fail closed.
 - Signing exports the pin. `pinned sign` creates a perfectly normal
   signed release tag, but the hash it signs comes from the root-owned
   pin file: you read once at approve; nothing is re-read at sign time,

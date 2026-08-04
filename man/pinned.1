@@ -22,6 +22,7 @@ Actions marked
 run as root.
 .BR approve ,
 .BR tombstone ,
+.BR mv ,
 and
 .B setup
 self-elevate when invoked unprivileged: they re-exec the installed,
@@ -257,6 +258,46 @@ serves.
 If it reappears,
 .B verify
 refuses until it is re-approved.
+.TP
+.B mv \fIold\fP \fInew\fP
+(sudo) Re-key an existing record to the path its content has moved to.
+The record travels verbatim \(em same commit hash or digest, same
+declarations \(em so this is a rename, never a re-approval, and it
+cannot widen what is trusted.
+It follows a move that has already happened: \fIold\fP must be gone, or
+the ceremony refuses.
+.IP
+Before anything is displayed, the machine checks that the content now at
+\fInew\fP is what the record already names.
+A repository record requires a usable work tree at \fInew\fP, named at
+its root, whose object store holds the pinned commit \(em a work tree
+that does not is a different repository wearing the new name.
+A file record requires a regular file at \fInew\fP that re-hashes to the
+recorded digest; a file differing only in keys the slot already declares
+ignored (and the policy still grants) is accepted too, with the drifted
+keys named, and the record is still carried over unchanged \(em the
+tolerated drift is never re-recorded.
+Anything else refuses.
+.IP
+The annotations travel with it: the declared
+.BR tag ,
+the
+.B ignored.<format>
+declaration, the stored
+.B approved
+witness and any per-slot
+.BR signers/allowed_signers .
+The new slot must be free \(em a live record, a tombstone, or per-slot
+signer data already there all refuse, because records do not merge.
+.IP
+The new record is written first, then \fIold\fP is tombstoned rather
+than deleted: content reappearing at a formerly trusted path must fail
+closed (see
+.BR tombstone ).
+An interrupted
+.B mv
+therefore leaves the old record live beside the new one, both naming the
+same bytes, and re-running finishes the job.
 .SS Verification and serving
 .TP
 .B verify \fIpath\fP

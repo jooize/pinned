@@ -129,11 +129,11 @@ need '^    root:\*) ;;$'                                    2 'owner allowlists'
 need '^PINNED_ROOT=/var/db/pinned$'                         1 'pin-root constant'
 need '^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json$'   1 'machine-policy constant'
 need '^  install -d -m 755 -o root -g wheel "\$PINNED_ROOT"$'  1 'pin-root install'
-need '-o root -g "\$TREE_GRP" '                             3 'slot-tree installs'
+need '-o root -g "\$TREE_GRP" '                             4 'slot-tree installs'
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
-need '</dev/tty'                                            11 'ceremony tty reads'
+need '</dev/tty'                                            12 'ceremony tty reads'
 need '^# ---- setup ---'                                    1 'library cut marker'
 
 sed -e "s#^PINNED_ROOT=/var/db/pinned\$#PINNED_ROOT='$PINNED_ROOT'#" \
@@ -2326,6 +2326,251 @@ assert_exit "$RC" 0 "--algo still applies to the file review"
 run_pinned review "$SUB/no-such-file"
 assert_exit "$RC" 1 "a missing path is still a file-review refusal"
 assert_contains "$OUT" "not a regular file" "and says so"
+
+# ---------------------------------------------------------------------------
+say "S14: mv (re-key a record to a moved path)"
+# ---------------------------------------------------------------------------
+# mv carries a record VERBATIM to the path its content moved to. The cases
+# below are the two halves of that claim: what travels (record, annotations,
+# tombstone at the old key) and what the machine refuses to move (anything it
+# cannot prove the new path already holds).
+mkdir -p "$SUB/mv"
+
+# --- file happy path: the check line is re-named, the digest is not --------
+printf 'moving bytes\n' > "$SUB/mv/from.txt"
+MV_DIG="$(digest_of "$SUB/mv/from.txt")"
+ANS='y
+'
+run_pinned approve --file "$SUB/mv/from.txt" --store
+assert_exit "$RC" 0 "fixture: the file record exists"
+MV_OLD_SLOT="$(slot_of "$SUB/mv/from.txt")"
+mkdir -p "$SUB/mv/deeper"
+mv "$SUB/mv/from.txt" "$SUB/mv/deeper/to.txt"
+MV_NEW_SLOT="$(slot_of "$SUB/mv/deeper/to.txt")"
+ANS='y
+'
+run_pinned mv "$SUB/mv/from.txt" "$SUB/mv/deeper/to.txt"
+assert_exit "$RC" 0 "a file record moves to the path its content moved to"
+assert_contains "$OUT" "AT THE NEW PATH" "the ceremony states what the y buys"
+assert_contains "$OUT" "the approved copy" "and names the annotations that travel"
+assert_file "$MV_NEW_SLOT/pin.sha256" "the new slot holds the record"
+assert_eq "$(cat "$MV_NEW_SLOT/pin.sha256")" "$MV_DIG  $SUB/mv/deeper/to.txt" \
+          "the check line keeps the digest and names the NEW path"
+assert_eq "$(count_state "$MV_NEW_SLOT")" 1 "the new slot holds exactly one state file"
+if (cd / && shasum -a 256 -c "$MV_NEW_SLOT/pin.sha256" >/dev/null 2>&1); then
+  ok "shasum -c still verifies the moved record at its new path"
+else
+  fail "shasum -c cross-check broke on the moved record"
+fi
+assert_file "$MV_NEW_SLOT/approved" "the stored witness travelled"
+assert_eq "$(digest_of "$MV_NEW_SLOT/approved")" "$MV_DIG" "and it is the same approved bytes"
+assert_file "$MV_OLD_SLOT/tombstone" "the old key is tombstoned, not deleted"
+assert_contains "$MV_OLD_SLOT/tombstone" "moved to $SUB/mv/deeper/to.txt" \
+                "the tombstone names where the record went"
+assert_eq "$(count_state "$MV_OLD_SLOT")" 1 "the old slot holds exactly one state file"
+assert_absent "$MV_OLD_SLOT/approved" "the old slot keeps no copy of content it no longer records"
+ANS=""
+run_pinned verify "$SUB/mv/deeper/to.txt"
+assert_exit "$RC" 0 "the moved file verifies at its new path"
+run_pinned verify "$SUB/mv/from.txt"
+assert_exit "$RC" 0 "the old path verifies 0 while it stays gone (tombstoned)"
+printf 'squatter\n' > "$SUB/mv/from.txt"
+run_pinned verify "$SUB/mv/from.txt"
+assert_exit "$RC" 13 "content reappearing at the old path fails closed (13)"
+rm -f "$SUB/mv/from.txt"
+
+# --- decline changes nothing ----------------------------------------------
+printf 'declined move\n' > "$SUB/mv/dfrom.txt"
+ANS='y
+'
+run_pinned approve --file "$SUB/mv/dfrom.txt"
+assert_exit "$RC" 0 "fixture: the declined-move record exists"
+DECL_OLD="$(slot_of "$SUB/mv/dfrom.txt")"
+DECL_NEW="$(slot_of "$SUB/mv/dto.txt")"
+mv "$SUB/mv/dfrom.txt" "$SUB/mv/dto.txt"
+ANS='n
+'
+run_pinned mv "$SUB/mv/dfrom.txt" "$SUB/mv/dto.txt"
+assert_exit "$RC" 2 "declining the mv exits 2"
+assert_contains "$OUT" "both slots unchanged" "and says nothing moved"
+assert_file "$DECL_OLD/pin.sha256" "the old record is untouched"
+assert_absent "$DECL_OLD/tombstone" "no tombstone was written"
+assert_absent "$DECL_NEW" "the new slot was never created"
+
+# --- the refuse matrix -----------------------------------------------------
+ANS=""
+run_pinned mv "$SUB/mv/dto.txt"
+assert_exit "$RC" 1 "mv with one path is usage (exit 1)"
+assert_contains "$OUT" "usage: pinned" "and prints usage"
+run_pinned mv "$SUB/mv/dto.txt" "$SUB/mv/dto.txt"
+assert_exit "$RC" 1 "old and new naming one path refuses"
+assert_contains "$OUT" "name the same path" "the refusal says why"
+
+printf 'still live\n' > "$SUB/mv/live.txt"
+ANS='y
+'
+run_pinned approve --file "$SUB/mv/live.txt"
+assert_exit "$RC" 0 "fixture: a record whose path is still live"
+printf 'copy at the new path\n' > "$SUB/mv/live-copy.txt"
+ANS=""
+run_pinned mv "$SUB/mv/live.txt" "$SUB/mv/live-copy.txt"
+assert_exit "$RC" 1 "mv refuses while the old path still exists"
+assert_contains "$OUT" "has already moved" "the refusal names the premise"
+
+run_pinned mv "$SUB/mv/never-approved.txt" "$SUB/mv/live-copy.txt"
+assert_exit "$RC" 1 "mv refuses a path that was never approved"
+assert_contains "$OUT" "was never approved" "and says there is no record to move"
+
+seed_tombstone "$SUB/mv/retired.txt"
+run_pinned mv "$SUB/mv/retired.txt" "$SUB/mv/live-copy.txt"
+assert_exit "$RC" 1 "mv refuses a tombstoned record"
+assert_contains "$OUT" "does not travel" "a tombstone is the old path's own history"
+
+# An occupied new slot: records do not merge, in either direction.
+printf 'occupant\n' > "$SUB/mv/occupied.txt"
+printf 'mover\n' > "$SUB/mv/mover.txt"
+ANS='y
+'
+run_pinned approve --file "$SUB/mv/occupied.txt"
+ANS='y
+'
+run_pinned approve --file "$SUB/mv/mover.txt"
+assert_exit "$RC" 0 "fixture: two records, both live"
+MOVER_SLOT="$(slot_of "$SUB/mv/mover.txt")"
+rm -f "$SUB/mv/mover.txt"
+ANS=""
+run_pinned mv "$SUB/mv/mover.txt" "$SUB/mv/occupied.txt"
+assert_exit "$RC" 1 "mv refuses a new path that already has a record"
+assert_contains "$OUT" "records do not merge" "the refusal names the rule"
+assert_absent "$MOVER_SLOT/tombstone" "the old record is left alone"
+
+# A state-free slot is not an empty one: `signer add --repo` leaves per-slot
+# signer data behind, and a record landing on it would silently inherit them.
+printf 'signer squat\n' > "$SUB/mv/signed-target.txt"
+SIGNED_SLOT="$(slot_of "$SUB/mv/signed-target.txt")"
+mkdir -p "$SIGNED_SLOT/signers"
+printf 'harness@example.invalid ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE\n' \
+  > "$SIGNED_SLOT/signers/allowed_signers"
+chmod 640 "$SIGNED_SLOT/signers/allowed_signers"
+ANS=""
+run_pinned mv "$SUB/mv/mover.txt" "$SUB/mv/signed-target.txt"
+assert_exit "$RC" 1 "mv refuses a signers-only slot at the new path"
+assert_contains "$OUT" "per-slot signer data" "the refusal names the signer data by role"
+
+# Content that is not what the record names, at the new path.
+printf 'original bytes\n' > "$SUB/mv/drifter.txt"
+ANS='y
+'
+run_pinned approve --file "$SUB/mv/drifter.txt"
+assert_exit "$RC" 0 "fixture: the drift record exists"
+DRIFT_SLOT="$(slot_of "$SUB/mv/drifter.txt")"
+rm -f "$SUB/mv/drifter.txt"
+printf 'different bytes\n' > "$SUB/mv/drifted-to.txt"
+ANS=""
+run_pinned mv "$SUB/mv/drifter.txt" "$SUB/mv/drifted-to.txt"
+assert_exit "$RC" 1 "mv refuses content at the new path that is not what the record names"
+assert_contains "$OUT" "is not what" "the refusal says the content does not answer to the record"
+assert_absent "$DRIFT_SLOT/tombstone" "and nothing was written"
+run_pinned mv "$SUB/mv/drifter.txt" "$SUB/mv/absent-entirely.txt"
+assert_exit "$RC" 1 "mv refuses when nothing is at the new path"
+assert_contains "$OUT" "not a regular file" "and says the new path is not a file"
+
+# --- tolerated drift: the record still names this content ------------------
+if command -v jq >/dev/null 2>&1; then
+  # The declared keys' grant has to hold at mv time exactly as at verify time,
+  # so the ceremony's tolerance is the gate's tolerance and nothing else.
+  seed_policy_user '[{"path":["model"]}]'
+  printf '{\n  "model": "opus",\n  "keep": 1\n}\n' > "$SUB/mv/tol.json"
+  TOL_DIG="$(digest_of "$SUB/mv/tol.json")"
+  ANS='y
+'
+  run_pinned approve --file "$SUB/mv/tol.json" --ignore-json-key model --store
+  assert_exit "$RC" 0 "fixture: a record that declares an ignored key, with custody"
+  rm -f "$SUB/mv/tol.json"
+  printf '{\n  "model": "sonnet",\n  "keep": 1\n}\n' > "$SUB/mv/tol-moved.json"
+  TOL_NEW_SLOT="$(slot_of "$SUB/mv/tol-moved.json")"
+  ANS='y
+'
+  run_pinned mv "$SUB/mv/tol.json" "$SUB/mv/tol-moved.json"
+  assert_exit "$RC" 0 "drift confined to a declared ignored key still moves"
+  assert_contains "$OUT" "not byte-identical" "the ceremony says so loudly"
+  assert_contains "$OUT" "model" "and names the key that drifted"
+  assert_eq "$(cat "$TOL_NEW_SLOT/pin.sha256")" "$TOL_DIG  $SUB/mv/tol-moved.json" \
+            "the record travels verbatim: the tolerated drift is NOT re-recorded"
+  assert_file "$TOL_NEW_SLOT/ignored.json" "the declaration travelled"
+  assert_eq "$(cat "$TOL_NEW_SLOT/ignored.json")" '[["model"]]' "byte for byte"
+  ANS=""
+  run_pinned verify "$SUB/mv/tol-moved.json"
+  assert_exit "$RC" 5 "and the moved record answers 5 at its new path, as before the move"
+else
+  say "S14: tolerated-drift cases SKIPPED (no jq in the trusted PATH)"
+fi
+
+# --- repo records ----------------------------------------------------------
+if [ "$GIT_OK" -eq 1 ]; then
+  mgit() { # repo git-args... -- scrubbed git against ONE named fixture repo
+    local r="$1"; shift
+    env -i PATH="$PATH" HOME=/var/empty \
+      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -C "$r" -c init.defaultBranch=main -c user.name=harness \
+      -c user.email=harness@example.invalid -c commit.gpgsign=false \
+      -c core.hooksPath=/dev/null "$@"
+  }
+  MVR_OLD="$FIX/mvrepo-old"; MVR_NEW="$FIX/mvrepo-new"; MVR_OTHER="$FIX/mvrepo-other"
+  mkdir -p "$MVR_OLD" "$MVR_OTHER"
+  mgit "$MVR_OLD" init -q
+  printf 'r1\n' > "$MVR_OLD/f"; mgit "$MVR_OLD" add f; mgit "$MVR_OLD" commit -q -m r1
+  mgit "$MVR_OLD" tag v1
+  MVR_HASH="$(mgit "$MVR_OLD" rev-parse 'HEAD^{commit}')"
+  mgit "$MVR_OTHER" init -q
+  printf 'o1\n' > "$MVR_OTHER/f"; mgit "$MVR_OTHER" add f; mgit "$MVR_OTHER" commit -q -m o1
+  ANS='y
+'
+  run_pinned approve "$MVR_OLD" --tag v1
+  assert_exit "$RC" 0 "fixture: the repo record exists, with a declared tag"
+  MVR_OLD_SLOT="$(slot_of "$MVR_OLD")"
+  MVR_NEW_SLOT="$(slot_of "$MVR_NEW")"
+  # A per-slot signers override, the one annotation that lives in a subdir.
+  mkdir -p "$MVR_OLD_SLOT/signers"
+  printf 'harness@example.invalid ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE\n' \
+    > "$MVR_OLD_SLOT/signers/allowed_signers"
+  chmod 640 "$MVR_OLD_SLOT/signers/allowed_signers"
+
+  # Refusals first -- they need the record still keyed to the old path.
+  mv "$MVR_OLD" "$MVR_NEW"
+  ANS=""
+  run_pinned mv "$MVR_OLD" "$MVR_OTHER"
+  assert_exit "$RC" 1 "a repo record refuses a work tree whose object store lacks the pinned rev"
+  assert_contains "$OUT" "not the repository the record names" "the refusal names the reason"
+  mkdir -p "$MVR_NEW/subdir"
+  run_pinned mv "$MVR_OLD" "$MVR_NEW/subdir"
+  assert_exit "$RC" 1 "a repo record refuses a path that is not the work-tree root"
+  assert_contains "$OUT" "not the work-tree root" "through the shared resolver"
+  run_pinned mv "$MVR_OLD" "$SUB/mv/live-copy.txt"
+  assert_exit "$RC" 1 "a repo record refuses a non-directory new path"
+  assert_contains "$OUT" "moves to a work tree" "and says what a repo record moves to"
+  assert_absent "$MVR_OLD_SLOT/tombstone" "no refusal wrote anything"
+
+  ANS='y
+'
+  run_pinned mv "$MVR_OLD" "$MVR_NEW"
+  assert_exit "$RC" 0 "a repo record moves to the work tree that holds its rev"
+  assert_eq "$(cat "$MVR_NEW_SLOT/rev.git")" "$MVR_HASH" "the rev travels verbatim"
+  assert_eq "$(count_state "$MVR_NEW_SLOT")" 1 "the new slot holds exactly one state file"
+  assert_eq "$(cat "$MVR_NEW_SLOT/tag")" "v1" "the declared tag travelled"
+  assert_file "$MVR_NEW_SLOT/signers/allowed_signers" "the per-slot signers travelled"
+  assert_contains "$MVR_NEW_SLOT/signers/allowed_signers" "harness@example.invalid" "with their content"
+  assert_file "$MVR_OLD_SLOT/tombstone" "the old key is tombstoned"
+  assert_contains "$MVR_OLD_SLOT/tombstone" "moved to $MVR_NEW" "naming where the record went"
+  assert_absent "$MVR_OLD_SLOT/tag" "the old slot's declared name went with the record"
+  assert_absent "$MVR_OLD_SLOT/signers" "and so did its signers"
+  ANS=""
+  run_pinned status "$MVR_NEW"
+  assert_exit "$RC" 0 "status at the new path exits 0"
+  assert_contains "$OUT" "HEAD is approved" "and reports the moved record as approved"
+else
+  say "S14: repo cases SKIPPED (no git fixture)"
+fi
 
 # ---------------------------------------------------------------------------
 say ""

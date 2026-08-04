@@ -24,6 +24,12 @@
 #                                             custody, re-hashed against the
 #                                             record before a byte is emitted
 #   pinned tombstone <path>                   retire a pinned file that is GONE
+#   pinned mv <old> <new>                     re-key a record to the path its
+#                                             content MOVED to (rev/digest and
+#                                             annotations travel verbatim; the
+#                                             content at <new> must answer to
+#                                             the record, and <old> is
+#                                             tombstoned)
 #   pinned sign <repo> <tag>                  signed release tag at the pinned hash
 #   pinned signer add|list|remove             allowed-signers ceremony
 #   pinned ignorable add|remove|list          which keys a ceremony may declare
@@ -32,7 +38,7 @@
 #   pinned deploy [--dry-run]                 sync flake inputs to approved revs, rebuild
 #   pinned setup [--yes]                      provision sudoers digest pin; self-install
 #
-# approve, setup, tombstone, signer add/remove and ignorable add/remove
+# approve, setup, tombstone, mv, signer add/remove and ignorable add/remove
 # self-elevate via sudo (re-exec of the installed root-owned binary);
 # sign runs as the user because it needs the SSH agent.
 #
@@ -226,6 +232,7 @@ usage: pinned <action> [args]
   approve <repo>... [options]    (sudo) review the diff since the last pin, write pin
   approve --file <path> ...      (sudo) file-pin ceremony: freeze, review, record hash
   tombstone <path>               (sudo) retire a pinned file that is gone
+  mv <old> <new>                 (sudo) re-key a record to a moved path
   verify [options] <path>        file-pin verdict; quiet exit-code contract for gates
   cat <path>                     the approved bytes, from root custody; fail-closed
   sign <repo> <tag>              create a signed tag at the pinned hash
@@ -2245,11 +2252,45 @@ EOF
 # back to this script's own path. Sits after the helper definitions so the
 # approve preview below can reuse them.
 case "$action" in
-  approve|setup|tombstone|upgrade)
+  approve|setup|tombstone|upgrade|mv)
     if [ "$EUID" -ne 0 ]; then
       # tombstone without exactly its <path> can only ever reach usage --
       # fail here, before authentication costs a sudo prompt.
       if [ "$action" = "tombstone" ] && [ $# -ne 1 ]; then usage; fi
+      # mv: two paths that differ, and an old path that is really gone --
+      # every one of those is checkable free, so none of them costs an
+      # authentication. The peek below is orientation only; the root side
+      # re-reads the slot and stays the authority.
+      if [ "$action" = "mv" ]; then
+        [ $# -eq 2 ] || usage
+        mv_old="$(canon_path "$1")" || exit 1
+        mv_new="$(canon_path "$2")" || exit 1
+        if [ "$mv_old" = "$mv_new" ]; then
+          echo "REFUSE: old and new name the same path: $mv_old" >&2
+          exit 1
+        fi
+        if [ -e "$mv_old" ]; then
+          echo "REFUSE: $mv_old still exists -- you mv a record whose content has already moved" >&2
+          echo "        (move the content first, or approve $mv_new instead)" >&2
+          exit 1
+        fi
+        printf '%sold:%s        %s %s(gone)%s\n' "$C_B" "$C_OFF" "$mv_old" "$C_DIM" "$C_OFF"
+        printf '%snew:%s        %s\n' "$C_B" "$C_OFF" "$mv_new"
+        mv_slot="$(slot_dir_for "$(tier_user)" "$mv_old")"
+        # Nothing is CONCLUDED from what this peek cannot see: the tier is
+        # root-only until the group exists, so an absent-looking slot may
+        # simply be one this user cannot traverse. Hence one honest line for
+        # both, and no refusal built on it.
+        if [ -d "$mv_slot" ] && inspect_slot "$mv_slot" 2>/dev/null \
+           && [ "$slot_state" != none ]; then
+          printf '%srecord:%s     %s%s%s %s(%s)%s\n' "$C_B" "$C_OFF" \
+            "$C_CYN" "${slot_file##*/}" "$C_OFF" "$C_DIM" "$mv_slot" "$C_OFF"
+        else
+          printf '%srecord:%s     %s(none visible from here; the root side reads it and answers)%s\n' \
+            "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
+        fi
+        echo
+      fi
       # upgrade: the plan, free of charge -- which inputs the root-side
       # ceremonies will cover. Orientation only: everything is re-derived
       # as root after sudo, the same contract as approve's preview.
@@ -3525,6 +3566,302 @@ do_tombstone() {
   clear_slot_ignore "$slot"   # nor do tolerated keys, or a copy of what is gone
   printf '%s✓ tombstoned:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$path"
   log_action tombstone "$path"
+}
+
+# ---- mv --------------------------------------------------------------------
+
+# Hand verify's own diagnosis through, saying whose record and whose bytes it
+# was about -- verify names the path whose SLOT it read (the old one), which
+# without this line reads as a verdict about the wrong file.
+mv_verify_said() { # $1 old  $2 new  $3 captured output
+  printf '%sverify, on the record for %s and the bytes now at %s:%s\n' \
+    "$C_DIM" "$1" "$2" "$C_OFF" >&2
+  cat -- "$3" >&2
+}
+
+# Re-key a record to the path its content has MOVED to. A path is a record's
+# identity, so a moved repo or file orphans its slot, and re-approving costs a
+# full first-approval ceremony -- a review of everything, when nothing
+# changed but the name.
+#
+# WHY THIS NEVER WIDENS TRUST. The record travels VERBATIM: same rev, same
+# digest, same declarations. The one new claim is "this path", and even that
+# is not taken on the human's word -- the machine checks that the content now
+# at <new> is exactly what the record already names (a work tree whose object
+# store holds the pinned rev; a file that re-hashes to the pinned digest,
+# byte-exact or drifting only in keys the slot already declares ignored). So
+# the ceremony asks about precisely what it displays, and no answer to it can
+# make any bytes trusted that were not trusted a moment before. Everything
+# ambiguous fails closed: an old path that still exists, a tombstoned or
+# malformed old slot, and any state at the new slot all refuse rather than
+# merge.
+#
+# The old slot is TOMBSTONED, never deleted: something reappearing at a
+# formerly-trusted path must fail closed, and tombstone+present refuses where
+# a missing slot would merely re-prompt.
+do_mv() {
+  require_root mv
+  [ $# -eq 2 ] || usage
+  local old new old_slot new_slot target what answer line f e
+  local state kind src rev digest label tag="" ign_show="" drifted="" travels=""
+  local vrc=0 irc=0 vout
+  old="$(canon_path "$1")" || exit 1
+  new="$(canon_path "$2")" || exit 1
+  if [ "$old" = "$new" ]; then
+    echo "REFUSE: old and new name the same path: $old" >&2
+    exit 1
+  fi
+  case "$new" in
+    *"$NL"*)
+      echo "ERROR: refusing a path containing a newline (records are one line per pin)" >&2
+      exit 1 ;;
+  esac
+
+  ensure_tree "$inv"
+  old_slot="$(slot_dir_for "$inv" "$old")"
+  new_slot="$(slot_dir_for "$inv" "$new")"
+
+  inspect_slot "$old_slot" || {
+    echo "       a malformed record cannot be moved; fix the slot by hand, or approve $new" >&2
+    exit 1
+  }
+  case "$slot_state" in
+    none)
+      echo "no slot: $old was never approved; there is no record to move" >&2
+      echo "       (approve $new instead)" >&2
+      exit 1 ;;
+    tombstone)
+      IFS= read -r line <"$slot_file" || line=""
+      echo "REFUSE: $old is tombstoned ($line)" >&2
+      echo "        a tombstone marks the old path's own history; it does not travel --" >&2
+      echo "        approve $new instead" >&2
+      exit 1 ;;
+  esac
+  state="$slot_state" kind="$slot_kind" src="$slot_file"
+  verify_ancestry "$src" || exit 1
+
+  # mv FOLLOWS a move that already happened. While the old path is still
+  # there the premise is simply false, and two live paths would be claiming
+  # one record.
+  if [ -e "$old" ]; then
+    echo "REFUSE: $old still exists -- you mv a record whose content has already moved" >&2
+    echo "        (move the content first, or approve $new instead)" >&2
+    exit 1
+  fi
+
+  # RECORDS DO NOT MERGE. Anything already at the new slot -- a live record,
+  # a tombstone, or the signer data `signer add --repo` leaves in an
+  # otherwise state-free slot -- is state a human decided on, and absorbing
+  # it silently is exactly the quiet widening this tool exists to refuse.
+  if [ -d "$new_slot" ]; then
+    inspect_slot "$new_slot" || exit 1
+    if [ "$slot_state" != none ]; then
+      echo "REFUSE: $new already has a record ($slot_state); records do not merge" >&2
+      echo "        tombstone or approve $new explicitly" >&2
+      exit 1
+    fi
+    if [ -e "$new_slot/signers" ]; then
+      echo "REFUSE: $new_slot holds per-slot signer data (signers/allowed_signers)" >&2
+      echo "        moving a record onto it would silently place this content under those" >&2
+      echo "        signers; reconcile them by hand, then re-run" >&2
+      exit 1
+    fi
+    for e in "$new_slot"/* "$new_slot"/.[!.]*; do
+      if [ -e "$e" ]; then
+        echo "REFUSE: $new_slot already holds ${e##*/}; records do not merge" >&2
+        echo "        inspect the slot and clear it by hand, then re-run" >&2
+        exit 1
+      fi
+    done
+  fi
+  case "$state" in
+    rev) target="rev.$kind"; what=rev ;;
+    *)   target="pin.$kind"; what=digest ;;
+  esac
+  # Same shape as approve: walk from the state file when the slot exists,
+  # from the slot itself when this write is about to create it.
+  if [ -d "$new_slot" ]; then
+    verify_ancestry "$new_slot/$target" || exit 1
+  else
+    verify_ancestry "$new_slot" || exit 1
+  fi
+
+  # CONFORMANCE -- the security core. The record is not re-decided here; the
+  # content at the new path has to answer to it.
+  case "$state" in
+    rev)
+      [ "$kind" = git ] \
+        || { echo "ERROR: $src declares unsupported VCS '$kind'; refusing" >&2; exit 1; }
+      rev="$(read_rev "$old_slot")" || exit 1
+      [ -n "$rev" ] || { echo "ERROR: $src holds no rev; malformed record" >&2; exit 1; }
+      [ -d "$new" ] || {
+        echo "REFUSE: $new is not a directory; a repo record moves to a work tree" >&2
+        exit 1
+      }
+      # resolve_repo is the contract every repo verb resolves through: a
+      # usable work tree, named at its ROOT. It sets $repo, which the sgit
+      # below runs against.
+      resolve_repo "$new"
+      # A record names a commit, so the repository that answers to it is the
+      # one whose object store HOLDS that commit. A work tree that does not
+      # is a different repository wearing the new name.
+      sgit cat-file -e "${rev}^{commit}" 2>/dev/null || {
+        echo "REFUSE: $new is a work tree, but its object store does not hold the pinned rev" >&2
+        echo "        $rev -- this is not the repository the record names" >&2
+        exit 1
+      }
+      ;;
+    pin)
+      verify_record_file "$src" || exit 1
+      read_pin_record "$src" "$kind" "$old" || exit 1
+      label="$REC_LABEL"; digest="$REC_DIGEST"
+      [ -f "$new" ] || {
+        echo "REFUSE: $new is not a regular file; a file record moves to a file" >&2
+        exit 1
+      }
+      freeze_file "$new" || { echo "ERROR: cannot read $new" >&2; exit 1; }
+      # THE CHECK IS VERIFY ITSELF -- the gate's own verdict, run against the
+      # OLD slot's record with the NEW path's frozen bytes. Reusing it is what
+      # keeps mv from holding a private opinion about what "matches" means: 0
+      # is byte-exact, 5 is drift confined to keys the slot already declares
+      # ignored (and the policy still grants), and every other answer refuses.
+      # The owner/mode invariant is the one part this cannot exercise -- verify
+      # checks it on the original path, which is by definition gone here -- so
+      # it stays what it always was, a per-use question the next verify at the
+      # new path answers (30), never something a record carries.
+      vout="$workdir/mv-verify"
+      vrc=0
+      (do_verify --frozen "$FROZEN_COPY" "$old") >"$vout" 2>&1 || vrc=$?
+      case "$vrc" in
+        0) ;;
+        5)
+          while IFS= read -r line; do
+            case "$line" in
+              ignored-drift:*) drifted="${drifted:+$drifted, }${line#ignored-drift: }" ;;
+            esac
+          done <"$vout" ;;
+        11)
+          mv_verify_said "$old" "$new" "$vout"
+          echo "REFUSE: the content at $new is not what $old's record names" >&2
+          echo "        a mv carries the record verbatim; approve $new instead" >&2
+          exit 1 ;;
+        *)
+          mv_verify_said "$old" "$new" "$vout"
+          echo "ERROR: $old's record could not be checked against $new (verify exit $vrc)" >&2
+          exit 1 ;;
+      esac
+      ;;
+  esac
+
+  # The annotations that travel. The tag is re-read through the same
+  # declared-name grammar every other reader applies -- a name this version
+  # would refuse must not ride along unexamined.
+  if [ -f "$old_slot/tag" ]; then
+    verify_record_file "$old_slot/tag" || exit 1
+    IFS= read -r tag <"$old_slot/tag" || tag=""
+    if [ -n "$tag" ] && ! validate_tag_name "$tag"; then
+      echo "ERROR: $old_slot/tag is outside the declared-name grammar [A-Za-z0-9._/+-]: $tag" >&2
+      echo "       clear it by hand (rm $old_slot/tag), then re-run" >&2
+      exit 1
+    fi
+  fi
+  if slot_declares_ignore "$old_slot"; then
+    irc=0
+    read_ignored_paths "$old_slot" 2>/dev/null || irc=$?
+    if [ "$irc" -eq 0 ]; then
+      ign_show="$(ign_display "$IGN_PATHS")"
+    else
+      ign_show="(declaration unreadable; carried verbatim)"
+    fi
+  fi
+
+  printf '%sold:%s        %s %s(gone)%s\n' "$C_B" "$C_OFF" "$old" "$C_DIM" "$C_OFF"
+  printf '%snew:%s        %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$new" "$C_OFF"
+  printf '%sslot:%s       %s\n' "$C_B" "$C_OFF" "$old_slot"
+  printf '            %s-> %s%s\n' "$C_DIM" "$new_slot" "$C_OFF"
+  case "$state" in
+    rev)
+      printf '%skind:%s       repo record %s(%s)%s\n' "$C_B" "$C_OFF" "$C_DIM" "$target" "$C_OFF"
+      printf '%srev:%s        %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$rev" "$C_OFF" \
+        "$C_DIM" "$(sgit log -1 --format=%s "$rev")" "$C_OFF" ;;
+    pin)
+      printf '%skind:%s       file record %s(%s)%s\n' "$C_B" "$C_OFF" "$C_DIM" "$target" "$C_OFF"
+      printf '%sdigest:%s     %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$digest" "$C_OFF" \
+        "$C_DIM" "$label" "$C_OFF"
+      if [ -n "$drifted" ]; then
+        printf '%snote:%s       %sthe file at the new path is not byte-identical: %s%s\n' \
+          "$C_B" "$C_OFF" "$C_YEL" "$drifted" "$C_OFF"
+        printf '            %sthe difference is confined to keys this slot already declares%s\n' \
+          "$C_DIM" "$C_OFF"
+        printf '            %signored, so the record still names this content (verify: 5).%s\n' \
+          "$C_DIM" "$C_OFF"
+      fi ;;
+  esac
+  [ -z "$tag" ] || travels="tag $tag"
+  [ -z "$ign_show" ] || travels="${travels:+$travels; }ignored keys: $ign_show"
+  [ ! -f "$old_slot/approved" ] || travels="${travels:+$travels; }the approved copy"
+  [ ! -f "$old_slot/signers/allowed_signers" ] \
+    || travels="${travels:+$travels; }per-slot allowed_signers"
+  if [ -n "$travels" ]; then
+    printf '%stravels:%s    %s\n' "$C_B" "$C_OFF" "$travels"
+  else
+    printf '%stravels:%s    %s(the record only -- no annotations)%s\n' "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
+  fi
+  echo
+  printf '%sConsumers will now trust this content AT THE NEW PATH.%s\n' "$C_B" "$C_OFF"
+  printf '%sThe record itself does not change -- same %s, same declarations; only the\n' \
+    "$C_DIM" "$what"
+  printf 'path it answers to does. The old path above is tombstoned by this move, so\n'
+  printf 'anything reappearing there refuses until it is approved on its own.%s\n' "$C_OFF"
+  echo
+  printf '%smv %s%s%s -> %s%s%s? [y/N]%s ' \
+    "$C_B" "$C_CYN" "$old" "$C_OFF$C_B" "$C_CYN" "$new" "$C_OFF$C_B" "$C_OFF"
+  read -r answer </dev/tty
+  case "$answer" in
+    y|Y|yes) ;;
+    *) echo "aborted; both slots unchanged"; log_action mv "$old" "$new" abort; exit 2 ;;
+  esac
+
+  # WRITE ORDER: the new record first, so there is never a moment when this
+  # content has no live record at all. A crash between the two writes leaves
+  # the old record live beside the new one -- two paths, one rev or digest,
+  # both verifying -- which is the safe failure: nothing is trusted that was
+  # not trusted before, and re-running finishes the job.
+  case "$state" in
+    rev) write_slot_state "$new_slot" "$target" "$rev" ;;
+    # The check line names the LIVE path (that is what makes `shasum -c`
+    # work on it), so it is the one byte-sequence that must be rewritten:
+    # digest preserved, path re-named, two-space separator kept.
+    pin) write_slot_state "$new_slot" "$target" "$digest  $new" ;;
+  esac
+  [ -z "$tag" ] || write_note "$new_slot" tag "$tag"
+  # By suffix, not by name: a declared format this version does not
+  # recognize still belongs to the record and still travels with it.
+  for f in "$old_slot"/ignored.*; do
+    [ -e "$f" ] || continue
+    write_slot_copy "$new_slot" "${f##*/}" "$f"
+  done
+  [ ! -f "$old_slot/approved" ] || write_slot_copy "$new_slot" approved "$old_slot/approved"
+  if [ -f "$old_slot/signers/allowed_signers" ]; then
+    install -d -m "$TREE_DMODE" -o root -g "$TREE_GRP" "$new_slot/signers"
+    write_slot_copy "$new_slot/signers" allowed_signers "$old_slot/signers/allowed_signers"
+  fi
+  printf '%s✓ moved:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$new" "$C_OFF" "$new_slot/$target"
+
+  write_slot_state "$old_slot" tombstone "$(date -u +%Y-%m-%dT%H:%M:%SZ) moved to $new by $inv"
+  rm -f "$old_slot/tag"          # the declared name left with the record
+  clear_slot_ignore "$old_slot"  # as did the tolerated keys and the copy
+  if [ -f "$old_slot/signers/allowed_signers" ]; then
+    rm -f "$old_slot/signers/allowed_signers"
+    # Only an EMPTY leftover goes -- anything still in there is unexplained
+    # state a trust tool must not delete on a hunch (ensure_tree's rule).
+    rmdir "$old_slot/signers" 2>/dev/null \
+      || printf '%swarning: %s is not empty; left in place%s\n' \
+           "$C_YEL" "$old_slot/signers" "$C_OFF" >&2
+  fi
+  printf '%s✓ tombstoned:%s %s %s(moved to %s)%s\n' \
+    "$C_GRN$C_B" "$C_OFF" "$old" "$C_DIM" "$new" "$C_OFF"
+  log_action mv "$old" "$new"
 }
 
 # ---- verify ----------------------------------------------------------------
@@ -5218,6 +5555,7 @@ EOF
 case "$action" in
   approve)   do_approve "$@" ;;
   tombstone) do_tombstone "$@" ;;
+  mv)        do_mv "$@" ;;
   verify)    do_verify "$@" ;;
   cat)       do_cat "$@" ;;
   sign)      do_sign "$@" ;;
