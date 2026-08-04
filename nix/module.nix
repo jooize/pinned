@@ -77,6 +77,42 @@ let
       pkgs.writeText "sudoers-pinned" sudoersText;
 
   validUser = user: builtins.match "[A-Za-z_][A-Za-z0-9_-]*" user != null;
+
+  # The operators group of the shared clone tree `pinned add` fetches into
+  # (/var/db/pinned-clones). ONE literal spelling, matching the script's
+  # PINNED_CLONES_GROUP constant -- the script consumes this group by name
+  # and degrades to an invoker-owned clone while it is absent.
+  #
+  # The DIRECTORY is deliberately not created here: the script provisions it
+  # root-side at the first add, so a manual install lands on the same path
+  # with the same ownership. Only the group, which no script may create.
+  clonesGroup = "_pinned-clones";
+
+  # Darwin has no gid allocator: users.groups demands an explicit gid, and an
+  # unpinned `dseditgroup -o create` may land a gid >=500 that the login
+  # window would SHOW. So scan for the lowest free gid in the hidden 401..499
+  # service range and create imperatively (idempotent, root, activation-time);
+  # membership is asserted on every activation. One emitter for both the
+  # per-user read groups and the shared clone-tree group -- the two differ
+  # only in name, purpose and who belongs to them.
+  darwinGroup = { name, comment, members }: ''
+    if ! /usr/bin/dscl . -read "/Groups/${name}" PrimaryGroupID >/dev/null 2>&1; then
+      taken="$(/usr/bin/dscl . -list /Groups PrimaryGroupID | /usr/bin/awk '{print $2}')"
+      pinned_gid=""
+      for c in $(/usr/bin/seq 401 499); do
+        if ! printf '%s\n' "$taken" | /usr/bin/grep -qx "$c"; then pinned_gid="$c"; break; fi
+      done
+      if [ -n "$pinned_gid" ]; then
+        echo "creating group ${name} (gid $pinned_gid, hidden range)..." >&2
+        /usr/sbin/dseditgroup -o create -i "$pinned_gid" -r ${lib.escapeShellArg comment} "${name}" || true
+      else
+        echo "creating group ${name} (no free gid in 401-499; auto)..." >&2
+        /usr/sbin/dseditgroup -o create -r ${lib.escapeShellArg comment} "${name}" || true
+      fi
+    fi
+  '' + lib.concatMapStrings (user: ''
+    /usr/sbin/dseditgroup -o edit -a "${user}" -t user "${name}" 2>/dev/null || true
+  '') members;
 in
 {
   options.security.pinned = {
@@ -144,6 +180,8 @@ in
       environment.etc."sudoers.d/pinned".source = sudoersFile;
     }
 
+    # Two kinds of group, both CONSUMED by the script and created only here.
+    #
     # Per-user read-group `_<user>-pinned`, one per security.pinned.users
     # entry. pinned chgrp's /var/db/pinned/<user> to it BY NAME during
     # ceremonies and fails CLOSED to `0700 root` while it is absent (privacy
@@ -151,36 +189,36 @@ in
     # owns the tree -- a consumer module cannot be the thing every deployment
     # depends on for its own records to be readable.
     #
-    # Per-OS split: NixOS declares the group (auto-allocated system gid);
-    # nix-darwin's users.groups demands an explicit gid and has no allocator,
-    # and an unpinned `dseditgroup -o create` may land a gid >=500 that the
-    # login window would SHOW -- so Darwin scans for the lowest free gid in
-    # the hidden 401..499 service range and creates imperatively (idempotent,
-    # root, activation-time). Membership is asserted on every activation.
+    # Operators group `_pinned-clones`, one per machine, holding every
+    # configured user: it owns the shared clone tree, so any of them can
+    # fetch into a clone another one made. Its absence is not a privacy
+    # question -- content addressing gates trust either way -- so the script
+    # degrades to an invoker-owned clone instead of refusing.
+    #
+    # Per-OS split: NixOS declares groups (auto-allocated system gids);
+    # Darwin creates them imperatively at activation (see darwinGroup).
     (lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
-      system.activationScripts.extraActivation.text = lib.mkAfter (lib.concatMapStrings (user: ''
-        if ! /usr/bin/dscl . -read "/Groups/_${user}-pinned" PrimaryGroupID >/dev/null 2>&1; then
-          taken="$(/usr/bin/dscl . -list /Groups PrimaryGroupID | /usr/bin/awk '{print $2}')"
-          pinned_gid=""
-          for c in $(/usr/bin/seq 401 499); do
-            if ! printf '%s\n' "$taken" | /usr/bin/grep -qx "$c"; then pinned_gid="$c"; break; fi
-          done
-          if [ -n "$pinned_gid" ]; then
-            echo "creating group _${user}-pinned (gid $pinned_gid, hidden range)..." >&2
-            /usr/sbin/dseditgroup -o create -i "$pinned_gid" -r ${lib.escapeShellArg "Root-owned pinned approval records ${user} may read"} "_${user}-pinned" || true
-          else
-            echo "creating group _${user}-pinned (no free gid in 401-499; auto)..." >&2
-            /usr/sbin/dseditgroup -o create -r ${lib.escapeShellArg "Root-owned pinned approval records ${user} may read"} "_${user}-pinned" || true
-          fi
-        fi
-        /usr/sbin/dseditgroup -o edit -a "${user}" -t user "_${user}-pinned" 2>/dev/null || true
-      '') cfg.users);
+      system.activationScripts.extraActivation.text = lib.mkAfter (
+        lib.concatMapStrings
+          (user: darwinGroup {
+            name = "_${user}-pinned";
+            comment = "Root-owned pinned approval records ${user} may read";
+            members = [ user ];
+          })
+          cfg.users
+        + darwinGroup {
+          name = clonesGroup;
+          comment = "Operators of the shared pinned clone tree";
+          members = cfg.users;
+        });
     })
     (lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
       users.groups = lib.listToAttrs (map (user: {
         name = "_${user}-pinned";
         value = { members = [ user ]; };
-      }) cfg.users);
+      }) cfg.users) // {
+        ${clonesGroup} = { members = cfg.users; };
+      };
     })
   ]);
 }
