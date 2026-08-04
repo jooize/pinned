@@ -1881,7 +1881,7 @@ case "$action" in
       # from the object store as root, after sudo.
       if [ "$action" = "approve" ]; then
         preview_repos=() preview_tag="" skip_next=0 want_tag=0 file_mode=0 have_ev=0
-        preview_step=0 preview_trust=0 preview_signed=0 preview_seltag=0
+        preview_step=0 preview_trust=0 preview_signed=0
         for a in "$@"; do
           if [ "$want_tag" -eq 1 ]; then preview_tag="$a"; want_tag=0; continue; fi
           if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
@@ -1889,7 +1889,7 @@ case "$action" in
             --signed-tag) have_ev=1; preview_signed=1; skip_next=1 ;;
             --file) file_mode=1; skip_next=1 ;;
             --baseline|--algo) skip_next=1 ;;
-            --tag) have_ev=1; preview_seltag=1; want_tag=1 ;;
+            --tag) have_ev=1; want_tag=1 ;;
             --trust) have_ev=1; preview_trust=1 ;;
             # A bare flag, not evidence -- it says HOW the review is read,
             # not why the commit is trusted. It still binds to one repo.
@@ -1915,10 +1915,6 @@ case "$action" in
           fi
           if [ "$preview_signed" -eq 1 ]; then
             echo "--step is a per-commit review walk; signature evidence has no per-commit reading" >&2
-            exit 1
-          fi
-          if [ "$preview_seltag" -eq 1 ]; then
-            echo "--step walks to HEAD; --tag selects an endpoint the walk does not support" >&2
             exit 1
           fi
         fi
@@ -2228,9 +2224,10 @@ do_approve() {
     exit 1
   fi
   # --step's refusals (the preview refuses the same set pre-sudo; these are
-  # the authoritative re-checks). Every one of them is a combination whose
-  # meaning is not "walk the commits": evidence flags say the content is not
-  # being read at all, and a selector endpoint is not where the walk ends.
+  # the authoritative re-checks). Each is a combination whose meaning is not
+  # "walk the commits": evidence flags say the content is not being read at
+  # all. --tag is NOT refused -- it is a selector, and the walk simply ends
+  # at the commit it names instead of HEAD.
   if [ "$step" -eq 1 ]; then
     if [ "$trust" -eq 1 ]; then
       echo "--step is a per-commit review walk; --trust skips review" >&2
@@ -2238,10 +2235,6 @@ do_approve() {
     fi
     if [ "${#tag_args[@]}" -gt 0 ]; then
       echo "--step is a per-commit review walk; signature evidence has no per-commit reading" >&2
-      exit 1
-    fi
-    if [ -n "$sel_tag" ]; then
-      echo "--step walks to HEAD; --tag selects an endpoint the walk does not support" >&2
       exit 1
     fi
     # upgrade's internal batch contract: a decline must fall through to the
@@ -2532,11 +2525,19 @@ do_approve() {
 #
 # Reached only from the review branch of do_approve, which has already refused
 # every combination the walk cannot mean (a first approval, --trust,
-# --signed-tag, --tag, several repos, a batch). It owns the invocation's exit
+# --signed-tag, several repos, a batch). It owns the invocation's exit
 # status: 0 if the pin advanced at all -- a later decline does not undo an
 # earlier yes -- and 2 if nothing changed, the single-repo decline contract.
 #
-# $1 = slot, $2 = the currently pinned rev, $3 = the walk's endpoint (HEAD).
+# A --tag selector moves the ENDPOINT: the walk runs from the pin to the
+# commit the tag names, and the name is declared only when that commit is
+# actually approved (do_approve validated the name upfront; $sel_tag is its
+# local, visible here by dynamic scope). A walk that stops early leaves the
+# slot rev-only and says so -- a declaration for a rev the pin never reached
+# would make deploy sync ref= to a tag that disagrees with the pin.
+#
+# $1 = slot, $2 = the currently pinned rev, $3 = the walk's endpoint (HEAD
+# or the --tag selector's commit).
 approve_step_walk() {
   local slot="$1" old_hash="$2" hash="$3"
   local line c k m prev approved=0 answer diff_out rem totals log_out
@@ -2594,12 +2595,17 @@ EOF
     # A repo pin has no JSON keys to tolerate: taking the slot over from a
     # file pin drops any ignored-key declaration with it.
     clear_slot_ignore "$slot"
-    # A stepped approve is a plain review approve, so it CLEARS any declared
-    # release name -- exactly what the non-step path does when no --tag names
-    # one. A walk that ends mid-history could not honour a declaration anyway.
+    # A mid-walk yes is a plain review approve, so it CLEARS any declared
+    # release name; the declaration is written back only if this yes is the
+    # --tag selector's own commit -- the walk arriving at the name it was
+    # asked to walk to.
     rm -f "$slot/tag"
     log_action approve "$repo" "$c"
     printf '%s✓ pin advanced:%s %s%s%s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$c" "$C_OFF"
+    if [ -n "$sel_tag" ] && [ "$c" = "$hash" ]; then
+      write_note "$slot" tag "$sel_tag"
+      printf '%s✓ declared:%s %s -> %s\n' "$C_GRN" "$C_OFF" "$sel_tag" "$slot/tag"
+    fi
     prev="$c"
     approved=$((approved + 1))
   done
@@ -2629,6 +2635,9 @@ EOF
   if [ "$rem" -gt 0 ]; then
     printf '%sremaining: %s commit%s%s %s(%.10s..%.10s)%s\n' \
       "$C_DIM" "$rem" "$(plural_s "$rem")" "$C_OFF" "$C_CYN" "$prev" "$hash" "$C_OFF"
+    [ -z "$sel_tag" ] \
+      || printf '%sdeclared name %s not reached; the slot stays rev-only%s\n' \
+           "$C_DIM" "$sel_tag" "$C_OFF"
   fi
   [ "$approved" -ge 1 ] || return 2
 }

@@ -78,6 +78,11 @@ Later approvals always show the diff.
 A reading aid for a large delta: instead of one diff of the whole
 delta, walk the commits since the pin oldest-first \(em one diff and
 one confirmation per commit.
+The walk ends at HEAD, or at the commit
+.B \-\-tag
+names; the declared release name is written only when the walk
+actually approves that commit \(em stopping early leaves the slot
+rev-only, and the summary says so.
 The pin ADVANCES at every yes, so each checkpoint is a coherent,
 deployable record: stopping midway rests the pin at the last commit
 actually read, and resuming later is an ordinary
@@ -105,7 +110,6 @@ takes one repo and refuses every combination it cannot mean:
 .BR \-\-file ,
 .BR \-\-trust ,
 .BR \-\-signed\-tag ,
-.BR \-\-tag ,
 several repos, a batch approve, and a first approval (which reviews
 the full tree \(em there is nothing to step from).
 A pin that is not behind HEAD (reversed or diverged history) is

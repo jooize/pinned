@@ -34,7 +34,9 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       pin oldest-first, one diff and one
                                       confirmation each, pin advancing at
                                       every yes, closing with a whole-run
-                                      summary; one whole-delta diff stays
+                                      summary; ends at HEAD or at --tag's
+                                      commit, declaring the name only if
+                                      reached; one whole-delta diff stays
                                       the default)
     pinned approve <repo> --signed-tag <tag> [--signed-tag <tag> ...] [--tag <tag>]
                                       signature gate: verify signed tag(s),

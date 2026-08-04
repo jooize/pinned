@@ -1057,6 +1057,33 @@ n
   assert_exit "$RC" 0 "a stepped approve over a tag-declared slot exits 0"
   assert_absent "$E_SLOT/tag" "a stepped yes clears the declared tag"
 
+  # --- --tag moves the endpoint: the walk ends at the tag's commit ---------
+  # The name is declared only when the walk actually approves that commit;
+  # the commit past the tag (e3) must never be offered.
+  bgit "$REPO_E" tag v9 "$E_C2"
+  seed_state "$REPO_E" rev.git "$E_BASE"
+  ANS='y
+y
+'
+  run_pinned approve "$REPO_E" --step --tag v9
+  assert_exit "$RC" 0 "a stepped walk to a tag exits 0"
+  assert_eq "$(cat "$E_SLOT/rev.git")" "$E_C2" "the pin rests at the tag's commit, not HEAD"
+  assert_eq "$(cat "$E_SLOT/tag")" "v9" "reaching the endpoint declares the name"
+  assert_contains "$OUT" "approved 2 of 2 commits" "the walk is exactly pin..tag"
+  assert_missing  "$OUT" "E3LINE" "the commit past the tag is never offered"
+
+  # Stopping early leaves the slot rev-only and says so.
+  seed_state "$REPO_E" rev.git "$E_BASE"
+  ANS='y
+n
+'
+  run_pinned approve "$REPO_E" --step --tag v9
+  assert_exit "$RC" 0 "an early stop below the tag still exits 0"
+  assert_eq "$(cat "$E_SLOT/rev.git")" "$E_C1" "the pin rests where reading stopped"
+  assert_absent "$E_SLOT/tag" "an unreached name is not declared"
+  assert_contains "$OUT" "declared name v9 not reached; the slot stays rev-only" \
+    "the summary says the name was not declared"
+
   # --- refusals (root-side: the authoritative half) ------------------------
   seed_state "$REPO_E" rev.git "$E_BASE"
   ANS=""
@@ -1067,10 +1094,6 @@ n
   run_pinned approve "$REPO_E" --step --signed-tag v1
   assert_exit "$RC" 1 "--step with --signed-tag is refused"
   assert_contains "$OUT" "signature evidence has no per-commit reading" "the refusal names the reason"
-  ANS=""
-  run_pinned approve "$REPO_E" --step --tag v1
-  assert_exit "$RC" 1 "--step with --tag is refused"
-  assert_contains "$OUT" "--step walks to HEAD" "the refusal names the endpoint rule"
   ANS=""
   run_pinned approve "$REPO_E" "$REPO_A" --step
   assert_exit "$RC" 1 "--step with two repos is refused"
