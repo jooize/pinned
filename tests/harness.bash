@@ -880,9 +880,9 @@ EOF
   ANS=""
   run_pinned upgrade --flake "$FIX/flake3.nix" --dry-run
   assert_exit "$RC" 0 "a plan holding refused repos still exits 0"
-  assert_contains "$OUT" "checkout is BACKWARD of the pin -- approve --backward by hand" \
+  assert_contains "$OUT" "checkout is backward of the pin -- approve --backward by hand" \
     "a backward checkout is refused in the plan"
-  assert_contains "$OUT" "checkout DIVERGED from the pin -- approve --diverged by hand" \
+  assert_contains "$OUT" "checkout diverged from the pin -- approve --diverged by hand" \
     "a diverged checkout is refused in the plan"
   assert_contains "$OUT" "Will review + approve:" "the forward repo still has a plan"
   assert_contains "$OUT" "$REPO_FW" "the forward repo is the one listed for approval"
@@ -1182,7 +1182,7 @@ n
   ANS=""
   run_pinned approve "$REPO_E" --step
   assert_exit "$RC" 1 "a pin that is not behind HEAD refuses the walk"
-  assert_contains "$OUT" "is BACKWARD of the pin" "the refusal names the class"
+  assert_contains "$OUT" "is backward of the pin" "the refusal names the class"
   assert_eq "$(cat "$E_SLOT/rev.git")" "$E_HEAD" "the refused walk left the pin alone"
   bgit "$REPO_E" checkout -q main
 else
@@ -1267,15 +1267,15 @@ if [ "$GIT_OK" -eq 1 ]; then
 '
   run_pinned approve "$REPO_G"
   assert_exit "$RC" 1 "an undeclared backward candidate is refused"
-  assert_contains "$OUT" "is BACKWARD of the pin" "the refusal names the class"
-  assert_contains "$OUT" "UN-approved" "the refusal says what a backward move does"
+  assert_contains "$OUT" "is backward of the pin" "the refusal names the class"
+  assert_contains "$OUT" "un-approved" "the refusal says what a backward move does"
   assert_contains "$OUT" "--backward" "the refusal names the flag that declares it"
   assert_eq "$(cat "$G_SLOT/rev.git")" "$G_C2" "an undeclared backward move records nothing"
 
   ANS=""
   run_pinned approve "$REPO_G" --diverged
   assert_exit "$RC" 1 "a mismatched declaration is refused"
-  assert_contains "$OUT" "--diverged declared, but the candidate is BACKWARD" \
+  assert_contains "$OUT" "--diverged declared, but the candidate is backward" \
     "the refusal names the class that actually holds"
 
   ANS='y
@@ -1304,14 +1304,14 @@ if [ "$GIT_OK" -eq 1 ]; then
 '
   run_pinned approve "$REPO_G"
   assert_exit "$RC" 1 "an undeclared diverged candidate is refused"
-  assert_contains "$OUT" "has DIVERGED from the pin" "the refusal names the class"
+  assert_contains "$OUT" "has diverged from the pin" "the refusal names the class"
   assert_contains "$OUT" "--diverged" "the refusal names the flag that declares it"
   assert_eq "$(cat "$G_SLOT/rev.git")" "$G_C2" "an undeclared diverged move records nothing"
 
   ANS=""
   run_pinned approve "$REPO_G" --backward
   assert_exit "$RC" 1 "the other mismatched declaration is refused too"
-  assert_contains "$OUT" "--backward declared, but the candidate has DIVERGED" \
+  assert_contains "$OUT" "--backward declared, but the candidate has diverged" \
     "the refusal names the class that actually holds"
 
   ANS='y
@@ -2351,7 +2351,7 @@ ANS='y
 '
 run_pinned mv "$SUB/mv/from.txt" "$SUB/mv/deeper/to.txt"
 assert_exit "$RC" 0 "a file record moves to the path its content moved to"
-assert_contains "$OUT" "AT THE NEW PATH" "the ceremony states what the y buys"
+assert_contains "$OUT" "at the new path" "the ceremony states what the y buys"
 assert_contains "$OUT" "the approved copy" "and names the annotations that travel"
 assert_file "$MV_NEW_SLOT/pin.sha256" "the new slot holds the record"
 assert_eq "$(cat "$MV_NEW_SLOT/pin.sha256")" "$MV_DIG  $SUB/mv/deeper/to.txt" \

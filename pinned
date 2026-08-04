@@ -771,8 +771,8 @@ ancestry_gate() {
       echo "        candidate: $new" >&2
       echo "        drop --$declared" >&2
       return 1 ;;
-    backward) phrase="is BACKWARD of the pin" ;;
-    *)        phrase="has DIVERGED from the pin" ;;
+    backward) phrase="is backward of the pin" ;;
+    *)        phrase="has diverged from the pin" ;;
   esac
   if [ -z "$declared" ]; then
     printf '%sREFUSE: the candidate %s%s\n' "$C_RED$C_B" "$phrase" "$C_OFF" >&2
@@ -785,7 +785,7 @@ ancestry_gate() {
   echo "        pinned:    $old" >&2
   echo "        candidate: $new" >&2
   if [ "$actual" = backward ]; then
-    echo "        the commits between are being UN-approved" >&2
+    echo "        the commits between are being un-approved" >&2
   else
     echo "        the pinned line of history is being abandoned" >&2
   fi
@@ -2236,10 +2236,10 @@ EOF
   while [ "$i" -lt "$n" ]; do
     case "${r_route[$i]}" in
       backward)
-        printf '%srefused:%s %s %s(checkout is BACKWARD of the pin -- approve --backward by hand)%s\n' \
+        printf '%srefused:%s %s %s(checkout is backward of the pin -- approve --backward by hand)%s\n' \
           "$C_RED$C_B" "$C_OFF" "${r_p[$i]}" "$C_DIM" "$C_OFF" ;;
       diverged)
-        printf '%srefused:%s %s %s(checkout DIVERGED from the pin -- approve --diverged by hand)%s\n' \
+        printf '%srefused:%s %s %s(checkout diverged from the pin -- approve --diverged by hand)%s\n' \
           "$C_RED$C_B" "$C_OFF" "${r_p[$i]}" "$C_DIM" "$C_OFF" ;;
     esac
     i=$((i + 1))
@@ -3808,7 +3808,7 @@ do_mv() {
     printf '%stravels:%s    %s(the record only -- no annotations)%s\n' "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
   fi
   echo
-  printf '%sConsumers will now trust this content AT THE NEW PATH.%s\n' "$C_B" "$C_OFF"
+  printf '%sConsumers will now trust this content at the new path.%s\n' "$C_B" "$C_OFF"
   printf '%sThe record itself does not change -- same %s, same declarations; only the\n' \
     "$C_DIM" "$what"
   printf 'path it answers to does. The old path above is tombstoned by this move, so\n'

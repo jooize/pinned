@@ -30,7 +30,7 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       and the declared release name;
                                       --trust: skip a first approval's
                                       full-tree review, loudly;
-                                      --backward/--diverged: DECLARE a pin
+                                      --backward/--diverged: declare a pin
                                       move that is not forward over the
                                       commit graph -- the ceremony refuses
                                       unless reality matches the
@@ -133,7 +133,7 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       carries exactly one release tag
                                       (approved under that name), else it
                                       is listed for a manual approve
-                                      --tag; only FORWARD checkouts join
+                                      --tag; only forward checkouts join
                                       a ceremony, backward and diverged
                                       ones are listed as refused with the
                                       flag that would declare them
@@ -197,14 +197,14 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
 - First approval of a repo shows the full tree (diff from the empty
   tree) unless `--trust` is passed, loudly.
 - THE ANCESTRY LATTICE. A ceremony that moves a pin first establishes
-  which WAY it is moving, over the commit graph -- never by parsing a
+  which way it is moving, over the commit graph -- never by parsing a
   version string, because tag and branch names are repo content and
   version sort is only a convention. Four classes: `equal` (a no-op),
   `forward` (the candidate descends from the pin), `backward` (the
   candidate is an ancestor -- the commits between are being
-  UN-approved), `diverged` (neither -- the pinned line of history is
+  un-approved), `diverged` (neither -- the pinned line of history is
   being abandoned). Forward proceeds; the other two refuse unless the
-  human DECLARES them (`--backward`, `--diverged`), and a declaration
+  human declares them (`--backward`, `--diverged`), and a declaration
   reality contradicts refuses too, naming the class that actually holds
   -- declared, never inferred. A declared move opens with a full-caps
   alarm and shows its commits in the direction that makes them
@@ -214,7 +214,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   review may never do). The floor holds for signature evidence too: a
   signature says who vouched, never which way the pin is moving, so a
   replayed signed release of an older version is exactly what it
-  catches. It governs CEREMONIES only -- `verify`, `status` and
+  catches. It governs ceremonies only -- `verify`, `status` and
   `deploy` answer about a pin already recorded and are untouched.
 - The file-pin ceremony (`approve --file`) takes NO hash argument, ever.
   A hash handoff would let a caller in a poisoned environment feed root
@@ -394,7 +394,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   (`approve <repo> --signed-tag v1.2.3-alice --signed-tag v1.2.3-bob`) -- every
   named tag must verify and name the same commit or nothing is pinned;
   k-of-n is the consumer demanding whichever k tags they trust.
-- `upgrade` OFFERS that gate. A stale repo whose tags include a newer
+- `upgrade` offers that gate. A stale repo whose tags include a newer
   signed release this machine's allowed signers verify is routed to
   `approve --signed-tag` instead of a review ceremony -- the plan says
   `(signed release <t> -- signature-gated)`, and the ceremony's own
@@ -403,7 +403,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   review, for rev-only and tag-declared slots alike. There is still no
   latest-tag search: candidates must pass the declared-name grammar,
   strictly descend from the pin, and be an ancestor of the checkout's
-  HEAD; each is then VERIFIED, and only the verified subset is ordered --
+  HEAD; each is then verified, and only the verified subset is ordered --
   by ancestry over the commit graph, never by name. The offer is that
   subset's unique ancestry maximum, and every verified tag naming that
   same commit rides along as the k-of-n agreement above. Selection is

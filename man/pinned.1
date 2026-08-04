@@ -68,7 +68,7 @@ and
 bind to a single repo \(em a batch takes plain review approvals only, and
 so do the ancestry declarations below.
 .IP
-.B THE ANCESTRY LATTICE.
+.B The ancestry lattice.
 Before anything is displayed, the candidate commit is classified against
 the recorded pin over the commit graph \(em never by parsing a version
 string, because tag and branch names are repo content and version sort is
@@ -83,7 +83,7 @@ The pin is an ancestor of the candidate: the ordinary approval.
 .TP
 .B backward
 The candidate is an ancestor of the pin: the commits between are being
-UN-approved.
+un-approved.
 .TP
 .B diverged
 Neither: the pinned line of history is being abandoned (a rewrite, or a
@@ -91,7 +91,7 @@ side branch).
 .RE
 .IP
 Forward proceeds.
-Backward and diverged REFUSE unless the human declares them with
+Backward and diverged refuse unless the human declares them with
 .B \-\-backward
 or
 .BR \-\-diverged ,
@@ -113,7 +113,7 @@ rendering of what trust is moving to.
 The classification is mirrored in the pre-sudo preview, so an undeclared
 non-forward move costs no authentication.
 .IP
-The lattice governs CEREMONIES \(em the movement of a pin \(em and
+The lattice governs ceremonies \(em the movement of a pin \(em and
 nothing else:
 .BR verify ,
 .B status
@@ -138,7 +138,7 @@ The walk ends at HEAD, or at the commit
 names; the declared release name is written only when the walk
 actually approves that commit \(em stopping early leaves the slot
 rev-only, and the summary says so.
-The pin ADVANCES at every yes, so each checkpoint is a coherent,
+The pin advances at every yes, so each checkpoint is a coherent,
 deployable record: stopping midway rests the pin at the last commit
 actually read, and resuming later is an ordinary
 .B approve
@@ -174,12 +174,12 @@ begins: the commits a walk replays only exist going forward, and the
 whole-delta diff of a declared move renders that situation honestly.
 .TP
 .B \-\-backward
-Declare that the candidate is an ANCESTOR of the current pin \(em that
+Declare that the candidate is an ancestor of the current pin \(em that
 the commits between are being un-approved.
 Refused unless that is what the commit graph actually shows.
 .TP
 .B \-\-diverged
-Declare that the candidate is NOT on the pinned line of history \(em that
+Declare that the candidate is not on the pinned line of history \(em that
 the line is being abandoned for a rewrite or a side branch.
 Refused unless that is what the commit graph actually shows.
 .IP
@@ -188,7 +188,7 @@ Both declarations bind to one repo and combine with neither each other,
 .BR \-\-trust ,
 nor
 .BR \-\-file .
-They DO combine with
+They do combine with
 .B \-\-signed\-tag
 and
 .BR \-\-tag :
@@ -401,7 +401,7 @@ subject, the declared tag if the slot carries one, one line of
 orientation on where live HEAD stands relative to the pin, and the
 full tree at the pinned rev as a diff from the empty tree \(em read
 from the object store, so a dirty work tree cannot alter a byte of it.
-The display is of the PIN, never of HEAD.
+The display is of the pin, never of HEAD.
 It goes through the same hardened git path the approval ceremony used,
 which is the point: ambient
 .BR git (1)
@@ -460,7 +460,7 @@ There is deliberately no latest-tag search: version sort is a
 convention, and the tag namespace is repo content \(em content must
 never choose what a ceremony reviews.
 .IP
-A stale repo carrying a newer SIGNED release, and an installed signer
+A stale repo carrying a newer signed release, and an installed signer
 key that verifies it, is offered the signature gate instead: the plan
 marks it
 .RB \(dq "signed release " \fIt\fP " \(em signature-gated" \(dq
@@ -474,9 +474,9 @@ The offer outranks both the release-at-HEAD rule and a plain review
 rev-only and tag-declared slots alike.
 Candidates are the repo's tags that pass the declared-name grammar,
 strictly descend from the pin, and are an ancestor of (or equal to) the
-checkout's HEAD; each is then VERIFIED, and only the verified subset is
+checkout's HEAD; each is then verified, and only the verified subset is
 ordered \(em by ancestry over the commit graph, never by name.
-The offer is the unique ancestry MAXIMUM of that subset; every verified
+The offer is the unique ancestry maximum of that subset; every verified
 tag naming that same commit rides along, which the ceremony's
 all-tags-agree rule reads as k-of-n agreement.
 This is why selection is allowed here at all: someone without the signer
@@ -488,7 +488,7 @@ and are listed for a manual
 When the offered release is not HEAD, the plan says how far HEAD stands
 past it \(em the release is what gets pinned.
 .IP
-The ancestry lattice is upgrade's admission rule: only a FORWARD checkout
+The ancestry lattice is upgrade's admission rule: only a forward checkout
 joins an automatic ceremony.
 A checkout sitting behind its pin, or off the pinned line entirely, is
 listed as refused with the declaration flag that would approve it by hand
