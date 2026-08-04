@@ -520,7 +520,11 @@ one that discloses the file's whole content. Disclosure is bounded (the
 host tier is 0750 root:`_<user>-pinned`, and a lane receives a
 launch-time payload of only the slot dirs it is measured against, whose
 files it already reads through its own mounts), but bounded is not
-nothing, so it stays a per-slot human decision at the ceremony.
+nothing, so it stays a per-slot human decision at the ceremony. Being
+per-slot, it is also per-slot reportable: `pinned list` annotates every
+file row with the answer -- a stored copy, or the note that there is
+none -- on an indented continuation line, so taking inventory never
+means reaching into a slot directory to find out.
 
 ### The consumer ladder
 

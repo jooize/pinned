@@ -598,6 +598,49 @@ assert_contains "$OUT" "$SUB/l/sub/plain.txt" "--under keeps paths below the dir
 assert_missing  "$OUT" "$SUB/l/subx/nearmiss.txt" "--under matches at a component boundary (/l/sub is not /l/subx)"
 assert_missing  "$OUT" "$SUB/l/bracket[1].conf" "--under filters out unrelated pins"
 
+# CUSTODY is annotated on every file row, held or not: a consumer that asks
+# list must never have to stat the slot to learn whether the bytes are there.
+# One fixture directory per case, so --under scopes the output to exactly one
+# row and its continuation lines (a global grep could not tell which row an
+# annotation belongs to).
+mkdir -p "$SUB/l/held" "$SUB/l/unheld"
+printf 'in custody\n' > "$SUB/l/held/kept.txt"
+printf 'not in custody\n' > "$SUB/l/unheld/loose.txt"
+seed_pin "$SUB/l/held/kept.txt"     "$(digest_of "$SUB/l/held/kept.txt")"
+seed_pin "$SUB/l/unheld/loose.txt"  "$(digest_of "$SUB/l/unheld/loose.txt")"
+cp "$SUB/l/held/kept.txt" "$(slot_file_of "$SUB/l/held/kept.txt" approved)"
+chmod 640 "$(slot_file_of "$SUB/l/held/kept.txt" approved)"
+
+run_pinned list --under "$SUB/l/held"
+assert_exit "$RC" 0 "list exits 0 for a byte-exact slot that holds a copy"
+assert_contains "$OUT" "$SUB/l/held/kept.txt" "the row is still the parseable contract"
+assert_contains "$OUT" "(+approved copy)" "a copy is annotated without any ignored declaration"
+assert_missing  "$OUT" "no approved copy" "and the slot is not reported copy-less"
+assert_eq "$(grep -c -v '^ ' "$OUT" || true)" 1 \
+          "the custody annotation rides a continuation line, never the row"
+
+run_pinned list --under "$SUB/l/unheld"
+assert_exit "$RC" 0 "list exits 0 for a slot with no copy"
+assert_contains "$OUT" "$SUB/l/unheld/loose.txt" "the row is still the parseable contract"
+assert_contains "$OUT" "no approved copy -- re-approve with --store to keep one" \
+                "a copy-less slot says so, and says how to fix it"
+assert_missing  "$OUT" "(+approved copy)" "and does not claim custody it does not have"
+assert_eq "$(grep -c -v '^ ' "$OUT" || true)" 1 \
+          "the no-copy annotation rides a continuation line too"
+
+# status follows the same custody-on-every-record rule (the block sits
+# outside the ignore branch): a byte-exact, declaration-free slot reports
+# its custody in both directions.
+run_pinned status "$SUB/l/held/kept.txt"
+assert_exit "$RC" 0 "status exits 0 for the byte-exact held slot"
+assert_contains "$OUT" "custody:" "status reports custody without any ignored declaration"
+assert_contains "$OUT" "approved bytes kept in the slot" "and names the held direction"
+
+run_pinned status "$SUB/l/unheld/loose.txt"
+assert_exit "$RC" 0 "status exits 0 for the copy-less slot"
+assert_contains "$OUT" "custody:" "status reports custody on the copy-less slot too"
+assert_contains "$OUT" "or re-approve with --store" "and says how to gain it"
+
 # ---------------------------------------------------------------------------
 say "S8: repo approve"
 # ---------------------------------------------------------------------------
@@ -1738,6 +1781,19 @@ if (cd / && shasum -a 256 -c "$COPY_SLOT/pin.sha256" >/dev/null 2>&1); then
 else
   fail "shasum -c cross-check broke on an ignore-declaring slot"
 fi
+
+# REGRESSION: a slot that declares ignored keys AND holds a copy keeps the two
+# facts on ONE continuation line -- two lines would read as two slots. Its
+# copy-less sibling in the same directory takes the other branch, so one
+# --under run covers both.
+run_pinned list --under "$SUB/ig"
+assert_exit "$RC" 0 "list exits 0 over the ignore-declaring fixtures"
+assert_contains "$OUT" "ignored: model (+approved copy)" \
+                "declaration and custody share one continuation line"
+assert_contains "$OUT" "no approved copy" \
+                "a declaring slot without a copy still says custody is missing"
+assert_eq "$(grep -c '^ *(+approved copy)$' "$OUT" || true)" 0 \
+          "the combined line is not doubled by a standalone custody line"
 
 # Exit 5 via the slot's own copy, naming the key that actually moved.
 printf '{\n  "model": "sonnet",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/copy.json"

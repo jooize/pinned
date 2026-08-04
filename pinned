@@ -4368,13 +4368,16 @@ do_status_file() {
           printf '%signored:%s    %s✗ unusable declaration (re-approve to reset)%s\n' \
             "$C_DIM" "$C_OFF" "$C_YEL" "$C_OFF"
         fi
-        if [ -e "$slot/approved" ]; then
-          printf '%scustody:%s    approved bytes kept in the slot (pinned cat serves them)\n' "$C_DIM" "$C_OFF"
-        else
-          printf '%scustody:%s    %snone -- a consumer supplies its own witness (verify --baseline),%s\n' \
-            "$C_DIM" "$C_OFF" "$C_DIM" "$C_OFF"
-          printf '            %sor re-approve with --store%s\n' "$C_DIM" "$C_OFF"
-        fi
+      fi
+      # Custody is reported for EVERY file record, declaration or not --
+      # same rule as list: a byte-exact slot with (or without) a copy is
+      # a fact about the record, not about its ignore declaration.
+      if [ -e "$slot/approved" ]; then
+        printf '%scustody:%s    approved bytes kept in the slot (pinned cat serves them)\n' "$C_DIM" "$C_OFF"
+      else
+        printf '%scustody:%s    %snone -- a consumer supplies its own witness (verify --baseline),%s\n' \
+          "$C_DIM" "$C_OFF" "$C_DIM" "$C_OFF"
+        printf '            %sor re-approve with --store%s\n' "$C_DIM" "$C_OFF"
       fi
       rc=0; (do_verify "$path" >/dev/null 2>&1) || rc=$?
       case "$rc" in
@@ -4483,7 +4486,7 @@ do_list() {
     echo "ERROR: cannot read $sroot -- are you in group $(pin_group "$inv")?" >&2
     exit 1
   }
-  local d path line digest found=0
+  local d path line digest found=0 copy annotated
   for d in "$sroot"/*/; do
     d="${d%/}"
     [ -e "$d" ] || continue
@@ -4519,12 +4522,31 @@ do_list() {
             # inside it would have to be teased back out by every consumer.
             # A line that cannot match the row shape is skipped by all of
             # them and read by humans.
+            #
+            # Custody is annotated on EVERY well-formed file row, present or
+            # absent: a consumer reading through the slot (pinned cat, a
+            # baseline-free verify) is served by one and refused by the
+            # other, and a silence that means "byte-exact, no copy" is a
+            # silence somebody has to stat the slot to resolve.
+            if [ -e "$d/approved" ]; then copy=1; else copy=0; fi
+            annotated=0
             if slot_declares_ignore "$d"; then
               if read_ignored_paths "$d" 2>/dev/null; then
+                # Copy plus declaration: one combined line, so the two
+                # facts about the same slot do not read as two slots.
                 printf '%s            ignored: %s%s%s\n' "$C_DIM" "$(ign_display "$IGN_PATHS")" \
-                  "$([ -e "$d/approved" ] && printf ' (+approved copy)')" "$C_OFF"
+                  "$([ "$copy" -eq 1 ] && printf ' (+approved copy)')" "$C_OFF"
+                if [ "$copy" -eq 1 ]; then annotated=1; fi
               else
                 printf '%s            ignored: unusable declaration%s\n' "$C_YEL" "$C_OFF"
+              fi
+            fi
+            if [ "$annotated" -eq 0 ]; then
+              if [ "$copy" -eq 1 ]; then
+                printf '%s            (+approved copy)%s\n' "$C_DIM" "$C_OFF"
+              else
+                printf '%s            no approved copy -- re-approve with --store to keep one%s\n' \
+                  "$C_YEL" "$C_OFF"
               fi
             fi ;;
         esac ;;
