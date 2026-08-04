@@ -50,7 +50,10 @@
 # (per-slot signers/allowed_signers first, the user tier's
 # policy/allowed_signers as fallback; git's native format) -- that is the
 # second-machine bootstrap: clone anywhere, install the signer key once
-# (pinned signer add), approve the release.
+# (pinned signer add), approve the release. upgrade OFFERS that gate: a
+# stale repo whose newer release verifies against the installed signers is
+# routed to the signature ceremony instead of a review, and that ceremony's
+# own y/N is the offer's acceptance.
 #
 # THE ANCESTRY LATTICE. Every ceremony that MOVES a pin first asks which
 # way it is moving, over the commit graph and never by parsing a version
@@ -2002,60 +2005,238 @@ head_release_tag() { # <repo-path>
   printf '%s' "$t"
 }
 
-# Render stale_flake_repos output for humans: the approve list (plain
-# repos, and tag-declared ones whose HEAD carries their next release), the
-# tag-declared remainder as explicit manual work, and the non-forward
-# checkouts as refused, each with the flag that would declare it.
-print_upgrade_plan() { # <stale-lines>
-  local line p tag cls ht plain=0
+# The signed-release OFFER's discovery: for one stale forward repo, the tags
+# upgrade would hand to `approve --signed-tag`, one per line.
+#
+# WHY SELECTION MAY HAPPEN HERE AND NOT IN head_release_tag ABOVE. Tag names
+# are attacker-writable repo content, so an UNVERIFIED name must never CHOOSE
+# what a ceremony covers -- that is why a name-sorted "latest release" search
+# is refused. This selector never orders names: it verifies FIRST and orders
+# the surviving set by ANCESTRY over the commit graph. Someone without the
+# signer key cannot enter a candidate at all, and the holder of the key is
+# exactly who the human already chose to trust by installing it. The offer is
+# still only an offer -- do_approve re-verifies every tag as root, applies the
+# ancestry floor, and the human confirms.
+#
+# Exit status carries the three outcomes the plan and the router render
+# differently:
+#   0  offer: the printed tags all name the unique ancestry-maximum commit
+#   1  no offer: route this repo normally (plain review, or the tag rule)
+#   2  verified tags disagree: no unique maximum -- by-hand work, skipped
+#
+# Runs BOTH root-side (do_upgrade) and unprivileged (the pre-sudo plan). A
+# signers file the invoking user cannot read is "no offer", never an error:
+# the plan degrades to the review route and the root side, which is the
+# authority, re-derives the offer against the file it can read.
+#
+# $1 = repo path, $2 = tier user.
+signed_upgrade_tags() {
+  local repo="$1" tu="$2" slot signers pin head t c
+  local cand_t cand_c n i j maxc ok
+  slot="$(slot_dir_for "$tu" "$repo")"
+  # Per-slot signers take precedence over the user tier, exactly as the
+  # ceremony resolves them: a key trusted to vouch for one repo must not
+  # implicitly vouch for every repo on the machine.
+  signers="$slot/signers/allowed_signers"
+  [ -f "$signers" ] || signers="$(policy_dir_for "$tu")/allowed_signers"
+  [ -r "$signers" ] || return 1
+  pin="$(read_rev "$slot" 2>/dev/null)" || return 1
+  [ -n "$pin" ] || return 1
+  head="$(sgit rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null)" || return 1
+  [ -n "$head" ] || return 1
+  cand_t=(); cand_c=()
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    # The declared-name grammar, before anything else: a name upgrade could
+    # not record as the slot's declaration is not a name it may offer.
+    validate_tag_name "$t" || continue
+    c="$(sgit rev-parse --verify --quiet "refs/tags/${t}"'^{commit}' 2>/dev/null)" || continue
+    [ -n "$c" ] || continue
+    # Strictly newer than the pin, and on the checkout's own line of
+    # history: a release off to the side is by-hand work, not an offer.
+    [ "$(ancestry_class "$repo" "$pin" "$c")" = forward ] || continue
+    case "$(ancestry_class "$repo" "$c" "$head")" in
+      equal|forward) ;;
+      *) continue ;;
+    esac
+    sgit -c gpg.ssh.allowedSignersFile="$signers" verify-tag "$t" >/dev/null 2>&1 || continue
+    cand_t+=("$t"); cand_c+=("$c")
+  done <<EOF
+$(sgit tag 2>/dev/null || true)
+EOF
+  n="${#cand_t[@]}"
+  [ "$n" -gt 0 ] || return 1
+  # The unique ancestry MAXIMUM: the candidate commit every other candidate
+  # commit is an ancestor of. Two distinct commits can never both qualify
+  # (mutual ancestry means equal), so finding one is finding the only one.
+  maxc=""
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    ok=1
+    j=0
+    while [ "$j" -lt "$n" ]; do
+      if [ "${cand_c[$j]}" != "${cand_c[$i]}" ]; then
+        case "$(ancestry_class "$repo" "${cand_c[$j]}" "${cand_c[$i]}")" in
+          forward) ;;
+          *) ok=0; break ;;
+        esac
+      fi
+      j=$((j + 1))
+    done
+    if [ "$ok" -eq 1 ]; then maxc="${cand_c[$i]}"; break; fi
+    i=$((i + 1))
+  done
+  # Verified tags on lines that do not contain one another: nothing here can
+  # say which release the human meant, and guessing is the one thing this
+  # selector exists not to do.
+  [ -n "$maxc" ] || return 2
+  # Every verified tag naming that commit rides along. do_approve's
+  # all-tags-must-agree rule then reads them as k-of-n agreement for free.
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    if [ "${cand_c[$i]}" = "$maxc" ]; then printf '%s\n' "${cand_t[$i]}"; fi
+    i=$((i + 1))
+  done
+  return 0
+}
+
+# The offer's orientation: how far HEAD stands past the release that would be
+# pinned. Empty when the tag names HEAD itself -- nothing to orient.
+# $1 = repo path, $2 = tag name.
+signed_offer_lag() {
+  local repo="$1" c h n
+  c="$(sgit rev-parse --verify --quiet "refs/tags/${2}"'^{commit}' 2>/dev/null)" || return 0
+  h="$(sgit rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null)" || return 0
+  [ "$c" != "$h" ] || return 0
+  n="$(sgit rev-list --count "${c}..HEAD" 2>/dev/null || true)"
+  [ -n "$n" ] || return 0
+  printf '%s' "$n"
+}
+
+# Which route one stale forward repo takes, in one word, plus the detail the
+# plan and the router each need. The signed-release offer OUTRANKS both the
+# head_release_tag rule and a plain review: a verified signature is stronger
+# evidence than a name at HEAD, and it is what the plan puts on offer.
+#
+# Leaves the answer in $upg_route and its detail in $upg_info -- the
+# inspect_slot convention (the caller declares both local), not a printed
+# word, because a command substitution's subshell would strip the second
+# half. The detail is the agreeing tag names for `signed`, the HEAD release
+# for `tagged`, the stale declaration for `notag`, empty for the rest.
+#   signed    approve --signed-tag <tags>
+#   disagree  verified tags with no unique maximum -- by-hand work
+#   tagged    approve --tag <release at HEAD>
+#   notag     tag-declared, no single release at HEAD -- by-hand work
+#   review    plain approve
+# $1 = repo path, $2 = declared tag ('' = rev-only slot), $3 = tier user.
+upgrade_route() {
+  local p="$1" tag="$2" tu="$3" rc=0 so ht
+  upg_route="" upg_info=""
+  so="$(signed_upgrade_tags "$p" "$tu")" || rc=$?
+  case "$rc" in
+    0) upg_route=signed; upg_info="$so"; return 0 ;;
+    2) upg_route=disagree;              return 0 ;;
+  esac
+  if [ -z "$tag" ]; then upg_route=review; return 0; fi
+  ht="$(head_release_tag "$p")"
+  if [ -n "$ht" ]; then upg_route=tagged; upg_info="$ht"; return 0; fi
+  upg_route=notag; upg_info="$tag"
+}
+
+# Render stale_flake_repos output for humans: the approve list (plain repos,
+# signed-release offers, and tag-declared ones whose HEAD carries their next
+# release), the by-hand remainder as explicit manual work, and the
+# non-forward checkouts as refused, each with the flag that would declare it.
+#
+# Routing is decided ONCE per repo up front rather than re-derived per
+# section: deciding costs signature verifications, and a plan whose sections
+# could disagree with each other would be worse than a slow one.
+print_upgrade_plan() { # <stale-lines> [tier-user]
+  local p tag cls tu="${2:-$(id -un)}" upg_route upg_info
+  local r_p r_route r_info n i plain=0 t t1 tj lag
   if [ -z "$1" ]; then
     printf '%snothing to approve -- every pinned input is at its approved rev%s\n' "$C_DIM" "$C_OFF"
     return 0
   fi
+  r_p=(); r_route=(); r_info=()
   while IFS='|' read -r p tag cls; do
-    [ "$cls" = forward ] || continue
-    ht=""
-    if [ -n "$tag" ]; then
-      ht="$(head_release_tag "$p")"
-      if [ -z "$ht" ]; then continue; fi
-    fi
-    if [ "$plain" -eq 0 ]; then printf '%sWill review + approve:%s\n' "$C_B" "$C_OFF"; fi
-    plain=1
-    # The repos are the plan's payload -- bold cyan, the palette's own
-    # emphasis on an identifier (cyan everywhere; yellow stays attention
-    # text), so the list reads before the parentheticals do.
-    if [ -n "$ht" ]; then
-      printf '  %s%s%s  %s(release tag %s)%s\n' "$C_CYN$C_B" "$p" "$C_OFF" "$C_DIM" "$ht" "$C_OFF"
+    [ -n "$p" ] || continue
+    r_p+=("$p")
+    if [ "$cls" = forward ]; then
+      upgrade_route "$p" "$tag" "$tu"
+      r_route+=("$upg_route"); r_info+=("$upg_info")
     else
-      printf '  %s%s%s\n' "$C_CYN$C_B" "$p" "$C_OFF"
+      r_route+=("$cls"); r_info+=("")
     fi
   done <<EOF
 $1
 EOF
-  while IFS='|' read -r p tag cls; do
-    if [ "$cls" = forward ] && [ -n "$tag" ] && [ -z "$(head_release_tag "$p")" ]; then
-      printf '%sskipped:%s %s %s(declared tag %s; no single release tag at HEAD -- approve --tag by hand)%s\n' \
-        "$C_YEL" "$C_OFF" "$p" "$C_DIM" "$tag" "$C_OFF"
-    fi
-  done <<EOF
-$1
+  n="${#r_p[@]}"
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    case "${r_route[$i]}" in
+      signed|tagged|review)
+        if [ "$plain" -eq 0 ]; then printf '%sWill review + approve:%s\n' "$C_B" "$C_OFF"; fi
+        plain=1
+        # The repos are the plan's payload -- bold cyan, the palette's own
+        # emphasis on an identifier (cyan everywhere; yellow stays attention
+        # text), so the list reads before the parentheticals do.
+        case "${r_route[$i]}" in
+          signed)
+            tj=""; t1=""
+            while IFS= read -r t; do
+              [ -n "$t" ] || continue
+              [ -n "$t1" ] || t1="$t"
+              if [ -z "$tj" ]; then tj="$t"; else tj="$tj, $t"; fi
+            done <<EOF
+${r_info[$i]}
 EOF
+            printf '  %s%s%s  %s(signed release %s -- signature-gated)%s\n' \
+              "$C_CYN$C_B" "${r_p[$i]}" "$C_OFF" "$C_DIM" "$tj" "$C_OFF"
+            # The release, not HEAD, is what the ceremony pins; say so
+            # wherever the two are not the same commit.
+            lag="$(signed_offer_lag "${r_p[$i]}" "$t1")"
+            if [ -n "$lag" ]; then
+              printf '    %sHEAD is %s commit%s past the release; the release is what gets pinned%s\n' \
+                "$C_DIM" "$lag" "$(plural_s "$lag")" "$C_OFF"
+            fi ;;
+          tagged)
+            printf '  %s%s%s  %s(release tag %s)%s\n' \
+              "$C_CYN$C_B" "${r_p[$i]}" "$C_OFF" "$C_DIM" "${r_info[$i]}" "$C_OFF" ;;
+          *)
+            printf '  %s%s%s\n' "$C_CYN$C_B" "${r_p[$i]}" "$C_OFF" ;;
+        esac ;;
+    esac
+    i=$((i + 1))
+  done
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    case "${r_route[$i]}" in
+      notag)
+        printf '%sskipped:%s %s %s(declared tag %s; no single release tag at HEAD -- approve --tag by hand)%s\n' \
+          "$C_YEL" "$C_OFF" "${r_p[$i]}" "$C_DIM" "${r_info[$i]}" "$C_OFF" ;;
+      disagree)
+        printf '%sskipped:%s %s %s(verified signed tags disagree -- approve --signed-tag by hand)%s\n' \
+          "$C_YEL" "$C_OFF" "${r_p[$i]}" "$C_DIM" "$C_OFF" ;;
+    esac
+    i=$((i + 1))
+  done
   # The lattice's floor: an automatic ceremony only ever covers a forward
   # checkout. Un-approving commits, or abandoning the pinned line, is a
   # declaration a human makes by hand -- so these are named loudly, with
   # their remediation, and never join the batch below.
-  while IFS='|' read -r p tag cls; do
-    case "$cls" in
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    case "${r_route[$i]}" in
       backward)
         printf '%srefused:%s %s %s(checkout is BACKWARD of the pin -- approve --backward by hand)%s\n' \
-          "$C_RED$C_B" "$C_OFF" "$p" "$C_DIM" "$C_OFF" ;;
+          "$C_RED$C_B" "$C_OFF" "${r_p[$i]}" "$C_DIM" "$C_OFF" ;;
       diverged)
         printf '%srefused:%s %s %s(checkout DIVERGED from the pin -- approve --diverged by hand)%s\n' \
-          "$C_RED$C_B" "$C_OFF" "$p" "$C_DIM" "$C_OFF" ;;
+          "$C_RED$C_B" "$C_OFF" "${r_p[$i]}" "$C_DIM" "$C_OFF" ;;
     esac
-  done <<EOF
-$1
-EOF
+    i=$((i + 1))
+  done
 }
 
 # Root-requiring actions self-elevate: re-exec the INSTALLED (root-owned,
@@ -2089,7 +2270,7 @@ case "$action" in
           printf '%serror: cannot read %s -- pass --flake%s\n' "$C_RED" "$upg_flake" "$C_OFF" >&2
           exit 1
         }
-        print_upgrade_plan "$(stale_flake_repos "$upg_flake")"
+        print_upgrade_plan "$(stale_flake_repos "$upg_flake")" "$(tier_user)"
         printf '%sThen: deploy (sync flake revs to the pins + rebuild)%s\n\n' "$C_DIM" "$C_OFF"
       fi
       # setup: show the plan and confirm BEFORE sudo, so reading what it
@@ -4970,13 +5151,17 @@ do_upgrade() {
   }
 
   # Authoritative re-derivation: the pre-sudo plan was orientation, this
-  # is what the ceremonies actually cover. Tag-declared repos join only
-  # when HEAD carries their next release (head_release_tag); each of
-  # those is its own do_approve call because --tag binds to one repo.
-  local stale p tag cls ht repos tagged_p tagged_t i
-  repos=(); tagged_p=(); tagged_t=()
-  stale="$(stale_flake_repos "$FLAKE" "$(tier_user)")"
-  print_upgrade_plan "$stale"
+  # is what the ceremonies actually cover. The route each repo takes is
+  # upgrade_route's, the same decision the plan rendered: a signed release
+  # offer first, then the tag-declared rule (HEAD carries the next release),
+  # then a plain review. The tag and signed routes are their own do_approve
+  # call each, because their selectors bind to one repo.
+  local stale p tag cls tu upg_route upg_info repos tagged_p tagged_t
+  local signed_p signed_t sargs t i
+  repos=(); tagged_p=(); tagged_t=(); signed_p=(); signed_t=()
+  tu="$(tier_user)"
+  stale="$(stale_flake_repos "$FLAKE" "$tu")"
+  print_upgrade_plan "$stale" "$tu"
   echo
   if [ -n "$stale" ]; then
     while IFS='|' read -r p tag cls; do
@@ -4984,17 +5169,18 @@ do_upgrade() {
       # refused list and never reach a ceremony (print_upgrade_plan named
       # them and their by-hand remediation above).
       [ "$cls" = forward ] || continue
-      if [ -z "$tag" ]; then
-        repos+=("$p")
-      else
-        ht="$(head_release_tag "$p")"
-        if [ -n "$ht" ]; then tagged_p+=("$p"); tagged_t+=("$ht"); fi
-      fi
+      upgrade_route "$p" "$tag" "$tu"
+      case "$upg_route" in
+        signed) signed_p+=("$p"); signed_t+=("$upg_info") ;;
+        tagged) tagged_p+=("$p"); tagged_t+=("$upg_info") ;;
+        review) repos+=("$p") ;;
+        # disagree/notag are by-hand work: named in the plan, never automatic.
+      esac
     done <<EOF
 $stale
 EOF
   fi
-  if [ "${#repos[@]}" -gt 0 ] || [ "${#tagged_p[@]}" -gt 0 ]; then
+  if [ "${#repos[@]}" -gt 0 ] || [ "${#tagged_p[@]}" -gt 0 ] || [ "${#signed_p[@]}" -gt 0 ]; then
     if [ "$DRY" -eq 1 ]; then
       printf '%sDry run: no ceremonies; deploy preview follows%s\n\n' "$C_DIM" "$C_OFF"
     else
@@ -5005,6 +5191,21 @@ EOF
       i=0
       while [ "$i" -lt "${#tagged_p[@]}" ]; do
         do_approve "${tagged_p[$i]}" --tag "${tagged_t[$i]}"
+        i=$((i + 1))
+      done
+      # The offer's acceptance is the signed ceremony's own y/N under the
+      # batch contract: declining skips this repo and the rest still run.
+      # Every agreeing tag is passed, so the ceremony's all-must-agree rule
+      # reads them as the k-of-n agreement they are.
+      i=0
+      while [ "$i" -lt "${#signed_p[@]}" ]; do
+        sargs=()
+        while IFS= read -r t; do
+          if [ -n "$t" ]; then sargs+=(--signed-tag "$t"); fi
+        done <<EOF
+${signed_t[$i]}
+EOF
+        do_approve "${signed_p[$i]}" ${sargs[@]+"${sargs[@]}"}
         i=$((i + 1))
       done
       APPROVE_BATCH=0

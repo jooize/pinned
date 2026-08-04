@@ -419,6 +419,34 @@ There is deliberately no latest-tag search: version sort is a
 convention, and the tag namespace is repo content \(em content must
 never choose what a ceremony reviews.
 .IP
+A stale repo carrying a newer SIGNED release, and an installed signer
+key that verifies it, is offered the signature gate instead: the plan
+marks it
+.RB \(dq "signed release " \fIt\fP " \(em signature-gated" \(dq
+and the ceremony is
+.B approve \-\-signed\-tag
+\(em its
+.RB \(dq [y/N] \(dq
+is the offer's acceptance, and declining skips that repo like any other.
+The offer outranks both the release-at-HEAD rule and a plain review
+(a signature is stronger evidence than a name), and it applies to
+rev-only and tag-declared slots alike.
+Candidates are the repo's tags that pass the declared-name grammar,
+strictly descend from the pin, and are an ancestor of (or equal to) the
+checkout's HEAD; each is then VERIFIED, and only the verified subset is
+ordered \(em by ancestry over the commit graph, never by name.
+The offer is the unique ancestry MAXIMUM of that subset; every verified
+tag naming that same commit rides along, which the ceremony's
+all-tags-agree rule reads as k-of-n agreement.
+This is why selection is allowed here at all: someone without the signer
+key cannot enter a candidate, so no attacker-writable name ever chooses
+what the ceremony covers.
+Verified tags on lines that do not contain one another have no maximum
+and are listed for a manual
+.BR "approve \-\-signed\-tag" .
+When the offered release is not HEAD, the plan says how far HEAD stands
+past it \(em the release is what gets pinned.
+.IP
 The ancestry lattice is upgrade's admission rule: only a FORWARD checkout
 joins an automatic ceremony.
 A checkout sitting behind its pin, or off the pinned line entirely, is

@@ -113,15 +113,19 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       approve every stale flake input
                                       (the same per-repo ceremonies),
                                       then deploy -- one authentication
-                                      for the whole round; a tag-declared
-                                      slot joins only when HEAD carries
-                                      exactly one release tag (approved
-                                      under that name), else it is listed
-                                      for a manual approve --tag; only
-                                      FORWARD checkouts join a ceremony,
-                                      backward and diverged ones are
-                                      listed as refused with the flag
-                                      that would declare them
+                                      for the whole round; a stale repo
+                                      with a newer signed release an
+                                      installed key verifies is offered
+                                      the signature gate instead of a
+                                      review; a tag-declared slot
+                                      otherwise joins only when HEAD
+                                      carries exactly one release tag
+                                      (approved under that name), else it
+                                      is listed for a manual approve
+                                      --tag; only FORWARD checkouts join
+                                      a ceremony, backward and diverged
+                                      ones are listed as refused with the
+                                      flag that would declare them
 
 approve, setup, tombstone, upgrade, signer add/remove and ignorable
 add/remove self-elevate via sudo (re-exec of the installed root-owned
@@ -370,6 +374,23 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   (`approve <repo> --signed-tag v1.2.3-alice --signed-tag v1.2.3-bob`) -- every
   named tag must verify and name the same commit or nothing is pinned;
   k-of-n is the consumer demanding whichever k tags they trust.
+- `upgrade` OFFERS that gate. A stale repo whose tags include a newer
+  signed release this machine's allowed signers verify is routed to
+  `approve --signed-tag` instead of a review ceremony -- the plan says
+  `(signed release <t> -- signature-gated)`, and the ceremony's own
+  `[y/N]` is the offer's acceptance (declining skips that repo, like any
+  batch decline). It outranks both the release-at-HEAD rule and a plain
+  review, for rev-only and tag-declared slots alike. There is still no
+  latest-tag search: candidates must pass the declared-name grammar,
+  strictly descend from the pin, and be an ancestor of the checkout's
+  HEAD; each is then VERIFIED, and only the verified subset is ordered --
+  by ancestry over the commit graph, never by name. The offer is that
+  subset's unique ancestry maximum, and every verified tag naming that
+  same commit rides along as the k-of-n agreement above. Selection is
+  safe here precisely because nobody without the signer key can enter a
+  candidate: an attacker-writable name never chooses what a ceremony
+  covers. Verified tags on lines that do not contain one another have no
+  maximum and are listed for a manual `approve --signed-tag`.
 - The pin-stating paths never execute what they approve; `deploy` is
   the one acting subcommand -- the bundled consumer for a nix system
   (a machine has exactly one configuration mechanism; any other

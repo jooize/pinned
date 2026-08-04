@@ -1366,6 +1366,252 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+say "S8g: the signed-release upgrade offer"
+# ---------------------------------------------------------------------------
+# upgrade meeting a stale repo with a NEWER SIGNED release and an installed
+# signer key offers "verify the tag and pin it" instead of a review. The
+# thing under test is the SELECTION: candidates are filtered by ancestry,
+# then VERIFIED, and only the verified subset is ordered -- so no
+# attacker-writable tag name can ever choose what a ceremony covers.
+#
+# The section needs a signing key, not an agent: git's ssh format signs
+# straight from an unencrypted key FILE, so the whole path (sign, discover,
+# verify, pin) runs here. Probed rather than assumed -- a git or ssh-keygen
+# without SSHSIG skips the section instead of failing it, the GIT_OK /
+# REBUILD_TOOL pattern above.
+SIGN_OK=0
+SIGN_KEY="$FIX/signer.key"
+SIGN_KEY2="$FIX/outsider.key"
+USER_SIGNERS="$PINNED_ROOT/$USERNAME/policy/allowed_signers"
+if [ "$GIT_OK" -eq 1 ] && command -v ssh-keygen >/dev/null 2>&1 \
+   && ssh-keygen -t ed25519 -N '' -C pinned-harness -f "$SIGN_KEY" -q >/dev/null 2>&1 \
+   && ssh-keygen -t ed25519 -N '' -C pinned-outsider -f "$SIGN_KEY2" -q >/dev/null 2>&1; then
+  SIGN_PROBE="$FIX/signprobe"
+  mkdir -p "$SIGN_PROBE"
+  bgit "$SIGN_PROBE" init -q
+  printf 'p\n' > "$SIGN_PROBE/f"; bgit "$SIGN_PROBE" add f
+  bgit "$SIGN_PROBE" commit -q -m p
+  printf 'harness namespaces="git" %s\n' "$(cat "$SIGN_KEY.pub")" > "$FIX/allowed.probe"
+  if bgit "$SIGN_PROBE" -c gpg.format=ssh -c user.signingkey="$SIGN_KEY" \
+       tag -s probe -m probe >/dev/null 2>&1 \
+     && bgit "$SIGN_PROBE" -c gpg.ssh.allowedSignersFile="$FIX/allowed.probe" \
+       verify-tag probe >/dev/null 2>&1; then
+    SIGN_OK=1
+  fi
+fi
+
+sign_tag() { # repo tag [commit] -- an ordinary `git tag -s`, ssh format
+  local r="$1" t="$2"; shift 2
+  bgit "$r" -c gpg.format=ssh -c user.signingkey="$SIGN_KEY" \
+    tag -s "$t" -m "release $t" "$@"
+}
+sign_tag_outsider() { # repo tag [commit] -- signed by a key nobody installed
+  local r="$1" t="$2"; shift 2
+  bgit "$r" -c gpg.format=ssh -c user.signingkey="$SIGN_KEY2" \
+    tag -s "$t" -m "release $t" "$@"
+}
+seed_signers_user() { # pubkey-file -- as the signer ceremony would record it
+  mkdir -p "$(dirname "$USER_SIGNERS")"
+  printf 'harness namespaces="git" %s\n' "$(cat "$1")" > "$USER_SIGNERS"
+  chmod 640 "$USER_SIGNERS"
+}
+
+if [ "$GIT_OK" -eq 1 ] && [ -x "$REBUILD_TOOL" ] && [ "$SIGN_OK" -eq 1 ]; then
+  # REPO_S, rev-only slot, linear history:
+  #   s1 <- the pin
+  #   s2   tag v1        signed by the installed key
+  #   s3   tags v2, v2-vendor -- both signed by the installed key
+  #   s4   HEAD; tag v3-evil signed by an OUTSIDER, tag v4-plain unsigned
+  # The maximum of the VERIFIED set is s3, so v2 and v2-vendor are the offer;
+  # the newer names at HEAD carry no signature this machine trusts and never
+  # enter the selection at all.
+  REPO_S="$FIX/signfix"
+  mkdir -p "$REPO_S"
+  bgit "$REPO_S" init -q
+  printf 's1\n' > "$REPO_S/f"; bgit "$REPO_S" add f; bgit "$REPO_S" commit -q -m s1
+  S_PIN="$(bgit "$REPO_S" rev-parse 'HEAD^{commit}')"
+  printf 's2\n' > "$REPO_S/f"; bgit "$REPO_S" commit -q -am s2
+  sign_tag "$REPO_S" v1
+  printf 's3\n' > "$REPO_S/f"; bgit "$REPO_S" commit -q -am s3
+  S_REL="$(bgit "$REPO_S" rev-parse 'HEAD^{commit}')"
+  sign_tag "$REPO_S" v2
+  sign_tag "$REPO_S" v2-vendor
+  printf 's4\n' > "$REPO_S/f"; bgit "$REPO_S" commit -q -am s4
+  sign_tag_outsider "$REPO_S" v3-evil
+  bgit "$REPO_S" tag v4-plain
+  S_SLOT="$(slot_of "$REPO_S")"
+  seed_state "$REPO_S" rev.git "$S_PIN"
+
+  # REPO_T, TAG-DECLARED slot: the offer covers these too, and outranks the
+  # head_release_tag rule. HEAD carries no release, so without the offer this
+  # repo would be routed to a by-hand `approve --tag`.
+  REPO_T="$FIX/signfix-tagged"
+  mkdir -p "$REPO_T"
+  bgit "$REPO_T" init -q
+  printf 't1\n' > "$REPO_T/f"; bgit "$REPO_T" add f; bgit "$REPO_T" commit -q -m t1
+  T_PIN="$(bgit "$REPO_T" rev-parse 'HEAD^{commit}')"
+  bgit "$REPO_T" tag t1
+  printf 't2\n' > "$REPO_T/f"; bgit "$REPO_T" commit -q -am t2
+  T_REL="$(bgit "$REPO_T" rev-parse 'HEAD^{commit}')"
+  sign_tag "$REPO_T" t2
+  printf 't3\n' > "$REPO_T/f"; bgit "$REPO_T" commit -q -am t3
+  T_SLOT="$(slot_of "$REPO_T")"
+  seed_state "$REPO_T" rev.git "$T_PIN"
+  seed_state "$REPO_T" tag t1
+
+  cat > "$FIX/flake-signed.nix" <<EOF
+{
+  inputs.signfix.url = "git+file://$REPO_S?rev=$S_PIN";
+  inputs.signfix-tagged.url = "git+file://$REPO_T?rev=$T_PIN";
+}
+EOF
+
+  # No installed signer key: no offer at all, silently -- the repos take
+  # their ordinary routes (plain review; by-hand --tag for the declared one).
+  ANS=""
+  run_pinned upgrade --flake "$FIX/flake-signed.nix" --dry-run
+  assert_exit "$RC" 0 "the plan without a signers file exits 0"
+  assert_missing "$OUT" "signed release" "no signers file means no offer"
+  assert_contains "$OUT" "no single release tag at HEAD" \
+    "and the tag-declared repo falls back to by-hand approval"
+
+  seed_signers_user "$SIGN_KEY.pub"
+
+  # With the key installed the plan routes both repos to the signature gate,
+  # and says which release -- not which HEAD -- is about to be pinned.
+  ANS=""
+  run_pinned upgrade --flake "$FIX/flake-signed.nix" --dry-run
+  assert_exit "$RC" 0 "the plan with a signers file exits 0"
+  assert_contains "$OUT" "(signed release v2, v2-vendor -- signature-gated)" \
+    "both tags naming the maximum verified commit ride along"
+  assert_contains "$OUT" "HEAD is 1 commit past the release" \
+    "the orientation names the gap between HEAD and the release"
+  assert_missing "$OUT" "v3-evil" "a tag signed by an uninstalled key is not a candidate"
+  assert_missing "$OUT" "v4-plain" "an unsigned tag at HEAD is not a candidate"
+  assert_contains "$OUT" "(signed release t2 -- signature-gated)" \
+    "the offer outranks the tag-declared route"
+  assert_missing "$OUT" "no single release tag at HEAD" \
+    "so the by-hand tag skip no longer applies to it"
+  assert_eq "$(cat "$S_SLOT/rev.git")" "$S_PIN" "the plan records nothing"
+
+  # The ceremony IS approve --signed-tag: its y/N is the offer's acceptance.
+  ANS='y
+y
+'
+  run_pinned upgrade --flake "$FIX/flake-signed.nix"
+  assert_exit "$RC" 2 "the signed upgrade reaches deploy's confirmation gate"
+  assert_contains "$OUT" "signature verified against $USER_SIGNERS" \
+    "the ceremony verified against the root-owned signers file"
+  assert_contains "$OUT" "2/2 tags agree on the commit below" \
+    "the agreeing tags are read as k-of-n agreement"
+  assert_eq "$(cat "$S_SLOT/rev.git")" "$S_REL" "the RELEASE is pinned, not HEAD"
+  assert_eq "$(cat "$S_SLOT/tag")" "v2" "the declaration landed in the slot"
+  assert_eq "$(cat "$T_SLOT/rev.git")" "$T_REL" "the tag-declared repo pinned at its signed release"
+  assert_eq "$(cat "$T_SLOT/tag")" "t2" "and its declaration followed the release"
+
+  # Nothing verified remains above the new pin: the only newer names are the
+  # outsider's signature and a bare name, so the repo drops back to its
+  # ordinary route rather than being offered anything.
+  ANS=""
+  run_pinned upgrade --flake "$FIX/flake-signed.nix" --dry-run
+  assert_exit "$RC" 0 "the follow-up plan exits 0"
+  assert_missing "$OUT" "signed release" "no verified tag above the pin means no offer"
+  assert_contains "$OUT" "no single release tag at HEAD" \
+    "the tag-declared slot is back to by-hand approval"
+
+  # A decline is the offer's refusal: the batch contract skips this repo.
+  bgit "$REPO_S" tag -d v3-evil >/dev/null
+  bgit "$REPO_S" tag -d v4-plain >/dev/null
+  sign_tag "$REPO_S" v5
+  ANS='n
+'
+  run_pinned upgrade --flake "$FIX/flake-signed.nix"
+  assert_exit "$RC" 2 "declining the offer still reaches deploy"
+  assert_contains "$OUT" "(signed release v5 -- signature-gated)" "the new release is offered"
+  assert_contains "$OUT" "0 approved, 1 declined" "the decline skipped the repo"
+  assert_eq "$(cat "$S_SLOT/rev.git")" "$S_REL" "a declined offer moves no pin"
+
+  # VERIFIED TAGS THAT DO NOT ORDER: two signed releases on branches that
+  # merge into HEAD. Both descend from the pin and both are ancestors of
+  # HEAD, but neither contains the other -- there is no maximum to offer, so
+  # nothing here may choose one. Named loudly, never automatic.
+  REPO_D2="$FIX/signfix-split"
+  mkdir -p "$REPO_D2"
+  bgit "$REPO_D2" init -q
+  printf 'd0\n' > "$REPO_D2/f"; bgit "$REPO_D2" add f; bgit "$REPO_D2" commit -q -m d0
+  D2_PIN="$(bgit "$REPO_D2" rev-parse 'HEAD^{commit}')"
+  bgit "$REPO_D2" checkout -q -b sa
+  printf 'da\n' > "$REPO_D2/a"; bgit "$REPO_D2" add a; bgit "$REPO_D2" commit -q -m da
+  sign_tag "$REPO_D2" rel-a
+  bgit "$REPO_D2" checkout -q main
+  bgit "$REPO_D2" checkout -q -b sb
+  printf 'db\n' > "$REPO_D2/b"; bgit "$REPO_D2" add b; bgit "$REPO_D2" commit -q -m db
+  sign_tag "$REPO_D2" rel-b
+  bgit "$REPO_D2" checkout -q main
+  bgit "$REPO_D2" merge -q --no-ff -m ma sa
+  bgit "$REPO_D2" merge -q --no-ff -m mb sb
+  seed_state "$REPO_D2" rev.git "$D2_PIN"
+  cat > "$FIX/flake-split.nix" <<EOF
+{
+  inputs.signfix-split.url = "git+file://$REPO_D2?rev=$D2_PIN";
+}
+EOF
+  ANS=""
+  run_pinned upgrade --flake "$FIX/flake-split.nix" --dry-run
+  assert_exit "$RC" 0 "a plan with disagreeing verified tags exits 0"
+  assert_contains "$OUT" "verified signed tags disagree -- approve --signed-tag by hand" \
+    "no unique maximum is a loud skip"
+  assert_missing "$OUT" "Will review + approve:" "and the repo joins no batch"
+  ANS='y
+'
+  run_pinned upgrade --flake "$FIX/flake-split.nix"
+  assert_exit "$RC" 2 "the run reaches deploy without a ceremony"
+  assert_eq "$(cat "$(slot_of "$REPO_D2")/rev.git")" "$D2_PIN" "the pin is untouched"
+
+  # A signed release BEHIND the pin is not a candidate: strictly-descends is
+  # part of the filter, so a replayed older release cannot be offered. (The
+  # ancestry floor in the ceremony would catch it too; this keeps it out of
+  # the selection in the first place.)
+  REPO_O="$FIX/signfix-old"
+  mkdir -p "$REPO_O"
+  bgit "$REPO_O" init -q
+  printf 'o1\n' > "$REPO_O/f"; bgit "$REPO_O" add f; bgit "$REPO_O" commit -q -m o1
+  sign_tag "$REPO_O" old1
+  printf 'o2\n' > "$REPO_O/f"; bgit "$REPO_O" commit -q -am o2
+  O_PIN="$(bgit "$REPO_O" rev-parse 'HEAD^{commit}')"
+  printf 'o3\n' > "$REPO_O/f"; bgit "$REPO_O" commit -q -am o3
+  seed_state "$REPO_O" rev.git "$O_PIN"
+  cat > "$FIX/flake-old.nix" <<EOF
+{
+  inputs.signfix-old.url = "git+file://$REPO_O?rev=$O_PIN";
+}
+EOF
+  ANS=""
+  run_pinned upgrade --flake "$FIX/flake-old.nix" --dry-run
+  assert_exit "$RC" 0 "a plan whose only signed tag is behind the pin exits 0"
+  assert_missing "$OUT" "signed release" "a signed release behind the pin is no candidate"
+  assert_contains "$OUT" "Will review + approve:" "the repo takes the ordinary review route"
+
+  # A signed release on a SIDE branch is not a candidate either: upgrade
+  # follows the checkout's own line, and a release the checkout has not
+  # merged is by-hand work.
+  bgit "$REPO_O" checkout -q -b aside "$O_PIN"
+  printf 'ox\n' > "$REPO_O/f"; bgit "$REPO_O" commit -q -am ox
+  sign_tag "$REPO_O" side1
+  bgit "$REPO_O" checkout -q main
+  ANS=""
+  run_pinned upgrade --flake "$FIX/flake-old.nix" --dry-run
+  assert_exit "$RC" 0 "a plan with a side-branch release exits 0"
+  assert_missing "$OUT" "signed release" "a release off the checkout's line is no candidate"
+  assert_missing "$OUT" "verified signed tags disagree" \
+    "and it is filtered out before it can look like a disagreement"
+
+  rm -f "$USER_SIGNERS"
+else
+  say "S8g: SKIPPED (no git fixture, no rebuild tool, or no ssh signing)"
+fi
+
+# ---------------------------------------------------------------------------
 say "S9: ignored keys (ignored.json / approved / exit 5)"
 # ---------------------------------------------------------------------------
 # The tolerance path is jq-driven by construction (structural comparison of
