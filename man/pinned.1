@@ -40,7 +40,7 @@ forms, like every reading verb, run unprivileged.
 .SH COMMANDS
 .SS Repository approval
 .TP
-.B approve \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP]
+.B approve \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP] [\fB\-\-step\fP]
 (sudo) Review the diff since the last pin (the full tree on a first
 approval), approve, write the pin.
 Before any sudo prompt, an unprivileged preview shows each repo, the
@@ -69,6 +69,43 @@ Review and pin the tag's commit, not HEAD.
 .B \-\-trust
 Skip a first approval's full-tree review, loudly.
 Later approvals always show the diff.
+.TP
+.B \-\-step
+A reading aid for a large delta: instead of one diff of the whole
+delta, walk the commits since the pin oldest-first \(em one diff and
+one confirmation per commit.
+The pin ADVANCES at every yes, so each checkpoint is a coherent,
+deployable record: stopping midway rests the pin at the last commit
+actually read, and resuming later is an ordinary
+.B approve
+over whatever remains.
+A decline stops the walk rather than skipping the commit \(em trust is
+a tree state, so approving commit N would silently carry N\-1's
+changes in with it.
+.IP
+The walk always closes with a summary: how many commits were approved,
+where the pin came to rest, the per-commit counts for the approved
+range, one aggregate
+.RB ( total: )
+line for the whole sitting, and how many commits remain.
+That aggregate is the point of the summary \(em reading one commit at
+a time covers the same lines as one whole-delta diff, but it fragments
+the attention that would notice mayhem split across individually
+innocent commits.
+The exit status is 0 if the pin advanced at all (a later decline does
+not undo an earlier yes) and 2 if nothing was approved.
+.IP
+The single whole-delta diff remains the default and the norm.
+.B \-\-step
+takes one repo and refuses every combination it cannot mean:
+.BR \-\-file ,
+.BR \-\-trust ,
+.BR \-\-signed\-tag ,
+.BR \-\-tag ,
+several repos, a batch approve, and a first approval (which reviews
+the full tree \(em there is nothing to step from).
+A pin that is not behind HEAD (reversed or diverged history) is
+refused too: the whole-delta diff renders that situation honestly.
 .RE
 .TP
 .B approve \fIrepo\fP \fB\-\-signed\-tag\fP \fItag\fP [\fB\-\-signed\-tag\fP \fItag\fP ...] [\fB\-\-tag\fP \fItag\fP]

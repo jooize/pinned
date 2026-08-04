@@ -1860,15 +1860,19 @@ case "$action" in
       # from the object store as root, after sudo.
       if [ "$action" = "approve" ]; then
         preview_repos=() preview_tag="" skip_next=0 want_tag=0 file_mode=0 have_ev=0
+        preview_step=0 preview_trust=0 preview_signed=0 preview_seltag=0
         for a in "$@"; do
           if [ "$want_tag" -eq 1 ]; then preview_tag="$a"; want_tag=0; continue; fi
           if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
           case "$a" in
-            --signed-tag) have_ev=1; skip_next=1 ;;
+            --signed-tag) have_ev=1; preview_signed=1; skip_next=1 ;;
             --file) file_mode=1; skip_next=1 ;;
             --baseline|--algo) skip_next=1 ;;
-            --tag) have_ev=1; want_tag=1 ;;
-            --trust) have_ev=1 ;;
+            --tag) have_ev=1; preview_seltag=1; want_tag=1 ;;
+            --trust) have_ev=1; preview_trust=1 ;;
+            # A bare flag, not evidence -- it says HOW the review is read,
+            # not why the commit is trusted. It still binds to one repo.
+            --step) preview_step=1 ;;
             -*) ;;
             *) preview_repos+=("$a") ;;
           esac
@@ -1876,10 +1880,33 @@ case "$action" in
         # A bare approve -- no repo, no --file -- can only ever reach
         # usage; fail here, before authentication costs a sudo prompt.
         if [ "${#preview_repos[@]}" -eq 0 ] && [ "$file_mode" -eq 0 ]; then usage; fi
-        # Selector and evidence flags name ONE commit of ONE repo; a batch
-        # they cannot bind to dies here, pre-sudo (the root side re-checks).
-        if [ "${#preview_repos[@]}" -gt 1 ] && [ "$have_ev" -eq 1 ]; then
-          echo "--tag, --signed-tag and --trust bind to one repo; approve multiple repos plain" >&2
+        # --step's refusals, mirrored pre-sudo. The root side re-checks every
+        # one of these (it is the authority); refusing here only saves the
+        # wasted authentication.
+        if [ "$preview_step" -eq 1 ]; then
+          if [ "$file_mode" -eq 1 ]; then
+            echo "--file is its own ceremony; --step does not combine with it" >&2
+            exit 1
+          fi
+          if [ "$preview_trust" -eq 1 ]; then
+            echo "--step is a per-commit review walk; --trust skips review" >&2
+            exit 1
+          fi
+          if [ "$preview_signed" -eq 1 ]; then
+            echo "--step is a per-commit review walk; signature evidence has no per-commit reading" >&2
+            exit 1
+          fi
+          if [ "$preview_seltag" -eq 1 ]; then
+            echo "--step walks to HEAD; --tag selects an endpoint the walk does not support" >&2
+            exit 1
+          fi
+        fi
+        # Selector and evidence flags name ONE commit of ONE repo, and the
+        # step walk is one interactive read of one repo; a batch they cannot
+        # bind to dies here, pre-sudo (the root side re-checks).
+        if [ "${#preview_repos[@]}" -gt 1 ] \
+          && { [ "$have_ev" -eq 1 ] || [ "$preview_step" -eq 1 ]; }; then
+          echo "--tag, --signed-tag, --trust and --step bind to one repo; approve multiple repos plain" >&2
           exit 1
         fi
         if [ "${#preview_repos[@]}" -gt 0 ] && [ "$file_mode" -eq 0 ]; then
@@ -1898,6 +1925,13 @@ case "$action" in
             # Errors silenced: the tree may be root-only pre-group, and the
             # root-side re-derivation is authoritative anyway.
             preview_pin="$(read_rev "$default_slot" 2>/dev/null)" || preview_pin=""
+            # A stepped walk needs a pin to step FROM. (An unreadable slot
+            # reads as "no pin" here because the read above is silenced; the
+            # root side answers such a slot with its own, accurate refusal.)
+            if [ "$preview_step" -eq 1 ] && [ -z "$preview_pin" ]; then
+              echo "first approval reviews the full tree; approve without --step" >&2
+              exit 1
+            fi
             # Same short-circuit the privileged side would take -- but here it
             # costs no authentication. The pin is root-owned; HEAD is the
             # repo the caller is looking at.
@@ -1923,6 +1957,14 @@ case "$action" in
                 echo
                 printf '%scommits since last approval:%s\n' "$C_B" "$C_OFF"
                 print_commit_range "$preview_pin" "$preview_head" '  ' || true
+                if [ "$preview_step" -eq 1 ]; then
+                  # Counted with the walk's OWN enumeration, so the number
+                  # promised here is the number of confirmations that arrive.
+                  preview_steps="$(sgit log --reverse --first-parent --format=%H \
+                    "${preview_pin}..${preview_head}" | wc -l | tr -d ' ')"
+                  printf '  %sstepping: %s commits, oldest first, one confirmation each%s\n' \
+                    "$C_DIM" "$preview_steps" "$C_OFF"
+                fi
               fi
             else
               printf '%spinned:%s     (none -- first approval)\n' "$C_B" "$C_OFF"
@@ -2077,7 +2119,7 @@ do_approve() {
   # nothing is pinned. k-of-n is the caller demanding whichever k tags they
   # trust.
   local trust=0 repo_args sel_tag="" tag_args files file_base file_ign file_algo=sha256 algo_given=0
-  local store=0 ign_given=0 last
+  local store=0 ign_given=0 last step=0
   repo_args=(); tag_args=(); files=(); file_base=(); file_ign=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -2086,6 +2128,18 @@ do_approve() {
         [ -z "$sel_tag" ] || { echo "--tag may be given once (it selects the commit)" >&2; exit 1; }
         sel_tag="$2"; shift 2 ;;
       --trust)      trust=1; shift ;;
+      # A READING AID for a large delta, never the norm: walk the commits
+      # since the pin oldest-first, one diff and one confirmation each, and
+      # advance the pin at every yes -- so stopping midway still leaves a
+      # coherent, deployable record. The single whole-delta diff stays the
+      # default.
+      #
+      # KNOWN COMPOSITION RISK: an attacker can split mayhem across commits
+      # that each read innocently. Per-commit reading covers the same total
+      # lines but fragments the attention that would notice the seam, which
+      # is why the walk always closes with a whole-run summary (the
+      # aggregate diffstat over everything approved in one sitting).
+      --step)       step=1; shift ;;
       --file)
         [ $# -ge 2 ] || { echo "--file needs a path" >&2; exit 1; }
         files+=("$2"); file_base+=(""); file_ign+=(""); shift 2 ;;
@@ -2129,11 +2183,12 @@ do_approve() {
       *)            repo_args+=("$1"); shift ;;
     esac
   done
-  # The file-pin ceremony is its own mode: repo selectors and evidence
-  # flags say nothing about file content.
+  # The file-pin ceremony is its own mode: repo selectors, evidence flags
+  # and the repo walk say nothing about file content.
   if [ "${#files[@]}" -gt 0 ]; then
-    if [ "${#repo_args[@]}" -gt 0 ] || [ -n "$sel_tag" ] || [ "$trust" -eq 1 ] || [ "${#tag_args[@]}" -gt 0 ]; then
-      echo "--file is its own ceremony; repo arguments and evidence flags do not combine with it" >&2
+    if [ "${#repo_args[@]}" -gt 0 ] || [ -n "$sel_tag" ] || [ "$trust" -eq 1 ] \
+      || [ "${#tag_args[@]}" -gt 0 ] || [ "$step" -eq 1 ]; then
+      echo "--file is its own ceremony; repo arguments, evidence flags and --step do not combine with it" >&2
       exit 1
     fi
     do_approve_files
@@ -2151,12 +2206,38 @@ do_approve() {
     echo "--trust adds nothing to a signature-gated approve; drop one" >&2
     exit 1
   fi
-  # Selector and evidence flags name ONE commit of ONE repo; a multi-repo
-  # batch is plain review approvals only (the pre-sudo preview refuses the
-  # same combination -- this is the authoritative re-check).
+  # --step's refusals (the preview refuses the same set pre-sudo; these are
+  # the authoritative re-checks). Every one of them is a combination whose
+  # meaning is not "walk the commits": evidence flags say the content is not
+  # being read at all, and a selector endpoint is not where the walk ends.
+  if [ "$step" -eq 1 ]; then
+    if [ "$trust" -eq 1 ]; then
+      echo "--step is a per-commit review walk; --trust skips review" >&2
+      exit 1
+    fi
+    if [ "${#tag_args[@]}" -gt 0 ]; then
+      echo "--step is a per-commit review walk; signature evidence has no per-commit reading" >&2
+      exit 1
+    fi
+    if [ -n "$sel_tag" ]; then
+      echo "--step walks to HEAD; --tag selects an endpoint the walk does not support" >&2
+      exit 1
+    fi
+    # upgrade's internal batch contract: a decline must fall through to the
+    # deploy step, which a walk that advances the pin mid-flight cannot
+    # honour. Defensive -- upgrade never passes --step.
+    if [ "${APPROVE_BATCH:-0}" -ne 0 ]; then
+      echo "--step is an interactive single-repo walk; it does not run inside a batch approve" >&2
+      exit 1
+    fi
+  fi
+  # Selector and evidence flags name ONE commit of ONE repo, and the step
+  # walk is one interactive read of one repo; a multi-repo batch is plain
+  # review approvals only (the pre-sudo preview refuses the same
+  # combination -- this is the authoritative re-check).
   if [ "${#repo_args[@]}" -gt 1 ] \
-    && { [ -n "$sel_tag" ] || [ "$trust" -eq 1 ] || [ "${#tag_args[@]}" -gt 0 ]; }; then
-    echo "--tag, --signed-tag and --trust bind to one repo; approve multiple repos plain" >&2
+    && { [ -n "$sel_tag" ] || [ "$trust" -eq 1 ] || [ "${#tag_args[@]}" -gt 0 ] || [ "$step" -eq 1 ]; }; then
+    echo "--tag, --signed-tag, --trust and --step bind to one repo; approve multiple repos plain" >&2
     exit 1
   fi
 
@@ -2204,8 +2285,15 @@ do_approve() {
       verify_ancestry "$slot" || exit 1
     fi
 
-    local hash old_hash diff_out
+    local hash old_hash diff_out step_rc
     old_hash="$(read_rev "$slot")" || exit 1
+    # The walk steps FROM a pin; there is no such thing as a first commit of
+    # a tree that already exists. (The preview refuses this pre-sudo too --
+    # this is the authoritative re-check.)
+    if [ "$step" -eq 1 ] && [ -z "$old_hash" ]; then
+      echo "first approval reviews the full tree; approve without --step" >&2
+      exit 1
+    fi
 
     ceremony_banner
 
@@ -2324,6 +2412,15 @@ do_approve() {
         echo
         printf '%s--- commits since last approval ---%s\n' "$C_B" "$C_OFF"
         print_commit_range "$old_hash" "$hash" || true
+        if [ "$step" -eq 1 ]; then
+          # The walk replaces this whole-delta diff AND the single
+          # confirmation below with one of each per commit, and owns the
+          # invocation's exit status from here (it binds to one repo, so
+          # there is no batch left to fall through to).
+          step_rc=0
+          approve_step_walk "$slot" "$old_hash" "$hash" || step_rc=$?
+          exit "$step_rc"
+        fi
         echo
         printf '%s--- diff %.10s..%.10s (from object store) ---%s\n' "$C_B" "$old_hash" "$hash" "$C_OFF"
         # Capture first so a git failure aborts (set -e) BEFORE anything is
@@ -2402,6 +2499,117 @@ do_approve() {
     printf '%s%s approved, %s declined, %s already pinned%s\n' \
       "$C_DIM" "$n_approved" "$n_declined" "$n_already" "$C_OFF"
   fi
+}
+
+# The --step walk: the commits since the pin, oldest first, one diff and one
+# confirmation each, with the pin ADVANCING at every yes. Every checkpoint is
+# therefore a coherent, deployable record -- stopping midway rests the pin at
+# the last approved commit, and resuming later is an ordinary approve over
+# whatever remains. A decline STOPS the walk instead of skipping the commit:
+# trust is a tree state, so approving commit N would silently carry N-1's
+# changes in with it.
+#
+# Reached only from the review branch of do_approve, which has already refused
+# every combination the walk cannot mean (a first approval, --trust,
+# --signed-tag, --tag, several repos, a batch). It owns the invocation's exit
+# status: 0 if the pin advanced at all -- a later decline does not undo an
+# earlier yes -- and 2 if nothing changed, the single-repo decline contract.
+#
+# $1 = slot, $2 = the currently pinned rev, $3 = the walk's endpoint (HEAD).
+approve_step_walk() {
+  local slot="$1" old_hash="$2" hash="$3"
+  local line c k m prev approved=0 answer diff_out rem totals log_out
+  local -a commits=()
+
+  # Captured first so a git failure aborts (set -e) before the walk claims to
+  # know how many commits there are. --first-parent because that is the line
+  # of history the pin travels along; a merge's second parent arrives as part
+  # of the merge commit's own diff.
+  log_out="$(sgit log --reverse --first-parent --format=%H "${old_hash}..${hash}")"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    commits+=("$line")
+  done <<EOF
+$log_out
+EOF
+  m="${#commits[@]}"
+  # No commits between two DIFFERENT revs means the pin is not behind HEAD:
+  # rewritten, reversed or diverged history. The whole-delta diff renders that
+  # situation honestly (it shows the removal); a walk over an empty list would
+  # simply say nothing, which is the one thing a review must never do.
+  if [ "$m" -eq 0 ]; then
+    printf '%sERROR: no commits from the pin to %.10s -- the pin is not behind HEAD%s\n' \
+      "$C_RED$C_B" "$hash" "$C_OFF" >&2
+    echo "       (reversed or diverged history); approve without --step: the" >&2
+    echo "       whole-delta diff shows what actually changes" >&2
+    return 1
+  fi
+
+  k=0
+  prev="$old_hash"
+  while [ "$k" -lt "$m" ]; do
+    c="${commits[$k]}"
+    k=$((k + 1))
+    echo
+    printf '%s--- step %s/%s ---%s\n' "$C_B" "$k" "$m" "$C_OFF"
+    print_commit_range "$prev" "$c" || true
+    echo
+    # Capture first so a git failure aborts (set -e) BEFORE anything is shown
+    # as reviewable; then page. Early pager quit (SIGPIPE) is the reviewer's
+    # own act -- the diff itself already succeeded.
+    diff_out="$(sgit_diff "$prev" "$c")"
+    printf '%s\n' "$diff_out" | page || true
+    echo
+    printf '%sapprove %s%s%s? [y/N]%s ' "$C_B" "$C_CYN" "$c" "$C_OFF$C_B" "$C_OFF"
+    read -r answer </dev/tty
+    case "$answer" in
+      y|Y|yes) ;;
+      *)
+        printf '%sdeclined; the walk stops here%s\n' "$C_YEL" "$C_OFF"
+        log_action approve "$repo" "$c" abort
+        break ;;
+    esac
+    write_slot_state "$slot" rev.git "$c"
+    # A repo pin has no JSON keys to tolerate: taking the slot over from a
+    # file pin drops any ignored-key declaration with it.
+    clear_slot_ignore "$slot"
+    # A stepped approve is a plain review approve, so it CLEARS any declared
+    # release name -- exactly what the non-step path does when no --tag names
+    # one. A walk that ends mid-history could not honour a declaration anyway.
+    rm -f "$slot/tag"
+    log_action approve "$repo" "$c"
+    printf '%s✓ pin advanced:%s %s%s%s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$c" "$C_OFF"
+    prev="$c"
+    approved=$((approved + 1))
+  done
+
+  echo
+  printf '%s--- step summary ---%s\n' "$C_B" "$C_OFF"
+  if [ "$approved" -eq 0 ]; then
+    printf '%sapproved 0 of %s commits; pin unchanged at%s %s%.10s%s\n' \
+      "$C_DIM" "$m" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
+  else
+    printf '%sapproved %s of %s commits; pin:%s %s%.10s%s %s->%s %s%.10s%s\n' \
+      "$C_DIM" "$approved" "$m" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF" \
+      "$C_DIM" "$C_OFF" "$C_CYN" "$prev" "$C_OFF"
+    print_commit_range "$old_hash" "$prev" || true
+    # THE COMPOSITION-RISK MITIGATION. Reading one commit at a time covers the
+    # same total lines as one whole-delta diff, but it fragments the attention
+    # that would notice mayhem split across individually innocent commits.
+    # This is what the whole sitting amounted to, in one line, after the fact.
+    # Binary files count as changed files and contribute nothing to +/- --
+    # what git itself reports for them ("-" in both columns).
+    totals="$(sgit_diff --numstat "$old_hash" "$prev" | LC_ALL=C awk '
+      { n++; if ($1 != "-") ins += $1; if ($2 != "-") del += $2 }
+      END { printf "%d files +%d -%d\n", n, ins, del }')"
+    printf '%stotal:%s %s\n' "$C_DIM" "$C_OFF" "$totals"
+  fi
+  rem=$((m - approved))
+  if [ "$rem" -gt 0 ]; then
+    printf '%sremaining: %s commits%s %s(%.10s..%.10s)%s\n' \
+      "$C_DIM" "$rem" "$C_OFF" "$C_CYN" "$prev" "$hash" "$C_OFF"
+  fi
+  [ "$approved" -ge 1 ] || return 2
 }
 
 # The file-pin ceremony (the claude-trust-append port). The CEREMONY is

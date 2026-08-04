@@ -23,12 +23,19 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
 `man man/pinned.1`.
 
     pinned setup [--yes]              self-install + digest-pinned sudoers
-    pinned approve <repo>... [--tag <tag>] [--trust]
+    pinned approve <repo>... [--tag <tag>] [--trust] [--step]
                                       human gate: review diff -> pin
                                       (--tag: the tag's commit, not HEAD,
                                       and the declared release name;
                                       --trust: skip a first approval's
-                                      full-tree review, loudly)
+                                      full-tree review, loudly;
+                                      --step: reading aid for a large
+                                      delta -- walk the commits since the
+                                      pin oldest-first, one diff and one
+                                      confirmation each, pin advancing at
+                                      every yes, closing with a whole-run
+                                      summary; one whole-delta diff stays
+                                      the default)
     pinned approve <repo> --signed-tag <tag> [--signed-tag <tag> ...] [--tag <tag>]
                                       signature gate: verify signed tag(s),
                                       all naming one commit -> pin (--tag:

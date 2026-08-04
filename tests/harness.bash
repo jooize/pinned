@@ -36,7 +36,9 @@
 #
 # KNOWN COVERAGE GAPS (deliberate):
 #   - no real sudo, so the self-elevation preview, the sudoers digest pin,
-#     `setup` and `deploy` are untested here
+#     `setup` and `deploy` are untested here -- including the preview's
+#     mirrored copies of approve --step's refusals (S8e covers the root-side
+#     originals, which are the authoritative half)
 #   - signed-tag approval / `signer` / `sign` need an SSH agent and keys
 #   - the group-read tier (0750 root:_<user>-pinned) cannot be built without
 #     root: the stub always takes ensure_tree's no-group 0700 branch
@@ -131,7 +133,7 @@ need '-o root -g "\$TREE_GRP" '                             3 'slot-tree install
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
-need '</dev/tty'                                            10 'ceremony tty reads'
+need '</dev/tty'                                            11 'ceremony tty reads'
 need '^# ---- setup ---'                                    1 'library cut marker'
 
 sed -e "s#^PINNED_ROOT=/var/db/pinned\$#PINNED_ROOT='$PINNED_ROOT'#" \
@@ -943,6 +945,160 @@ d2 two files   2 files  +3 -0' "the ceremony lists aligned per-commit counts"
   assert_eq "$(grep -c -e '-  -$' "$OUT")" 1 "exactly one placeholder row (the merge)"
 else
   say "S8d: SKIPPED (no git fixture)"
+fi
+
+# ---------------------------------------------------------------------------
+say "S8e: approve --step (per-commit staged approval)"
+# ---------------------------------------------------------------------------
+# The walk's contract is that every yes leaves a COHERENT record: the pin
+# advances one commit at a time, so a stop midway rests it at the last commit
+# actually read. Each case below re-seeds the pin at the base commit and drives
+# the whole walk from $ANS.
+#
+# The pre-sudo preview's mirrored refusals are NOT reachable here (the
+# elevation gate is sed'd to `if false`) -- the same gap the header records for
+# the preview as a whole. The root-side refusals, which are the authoritative
+# ones, are all covered.
+if [ "$GIT_OK" -eq 1 ]; then
+  REPO_E="$FIX/stepfix"
+  mkdir -p "$REPO_E"
+  bgit "$REPO_E" init -q
+  printf 'b1\nb2\nb3\n' > "$REPO_E/base.txt"
+  bgit "$REPO_E" add base.txt; bgit "$REPO_E" commit -q -m "e0 base"
+  E_BASE="$(bgit "$REPO_E" rev-parse 'HEAD^{commit}')"
+  E_SLOT="$(slot_of "$REPO_E")"
+
+  # Three commits with distinct, greppable content. Known counts over the
+  # whole range: base.txt +1 -1, e1.txt +1, e2.txt +2, e3.txt +1
+  # -> 4 files, +5, -1.
+  printf 'E1LINE\n' > "$REPO_E/e1.txt"
+  bgit "$REPO_E" add e1.txt; bgit "$REPO_E" commit -q -m "e1 first"
+  E_C1="$(bgit "$REPO_E" rev-parse 'HEAD^{commit}')"
+  printf 'E2LINE\nE2MORE\n' > "$REPO_E/e2.txt"
+  printf 'b1\nE2EDIT\nb3\n' > "$REPO_E/base.txt"
+  bgit "$REPO_E" add e2.txt base.txt; bgit "$REPO_E" commit -q -m "e2 second"
+  E_C2="$(bgit "$REPO_E" rev-parse 'HEAD^{commit}')"
+  printf 'E3LINE\n' > "$REPO_E/e3.txt"
+  bgit "$REPO_E" add e3.txt; bgit "$REPO_E" commit -q -m "e3 third"
+  E_HEAD="$(bgit "$REPO_E" rev-parse 'HEAD^{commit}')"
+
+  # --- three yeses: the pin lands on HEAD, one step per commit -------------
+  seed_state "$REPO_E" rev.git "$E_BASE"
+  ANS='y
+y
+y
+'
+  run_pinned approve "$REPO_E" --step
+  assert_exit "$RC" 0 "a fully approved walk exits 0"
+  assert_eq "$(cat "$E_SLOT/rev.git")" "$E_HEAD" "three yeses walk the pin to HEAD"
+  assert_contains "$OUT" "--- step 1/3 ---" "the walk numbers its steps"
+  assert_contains "$OUT" "--- step 3/3 ---" "the walk reaches the last step"
+  assert_contains "$OUT" "approved 3 of 3 commits" "the summary counts every step"
+  assert_eq "$(grep -c '✓ pin advanced:' "$OUT")" 3 "every yes confirms an advanced pin"
+
+  # Each step shows ONLY its own commit: step 2 carries e2's content and
+  # neither e1's (already approved) nor e3's (not yet offered).
+  awk '/^--- step 2\/3 ---$/ { f = 1; next } /^--- step 3\/3 ---$/ { f = 0 } f' \
+    "$OUT" > "$FIX/step2"
+  assert_contains "$FIX/step2" "E2LINE" "step 2 shows its own commit's content"
+  assert_contains "$FIX/step2" "E2EDIT" "step 2 shows its own commit's edits"
+  assert_missing  "$FIX/step2" "E3LINE" "step 2 does not leak the next commit"
+  assert_missing  "$FIX/step2" "E1LINE" "step 2 does not repeat the approved commit"
+
+  # The closing aggregate is the composition-risk mitigation: the whole
+  # sitting's totals, exactly.
+  assert_contains "$OUT" "total: 4 files +5 -1" "the summary totals the approved range"
+  assert_missing  "$OUT" "remaining:" "a completed walk has nothing remaining"
+  assert_missing  "$OUT" "✓ approved:" "the walk replaces the single-approval line"
+
+  # --- yes then no: the pin rests where reading stopped --------------------
+  seed_state "$REPO_E" rev.git "$E_BASE"
+  ANS='y
+n
+'
+  run_pinned approve "$REPO_E" --step
+  assert_exit "$RC" 0 "a partial walk still exits 0 (the pin did advance)"
+  assert_eq "$(cat "$E_SLOT/rev.git")" "$E_C1" "the pin rests at the last approved commit"
+  assert_contains "$OUT" "approved 1 of 3 commits" "the summary counts the partial walk"
+  assert_contains "$OUT" "remaining: 2 commits" "the summary names what is left"
+  assert_contains "$OUT" "total: 1 files +1 -0" "the aggregate covers only the approved range"
+  assert_missing  "$OUT" "--- step 3/3 ---" "a decline stops the walk instead of skipping"
+
+  # --- a first no: nothing changes, exit 2 (the single-repo contract) ------
+  seed_state "$REPO_E" rev.git "$E_BASE"
+  ANS='n
+'
+  run_pinned approve "$REPO_E" --step
+  assert_exit "$RC" 2 "a walk that approves nothing exits 2"
+  assert_eq "$(cat "$E_SLOT/rev.git")" "$E_BASE" "a declined walk leaves the pin alone"
+  assert_contains "$OUT" "approved 0 of 3 commits" "the summary reports an empty walk"
+  assert_contains "$OUT" "pin unchanged" "the summary says the pin did not move"
+  assert_missing  "$OUT" "total:" "no aggregate for a walk that approved nothing"
+
+  # --- a stepped yes clears a declared release name ------------------------
+  seed_state "$REPO_E" rev.git "$E_BASE"
+  printf 'v1\n' > "$E_SLOT/tag"
+  ANS='y
+n
+'
+  run_pinned approve "$REPO_E" --step
+  assert_exit "$RC" 0 "a stepped approve over a tag-declared slot exits 0"
+  assert_absent "$E_SLOT/tag" "a stepped yes clears the declared tag"
+
+  # --- refusals (root-side: the authoritative half) ------------------------
+  seed_state "$REPO_E" rev.git "$E_BASE"
+  ANS=""
+  run_pinned approve "$REPO_E" --step --trust
+  assert_exit "$RC" 1 "--step with --trust is refused"
+  assert_contains "$OUT" "--trust skips review" "the refusal names the contradiction"
+  ANS=""
+  run_pinned approve "$REPO_E" --step --signed-tag v1
+  assert_exit "$RC" 1 "--step with --signed-tag is refused"
+  assert_contains "$OUT" "signature evidence has no per-commit reading" "the refusal names the reason"
+  ANS=""
+  run_pinned approve "$REPO_E" --step --tag v1
+  assert_exit "$RC" 1 "--step with --tag is refused"
+  assert_contains "$OUT" "--step walks to HEAD" "the refusal names the endpoint rule"
+  ANS=""
+  run_pinned approve "$REPO_E" "$REPO_A" --step
+  assert_exit "$RC" 1 "--step with two repos is refused"
+  assert_contains "$OUT" "bind to one repo" "the refusal names the one-repo rule"
+  ANS=""
+  run_pinned approve --file "$SUB/a.conf" --step
+  assert_exit "$RC" 1 "--step with --file is refused"
+  assert_contains "$OUT" "its own ceremony" "the refusal names the file ceremony"
+
+  # upgrade's internal batch contract cannot host an interactive walk.
+  RC=0
+  printf '' > "$FIX/stdin"
+  APPROVE_BATCH=1 "$STUB" approve "$REPO_E" --step <"$FIX/stdin" >"$OUT" 2>&1 || RC=$?
+  assert_exit "$RC" 1 "--step inside a batch approve is refused"
+  assert_contains "$OUT" "does not run inside a batch approve" "the refusal names the batch rule"
+
+  # A first approval has no pin to step from.
+  REPO_F="$FIX/stepfix-new"
+  mkdir -p "$REPO_F"
+  bgit "$REPO_F" init -q; printf 'f1\n' > "$REPO_F/f"; bgit "$REPO_F" add f
+  bgit "$REPO_F" commit -q -m f1
+  ANS=""
+  run_pinned approve "$REPO_F" --step
+  assert_exit "$RC" 1 "--step on a never-approved repo is refused"
+  assert_contains "$OUT" "approve without --step" "the refusal points at the plain ceremony"
+  assert_absent "$(slot_of "$REPO_F")/rev.git" "the refused walk recorded nothing"
+
+  # The pin ahead of HEAD (reversed history) has no commits to walk: refuse
+  # and send the reviewer to the whole-delta diff, which shows the removal.
+  seed_state "$REPO_E" rev.git "$E_HEAD"
+  bgit "$REPO_E" branch -q back "$E_C2"
+  bgit "$REPO_E" checkout -q back
+  ANS=""
+  run_pinned approve "$REPO_E" --step
+  assert_exit "$RC" 1 "a pin that is not behind HEAD refuses the walk"
+  assert_contains "$OUT" "the pin is not behind HEAD" "the refusal names the shape"
+  assert_eq "$(cat "$E_SLOT/rev.git")" "$E_HEAD" "the refused walk left the pin alone"
+  bgit "$REPO_E" checkout -q main
+else
+  say "S8e: SKIPPED (no git fixture)"
 fi
 
 # ---------------------------------------------------------------------------
