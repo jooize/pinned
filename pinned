@@ -575,6 +575,10 @@ sgit() {
 #
 #   <hash>  <subject>  <n> files  +<ins> -<del>
 #
+# Counts pluralize ("1 file", "2 files") without breaking alignment: the
+# count-and-noun pair is one token, right-aligned to the widest token in
+# the range, exactly like the signed +/- numbers beside it.
+#
 # Orientation before the review: how many places each commit touched, so a
 # one-line "fix typo" that rewrites forty files cannot pass as one. The
 # counts come from sgit -- the same hardened path the reviewed diff takes,
@@ -627,24 +631,25 @@ print_commit_range() {
     END {
       for (j = 1; j <= n; j++) {
         if (mrg[j]) continue
-        if (length(nfl[j]) > fw) fw = length(nfl[j])
+        tok[j] = nfl[j] (nfl[j] == 1 ? " file" : " files")
+        if (length(tok[j]) > tw) tw = length(tok[j])
         if (length(ins[j]) > iw) iw = length(ins[j])
         if (length(del[j]) > dw) dw = length(del[j])
       }
       if (hw < 1) hw = 1
       if (sw < 1) sw = 1
-      if (fw < 1) fw = 1
+      if (tw < 1) tw = 1
       if (iw < 1) iw = 1
       if (dw < 1) dw = 1
       for (j = 1; j <= n; j++) {
         out = pre cyn sprintf("%-" hw "s", hsh[j]) off "  " sprintf("%-" sw "s", sbj[j]) "  "
         if (mrg[j])
-          out = out dim sprintf("%" (fw + 6) "s", "-") "  " \
+          out = out dim sprintf("%" tw "s", "-") "  " \
                 sprintf("%" (iw + 1) "s", "-") " " sprintf("%" (dw + 1) "s", "-") off
         else
           # The sign is part of the token, right-aligned with it: "+103"
           # over "  +2", never a "+" stranded from its digits.
-          out = out dim sprintf("%" fw "d files", nfl[j]) off "  " \
+          out = out dim sprintf("%" tw "s", tok[j]) off "  " \
                 grn sprintf("%" (iw + 1) "s", "+" ins[j]) off " " \
                 red sprintf("%" (dw + 1) "s", "-" del[j]) off
         print out
@@ -652,6 +657,10 @@ print_commit_range() {
     }
   '
 }
+
+# The plural suffix for a counted noun ("1 commit", "2 commits"). Defined up
+# here because the pre-sudo elevation arm runs before later definitions.
+plural_s() { [ "$1" = 1 ] || printf s; }
 
 # URL-encode % and / so a path becomes an unambiguous flat slot name;
 # decode reverses it (%2F first, then %25 -- the reverse order would
@@ -1962,8 +1971,8 @@ case "$action" in
                   # promised here is the number of confirmations that arrive.
                   preview_steps="$(sgit log --reverse --first-parent --format=%H \
                     "${preview_pin}..${preview_head}" | wc -l | tr -d ' ')"
-                  printf '  %sstepping: %s commits, oldest first, one confirmation each%s\n' \
-                    "$C_DIM" "$preview_steps" "$C_OFF"
+                  printf '  %sstepping: %s commit%s, oldest first, one confirmation each%s\n' \
+                    "$C_DIM" "$preview_steps" "$(plural_s "$preview_steps")" "$C_OFF"
                 fi
               fi
             else
@@ -2586,11 +2595,11 @@ EOF
   echo
   printf '%s--- step summary ---%s\n' "$C_B" "$C_OFF"
   if [ "$approved" -eq 0 ]; then
-    printf '%sapproved 0 of %s commits; pin unchanged at%s %s%.10s%s\n' \
-      "$C_DIM" "$m" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
+    printf '%sapproved 0 of %s commit%s; pin unchanged at%s %s%.10s%s\n' \
+      "$C_DIM" "$m" "$(plural_s "$m")" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
   else
-    printf '%sapproved %s of %s commits; pin:%s %s%.10s%s %s->%s %s%.10s%s\n' \
-      "$C_DIM" "$approved" "$m" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF" \
+    printf '%sapproved %s of %s commit%s; pin:%s %s%.10s%s %s->%s %s%.10s%s\n' \
+      "$C_DIM" "$approved" "$m" "$(plural_s "$m")" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF" \
       "$C_DIM" "$C_OFF" "$C_CYN" "$prev" "$C_OFF"
     print_commit_range "$old_hash" "$prev" || true
     # THE COMPOSITION-RISK MITIGATION. Reading one commit at a time covers the
@@ -2601,13 +2610,13 @@ EOF
     # what git itself reports for them ("-" in both columns).
     totals="$(sgit_diff --numstat "$old_hash" "$prev" | LC_ALL=C awk '
       { n++; if ($1 != "-") ins += $1; if ($2 != "-") del += $2 }
-      END { printf "%d files +%d -%d\n", n, ins, del }')"
+      END { printf "%d file%s +%d -%d\n", n, (n == 1 ? "" : "s"), ins, del }')"
     printf '%stotal:%s %s\n' "$C_DIM" "$C_OFF" "$totals"
   fi
   rem=$((m - approved))
   if [ "$rem" -gt 0 ]; then
-    printf '%sremaining: %s commits%s %s(%.10s..%.10s)%s\n' \
-      "$C_DIM" "$rem" "$C_OFF" "$C_CYN" "$prev" "$hash" "$C_OFF"
+    printf '%sremaining: %s commit%s%s %s(%.10s..%.10s)%s\n' \
+      "$C_DIM" "$rem" "$(plural_s "$rem")" "$C_OFF" "$C_CYN" "$prev" "$hash" "$C_OFF"
   fi
   [ "$approved" -ge 1 ] || return 2
 }
@@ -3340,7 +3349,7 @@ do_status() {
     return
   fi
   resolve_repo "$@"
-  local slot="$default_slot" hash head_hash
+  local slot="$default_slot" hash head_hash ahead
   hash="$(read_rev "$slot")" || exit 1
   head_hash="$(sgit rev-parse 'HEAD^{commit}')"
 
@@ -3357,8 +3366,9 @@ do_status() {
   if [ -n "$hash" ] && [ "$hash" = "$head_hash" ]; then
     printf '%sstate:%s      %s✓ HEAD is approved%s\n' "$C_DIM" "$C_OFF" "$C_GRN" "$C_OFF"
   elif [ -n "$hash" ]; then
-    printf '%sstate:%s      %s✗ HEAD is not approved (%s commits ahead of pin)%s\n' "$C_DIM" "$C_OFF" \
-      "$C_RED" "$(sgit rev-list --count "${hash}..${head_hash}" 2>/dev/null || echo '?')" "$C_OFF"
+    ahead="$(sgit rev-list --count "${hash}..${head_hash}" 2>/dev/null || echo '?')"
+    printf '%sstate:%s      %s✗ HEAD is not approved (%s commit%s ahead of pin)%s\n' "$C_DIM" "$C_OFF" \
+      "$C_RED" "$ahead" "$(plural_s "$ahead")" "$C_OFF"
   else
     printf '%sstate:%s      %s✗ never approved%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF"
   fi
@@ -3814,7 +3824,7 @@ EOF
 # by a user-space attacker. There is nothing to write, so nothing to elevate.
 do_review_repo() {
   resolve_repo "$1"
-  local hash head_hash tag diff_out
+  local hash head_hash tag diff_out ahead
   hash="$(read_rev "$default_slot")" || exit 1
   [ -n "$hash" ] || {
     echo "no pin for $repo; review re-displays a pin (approve it first)" >&2
@@ -3848,8 +3858,9 @@ do_review_repo() {
   elif [ "$head_hash" = "$hash" ]; then
     printf '%slive HEAD is at the pin%s\n' "$C_DIM" "$C_OFF"
   elif sgit merge-base --is-ancestor "$hash" HEAD 2>/dev/null; then
-    printf '%slive HEAD is %s commits past the pin%s\n' "$C_DIM" \
-      "$(sgit rev-list --count "${hash}..HEAD")" "$C_OFF"
+    ahead="$(sgit rev-list --count "${hash}..HEAD")"
+    printf '%slive HEAD is %s commit%s past the pin%s\n' "$C_DIM" \
+      "$ahead" "$(plural_s "$ahead")" "$C_OFF"
   else
     printf '%slive HEAD does not descend from the pin%s\n' "$C_DIM" "$C_OFF"
   fi

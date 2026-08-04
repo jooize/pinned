@@ -925,11 +925,11 @@ if [ "$GIT_OK" -eq 1 ]; then
   # before the diff; the hash column varies in width, so it is dropped.
   D_LINES="$(awk '/^--- commits since last approval ---$/ { f = 1; next }
                   /^$/ { f = 0 } f' "$OUT" | sed 's/^[0-9a-f]*  //')"
-  assert_eq "$D_LINES" 'd6 binary      1 files  +0 -0
+  assert_eq "$D_LINES" 'd6 binary       1 file  +0 -0
 d5 merge side        -   -  -
-d4 main        1 files  +1 -1
-d3 side        1 files  +4 -0
-d2 two files   2 files  +3 -0' "the ceremony lists aligned per-commit counts"
+d4 main         1 file  +1 -1
+d3 side         1 file  +4 -0
+d2 two files   2 files  +3 -0' "the ceremony lists aligned per-commit counts, pluralized"
 
   # The pre-sudo preview is unreachable from the stub (its elevation gate is
   # sed'd to `if false`), and it differs from the ceremony only by the
@@ -1021,8 +1021,20 @@ n
   assert_eq "$(cat "$E_SLOT/rev.git")" "$E_C1" "the pin rests at the last approved commit"
   assert_contains "$OUT" "approved 1 of 3 commits" "the summary counts the partial walk"
   assert_contains "$OUT" "remaining: 2 commits" "the summary names what is left"
-  assert_contains "$OUT" "total: 1 files +1 -0" "the aggregate covers only the approved range"
+  assert_contains "$OUT" "total: 1 file +1 -0" "the aggregate covers only the approved range, singular"
   assert_missing  "$OUT" "--- step 3/3 ---" "a decline stops the walk instead of skipping"
+
+  # --- two yeses then no: the singular remainder reads as one --------------
+  seed_state "$REPO_E" rev.git "$E_BASE"
+  ANS='y
+y
+n
+'
+  run_pinned approve "$REPO_E" --step
+  assert_exit "$RC" 0 "a two-step walk exits 0"
+  assert_contains "$OUT" "approved 2 of 3 commits" "the summary counts both steps"
+  assert_contains "$OUT" "remaining: 1 commit " "one leftover commit is singular"
+  assert_missing  "$OUT" "remaining: 1 commits" "and never plural"
 
   # --- a first no: nothing changes, exit 2 (the single-repo contract) ------
   seed_state "$REPO_E" rev.git "$E_BASE"
@@ -1735,7 +1747,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   ANS=""
   run_pinned review "$REPO_R"
   assert_exit "$RC" 0 "review with HEAD past the pin exits 0"
-  assert_contains "$OUT" "live HEAD is 1 commits past the pin" "orientation counts the commits past the pin"
+  assert_contains "$OUT" "live HEAD is 1 commit past the pin" "orientation counts the commits past the pin, singular"
   assert_contains "$OUT" "+alpha line" "the pinned content is still what is displayed"
   assert_missing "$OUT" "beta line" "content past the pin never reaches the display"
   assert_eq "$(slot_snapshot "$R_SLOT")" "$R_SNAP" "still no slot write"
