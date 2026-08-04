@@ -878,6 +878,74 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+say "S8d: per-commit diffstat in the commits-since listing"
+# ---------------------------------------------------------------------------
+# The listing is orientation a trust decision is read against, so the counts
+# are asserted EXACTLY, alignment included: the hash column is stripped
+# (%h picks its own length) and the rest is compared as one block.
+if [ "$GIT_OK" -eq 1 ]; then
+  REPO_D="$FIX/statfix"
+  mkdir -p "$REPO_D"
+  bgit "$REPO_D" init -q
+  printf 'l1\nl2\nl3\n' > "$REPO_D/a.txt"
+  bgit "$REPO_D" add a.txt; bgit "$REPO_D" commit -q -m "d1 base"
+  D_SLOT="$(slot_of "$REPO_D")"
+  ANS='y
+'
+  run_pinned approve "$REPO_D"
+  assert_exit "$RC" 0 "diffstat fixture pins its base commit"
+  D_PIN="$(cat "$D_SLOT/rev.git")"
+
+  # Known counts, newest last: 2 files/+3/-0, then a side branch (1/+4/-0),
+  # a rewrite on main (1/+1/-1), the merge (no per-commit diff), and a
+  # binary add (1 file, no line counts).
+  printf 'l4\n' >> "$REPO_D/a.txt"
+  printf 'b1\nb2\n' > "$REPO_D/b.txt"
+  bgit "$REPO_D" add a.txt b.txt; bgit "$REPO_D" commit -q -m "d2 two files"
+  bgit "$REPO_D" checkout -q -b side
+  printf 'c1\nc2\nc3\nc4\n' > "$REPO_D/c.txt"
+  bgit "$REPO_D" add c.txt; bgit "$REPO_D" commit -q -m "d3 side"
+  bgit "$REPO_D" checkout -q main
+  printf 'l1\nl2\nCHANGED\nl4\n' > "$REPO_D/a.txt"
+  bgit "$REPO_D" commit -q -am "d4 main"
+  bgit "$REPO_D" merge -q --no-ff -m "d5 merge side" side
+  printf 'bin\000data\n' > "$REPO_D/d.bin"
+  bgit "$REPO_D" add d.bin; bgit "$REPO_D" commit -q -m "d6 binary"
+  D_HEAD="$(bgit "$REPO_D" rev-parse 'HEAD^{commit}')"
+
+  ANS='y
+'
+  run_pinned approve "$REPO_D"
+  assert_exit "$RC" 0 "approve over the diffstat range exits 0"
+  assert_eq "$(cat "$D_SLOT/rev.git")" "$D_HEAD" "the range was approved"
+
+  # The block is everything between the listing header and the blank line
+  # before the diff; the hash column varies in width, so it is dropped.
+  D_LINES="$(awk '/^--- commits since last approval ---$/ { f = 1; next }
+                  /^$/ { f = 0 } f' "$OUT" | sed 's/^[0-9a-f]*  //')"
+  assert_eq "$D_LINES" 'd6 binary      1 files  +0 -0
+d5 merge side        -   -  -
+d4 main        1 files  +1 -1
+d3 side        1 files  +4 -0
+d2 two files   2 files  +3 -0' "the ceremony lists aligned per-commit counts"
+
+  # The pre-sudo preview is unreachable from the stub (its elevation gate is
+  # sed'd to `if false`), and it differs from the ceremony only by the
+  # indent argument -- so the shared helper is driven directly for it.
+  RC=0
+  repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" "$D_HEAD" '  ' >"$OUT" 2>"$ERRF" || RC=$?
+  assert_exit "$RC" 0 "the preview form of the listing exits 0"
+  assert_contains "$OUT" '  d2 two files   2 files  +3 -0' "the preview indents the same enriched line"
+  assert_missing  "$OUT" 'd2 two files  2 files' "the preview does not lose the subject padding"
+
+  # A merge inside the range must not poison its neighbours' counts: the
+  # placeholder row is the only one without numbers.
+  assert_eq "$(grep -c -e '-  -$' "$OUT")" 1 "exactly one placeholder row (the merge)"
+else
+  say "S8d: SKIPPED (no git fixture)"
+fi
+
+# ---------------------------------------------------------------------------
 say "S9: ignored keys (ignored.json / approved / exit 5)"
 # ---------------------------------------------------------------------------
 # The tolerance path is jq-driven by construction (structural comparison of

@@ -570,6 +570,89 @@ sgit() {
     -c core.fsmonitor=false -c core.pager=cat "$@"
 }
 
+# The "commits since last approval" listing, one aligned line per commit,
+# newest first:
+#
+#   <hash>  <subject>  <n> files  +<ins> -<del>
+#
+# Orientation before the review: how many places each commit touched, so a
+# one-line "fix typo" that rewrites forty files cannot pass as one. The
+# counts come from sgit -- the same hardened path the reviewed diff takes,
+# so attr.tree=<empty tree> holds here too and no repo-local textconv or
+# diff driver can shrink a commit to "nothing changed" in this display
+# either. `log --numstat` without -p renders no patch, which is why the
+# sgit render guard passes it; --shortstat would mean parsing a sentence,
+# so the machine-readable form is the one used.
+#
+# Binary files count as changed files and contribute nothing to +/-, which
+# is exactly what git reports for them ("-" in both columns). A merge has
+# no per-commit diff at all (git omits it unless asked), so its counts read
+# "-" rather than a fabricated zero; the authoritative diff below covers
+# the merged content regardless.
+#
+# $1 = old rev, $2 = new rev, $3 = line prefix (default none).
+print_commit_range() {
+  # %x01 delimits the commit blocks: the subject is the last field, so it
+  # may hold tabs, and %s never holds a newline (git folds the subject).
+  sgit log --format='%x01%h%x09%s' --numstat "${1}..${2}" | LC_ALL=C awk \
+    -v pre="${3:-}" -v cyn="$C_CYN" -v dim="$C_DIM" \
+    -v grn="$C_GRN" -v red="$C_RED" -v off="$C_OFF" '
+    function fit(s,   k) {                      # cap the subject column
+      if (length(s) <= 60) return s
+      k = 57
+      # awk indexes bytes here, so back off over UTF-8 continuation bytes
+      # rather than cutting a character in half.
+      while (k > 0 && substr(s, k + 1, 1) ~ /^[\200-\277]$/) k--
+      return substr(s, 1, k) "..."
+    }
+    /^\001/ {
+      n++
+      line = substr($0, 2)
+      t = index(line, "\t")
+      if (t > 0) { hsh[n] = substr(line, 1, t - 1); sbj[n] = fit(substr(line, t + 1)) }
+      else       { hsh[n] = line; sbj[n] = "" }
+      nfl[n] = 0; ins[n] = 0; del[n] = 0; mrg[n] = 1
+      # %h picks its own length per commit, so the hash gets a column too.
+      if (length(hsh[n]) > hw) hw = length(hsh[n])
+      if (length(sbj[n]) > sw) sw = length(sbj[n])
+      next
+    }
+    /^[0-9-]+\t/ {
+      mrg[n] = 0
+      nfl[n]++
+      if ($1 != "-") ins[n] += $1
+      if ($2 != "-") del[n] += $2
+      next
+    }
+    END {
+      for (j = 1; j <= n; j++) {
+        if (mrg[j]) continue
+        if (length(nfl[j]) > fw) fw = length(nfl[j])
+        if (length(ins[j]) > iw) iw = length(ins[j])
+        if (length(del[j]) > dw) dw = length(del[j])
+      }
+      if (hw < 1) hw = 1
+      if (sw < 1) sw = 1
+      if (fw < 1) fw = 1
+      if (iw < 1) iw = 1
+      if (dw < 1) dw = 1
+      for (j = 1; j <= n; j++) {
+        out = pre cyn sprintf("%-" hw "s", hsh[j]) off "  " sprintf("%-" sw "s", sbj[j]) "  "
+        if (mrg[j])
+          out = out dim sprintf("%" (fw + 6) "s", "-") "  " \
+                sprintf("%" (iw + 1) "s", "-") " " sprintf("%" (dw + 1) "s", "-") off
+        else
+          # The sign is part of the token, right-aligned with it: "+103"
+          # over "  +2", never a "+" stranded from its digits.
+          out = out dim sprintf("%" fw "d files", nfl[j]) off "  " \
+                grn sprintf("%" (iw + 1) "s", "+" ins[j]) off " " \
+                red sprintf("%" (dw + 1) "s", "-" del[j]) off
+        print out
+      }
+    }
+  '
+}
+
 # URL-encode % and / so a path becomes an unambiguous flat slot name;
 # decode reverses it (%2F first, then %25 -- the reverse order would
 # corrupt paths containing literal "%2F").
@@ -1839,7 +1922,7 @@ case "$action" in
               if [ "$preview_pin" != "$preview_head" ]; then
                 echo
                 printf '%scommits since last approval:%s\n' "$C_B" "$C_OFF"
-                sgit log --format='  %h %s' "${preview_pin}..${preview_head}" || true
+                print_commit_range "$preview_pin" "$preview_head" '  ' || true
               fi
             else
               printf '%spinned:%s     (none -- first approval)\n' "$C_B" "$C_OFF"
@@ -2206,7 +2289,7 @@ do_approve() {
         # machine approve runs on); the signature stays the gate.
         echo
         printf '%s--- commits since last approval ---%s\n' "$C_B" "$C_OFF"
-        sgit log --format='%h %s' "${old_hash}..${hash}" || true
+        print_commit_range "$old_hash" "$hash" || true
       fi
     else
       # Human gate: read the diff since the last pin from the object store,
@@ -2240,7 +2323,7 @@ do_approve() {
         printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
         echo
         printf '%s--- commits since last approval ---%s\n' "$C_B" "$C_OFF"
-        sgit log --format='%h %s' "${old_hash}..${hash}" || true
+        print_commit_range "$old_hash" "$hash" || true
         echo
         printf '%s--- diff %.10s..%.10s (from object store) ---%s\n' "$C_B" "$old_hash" "$hash" "$C_OFF"
         # Capture first so a git failure aborts (set -e) BEFORE anything is

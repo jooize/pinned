@@ -47,6 +47,11 @@ Before any sudo prompt, an unprivileged preview shows each repo, the
 commit about to be reviewed, and the commits since the last approval;
 the authoritative review re-derives everything from the object store
 as root, after sudo.
+Each commit in that listing carries its own changed-file, insertion and
+deletion counts, so a subject line cannot pass a large commit off as a
+small one.
+A merge shows "\-" for all three: git keeps no per-commit diff for it,
+and the review below covers the merged content anyway.
 .IP
 Several repos run as sequential ceremonies under one authentication:
 each is displayed and confirmed on its own, a decline skips only that
