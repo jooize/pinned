@@ -81,9 +81,11 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
     pinned ignorable list             machine tier, user tier, and the
                                       effective intersection, with scopes
     pinned status <repo|file>         record vs live state
-    pinned review <file> [--algo <name>] [--length <bits>]
-                                      trusted review of a non-repo file:
-                                      one read, shown and hashed; no record
+    pinned review <file|repo> [--algo <name>] [--length <bits>]
+                                      trusted re-display, no record: a
+                                      file is one read, shown and hashed;
+                                      a repo is the tree at its pin, from
+                                      the object store
     pinned list [--under <dir>]       live pins: kind, digest, path
     pinned slot <path>                print the slot directory for any
                                       path -- repo, file, existing or
@@ -115,7 +117,10 @@ sign, review and cat
 run as you: sign needs your SSH agent, review and cat write nothing. The
 verb triple: `review` rehearses (no record), `approve` records, `verify`
 answers -- humans review, machines verify, records happen only in
-approve. `cat` is custody's reader, and reads nothing else.
+approve. The triple covers both kinds: `review <file>` rehearses a hash
+gate, and `review <repo>` re-displays the tree a pin already names,
+through the same hardened git path the ceremony used. `cat` is
+custody's reader, and reads nothing else.
 
 Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
 
@@ -387,6 +392,16 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   refused: this hash is the gate. There is deliberately no flag naming a
   hasher PATH -- whatever computes the digest decides whether the gate
   passes, so it must resolve inside the trusted PATH.
+- `pinned review <repo>` closes the same gap on the repo side: after a
+  pin exists, a file pin can be re-read through custody (`cat` serves
+  the stored witness), but a repo's content could only be re-read
+  through ambient git -- exactly the falsifiable display the hardening
+  above exists to refuse. It re-displays the tree at the pinned rev
+  through `sgit`, records nothing, and reads from the object store, so
+  a dirty work tree changes not a byte of what is shown. Unprivileged
+  is right here: content-addressing carries the trust (the rev names
+  the bytes, and the pin it comes from is root-owned), and the
+  root-owned binary is what keeps the display path itself unswappable.
 - Trust prerequisite: the interactive flow assumes your terminal and
   shell honestly relay what you type and see. Shell configuration is
   user-writable state -- a compromised config can alias `pinned`, fake

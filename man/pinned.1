@@ -246,14 +246,43 @@ when the checkout no longer holds the pinned rev (rewritten history or
 gc \(em a deploy that needs to re-fetch it would fail).
 File: record vs live state.
 .TP
-.B review \fIfile\fP [\-\-algo \fIname\fP] [\-\-length \fIbits\fP]
-Trusted review of a non-repo file: display and hash one read, print
-the hash plus a fail-closed wrapper \(em no sudo.
+.B review \fIfile\fP|\fIrepo\fP [\-\-algo \fIname\fP] [\-\-length \fIbits\fP]
+Trusted re-display that records nothing \(em the rehearsal to
+.BR approve 's
+ceremony, and never a substitute for it.
+No sudo either way: it writes nothing, and root ownership of the
+installed binary is what keeps the display path itself unswappable.
+.RS
+.PP
+A
+.I file
+(anything that is not a directory) gets the non-repo ceremony: display
+and hash one read, then print the hash plus a fail-closed wrapper.
 Algorithm names: sha256, sha384, sha512, blake2b-256, blake2b-384,
 blake2b-512, blake3
 .RB ( \-\-length :
 blake3 only, default 256).
 blake2b and blake3 need b2sum / b3sum in the trusted PATH.
+.PP
+A
+.I repo
+(a directory) re-displays what its pin names: the pinned hash and
+subject, the declared tag if the slot carries one, one line of
+orientation on where live HEAD stands relative to the pin, and the
+full tree at the pinned rev as a diff from the empty tree \(em read
+from the object store, so a dirty work tree cannot alter a byte of it.
+The display is of the PIN, never of HEAD.
+It goes through the same hardened git path the approval ceremony used,
+which is the point: ambient
+.BR git (1)
+renders through repo-local diff drivers and textconv filters that any
+writer of the checkout can install, so re-reading a pinned repo any
+other way is not a re-read of what was approved.
+.B \-\-algo
+and
+.B \-\-length
+belong to the file form and are refused here.
+.RE
 .TP
 .B list [\-\-under \fIdir\fP]
 Live pins in your tier: kind, digest, decoded path.

@@ -1686,6 +1686,123 @@ assert_exit "$RC" 1 "cat takes exactly one path"
 assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
 
 # ---------------------------------------------------------------------------
+say "S13: review (file rehearsal, repo re-display)"
+# ---------------------------------------------------------------------------
+# The repo branch re-displays what the pin NAMES and records nothing, so the
+# slot is asserted byte-identical across a review -- names and contents, never
+# mtimes (a review that only touched a timestamp would still be a write, but
+# the invariant under test is that no state changes).
+slot_snapshot() { # slot-dir -> one digest over every name and every byte in it
+  { find "$1" | sort; find "$1" -type f | sort | xargs cat; } | shasum -a 256 | awk '{print $1}'
+}
+
+if [ "$GIT_OK" -eq 1 ]; then
+  REPO_R="$FIX/reviewfix"
+  mkdir -p "$REPO_R"
+  bgit "$REPO_R" init -q
+  printf 'alpha line\n' > "$REPO_R/r.txt"
+  bgit "$REPO_R" add r.txt; bgit "$REPO_R" commit -q -m "r1 base"
+  R_SLOT="$(slot_of "$REPO_R")"
+
+  # Nothing to re-display before a ceremony has named something.
+  ANS=""
+  run_pinned review "$REPO_R"
+  assert_exit "$RC" 1 "review of an unpinned repo refuses"
+  assert_contains "$OUT" "no pin for $REPO_R; review re-displays a pin (approve it first)" \
+    "the refusal names the missing pin and the remedy"
+  assert_absent "$R_SLOT" "a refused review creates no slot dir"
+
+  ANS='y
+'
+  run_pinned approve "$REPO_R"
+  assert_exit "$RC" 0 "fixture: the review repo is pinned at its base commit"
+  R_PIN="$(cat "$R_SLOT/rev.git")"
+  R_SNAP="$(slot_snapshot "$R_SLOT")"
+
+  ANS=""
+  run_pinned review "$REPO_R"
+  assert_exit "$RC" 0 "review of a pinned repo exits 0"
+  assert_contains "$OUT" "$R_PIN" "review prints the pinned hash"
+  assert_contains "$OUT" "full tree at" "review displays the pinned tree"
+  assert_contains "$OUT" "+alpha line" "the display carries the pinned content"
+  assert_contains "$OUT" "live HEAD is at the pin" "HEAD == pin reads as such"
+  assert_eq "$(slot_snapshot "$R_SLOT")" "$R_SNAP" "review writes nothing into the slot"
+
+  # Past the pin: the orientation line counts, and the DISPLAY still shows the
+  # pin -- content added after it must not appear anywhere in a review.
+  printf 'beta line\n' >> "$REPO_R/r.txt"
+  bgit "$REPO_R" commit -q -am "r2 second"
+  ANS=""
+  run_pinned review "$REPO_R"
+  assert_exit "$RC" 0 "review with HEAD past the pin exits 0"
+  assert_contains "$OUT" "live HEAD is 1 commits past the pin" "orientation counts the commits past the pin"
+  assert_contains "$OUT" "+alpha line" "the pinned content is still what is displayed"
+  assert_missing "$OUT" "beta line" "content past the pin never reaches the display"
+  assert_eq "$(slot_snapshot "$R_SLOT")" "$R_SNAP" "still no slot write"
+
+  # A rewritten pin commit: HEAD is a different history, not a descendant.
+  bgit "$REPO_R" reset -q --hard "$R_PIN"
+  bgit "$REPO_R" commit -q --amend -m "r1 rewritten"
+  ANS=""
+  run_pinned review "$REPO_R"
+  assert_exit "$RC" 0 "review against a rewritten history exits 0"
+  assert_contains "$OUT" "does not descend from the pin" "a non-descending HEAD is named as such"
+  assert_contains "$OUT" "+alpha line" "the pinned rev is still displayed from the object store"
+
+  # A declared release name is part of what the pin says.
+  printf 'v1.2.3\n' > "$R_SLOT/tag"
+  chmod 640 "$R_SLOT/tag"
+  ANS=""
+  run_pinned review "$REPO_R"
+  assert_exit "$RC" 0 "review with a declared tag exits 0"
+  assert_contains "$OUT" "v1.2.3" "the declared tag is shown"
+  assert_contains "$OUT" "(declared)" "and is labelled as declared, not verified"
+
+  # The file ceremony's flags say nothing about a rev -- refused, not ignored.
+  ANS=""
+  run_pinned review "$REPO_R" --algo sha256
+  assert_exit "$RC" 1 "--algo is refused on a repo"
+  assert_contains "$OUT" "--algo/--length apply to the file review" "the refusal names the mode"
+  run_pinned review "$REPO_R" --length 512
+  assert_exit "$RC" 1 "--length is refused on a repo"
+  assert_contains "$OUT" "--algo/--length apply to the file review" "same refusal for --length"
+
+  # A directory with no repo of its own. WHICH refusal fires depends on the
+  # scratch dir's own surroundings: outside any repo it is resolve_repo's "not
+  # a usable git work tree", but a $TMPDIR that happens to sit inside some
+  # other repository (a project-local .tmp/) makes git answer yes and the
+  # unpinned-slot refusal fires instead. Both are loud, and either is the
+  # contract under test -- neither displays anything.
+  mkdir -p "$FIX/notarepo"
+  ANS=""
+  run_pinned review "$FIX/notarepo"
+  assert_exit "$RC" 1 "a directory with no pin of its own refuses"
+  if grep -qE 'not a usable git work tree|^no pin for ' "$OUT"; then
+    ok "the refusal is resolve_repo's or the missing pin's, never a display"
+  else
+    fail "unexpected refusal for a non-repo directory: $(cat "$OUT")"
+  fi
+  assert_missing "$OUT" "full tree at" "nothing is displayed for it"
+else
+  say "S13: SKIPPED (no git fixture) -- file cases below still run"
+fi
+
+# The file rehearsal is unchanged by the repo branch: a regular file still
+# takes the hash-and-wrapper path, flags included.
+printf 'hook body\n' > "$SUB/reviewme.sh"
+ANS=""
+run_pinned review "$SUB/reviewme.sh"
+assert_exit "$RC" 0 "review of a regular file exits 0"
+assert_contains "$OUT" "$(digest_of "$SUB/reviewme.sh")" "the file review prints the file's sha256"
+assert_contains "$OUT" "hook body" "the reviewed bytes are displayed"
+assert_contains "$OUT" "fail-closed wrapper" "the file review still emits the wrapper"
+run_pinned review "$SUB/reviewme.sh" --algo sha512
+assert_exit "$RC" 0 "--algo still applies to the file review"
+run_pinned review "$SUB/no-such-file"
+assert_exit "$RC" 1 "a missing path is still a file-review refusal"
+assert_contains "$OUT" "not a regular file" "and says so"
+
+# ---------------------------------------------------------------------------
 say ""
 if [ "$FAIL" -eq 0 ]; then
   rm -rf "$FIX"

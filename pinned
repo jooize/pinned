@@ -214,7 +214,7 @@ usage: pinned <action> [args]
   signer add|remove|list ...     (sudo) allowed-signers ceremonies
   ignorable add|remove|list ...  (sudo) ignorable-JSON-key grants
   status <repo|file>             record vs live state
-  review <file> [options]        trusted review + hash of a non-repo file
+  review <file|repo> [options]   trusted re-display; files get hash + wrapper
   list [--under <dir>]           live pins in your tier
   slot <path>                    print the slot directory for a path
   deploy [--dry-run] [--yes]     sync system flake inputs to approved revs, rebuild
@@ -3594,7 +3594,8 @@ do_list() {
 # what it read, and executes only on match). Review is the REHEARSAL: it
 # records nothing -- `approve --file` is the ceremony that does, and
 # `verify --emit` is the programmatic read. Humans review, machines verify,
-# records happen only in approve.
+# records happen only in approve. A DIRECTORY argument takes the repo branch
+# below (do_review_repo) instead; the file ceremony here is untouched by it.
 #
 # The security-relevant act is the READ, not the hash. Hashing is trivial;
 # what earns trust is that the bytes shown to you and the bytes hashed are the
@@ -3608,23 +3609,36 @@ do_list() {
 # genuinely matches the malicious file). A lying display fails closed; a lying
 # ceremony fails open. That asymmetry is why this lives here.
 do_review() {
-  local algo=sha256 file="" a length=""
+  # $algo carries a default, so given-ness needs its own marker; $length has
+  # none yet at this point (its default is applied further down), so emptiness
+  # is its marker. Both are read by the repo branch, which refuses them.
+  local algo=sha256 file="" a length="" algo_given=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --algo|-a)
         [ $# -ge 2 ] || { echo "--algo needs a value" >&2; exit 1; }
-        algo="$2"; shift 2 ;;
+        algo="$2"; algo_given=1; shift 2 ;;
       --length|-l)
         [ $# -ge 2 ] || { echo "--length needs a value (bits)" >&2; exit 1; }
         length="$2"; shift 2 ;;
       --) shift; break ;;
       -*) echo "unknown option: $1" >&2; usage ;;
-      *)  [ -z "$file" ] || { echo "review takes one file" >&2; usage; }
+      *)  [ -z "$file" ] || { echo "review takes one file or repo" >&2; usage; }
           file="$1"; shift ;;
     esac
   done
   [ -n "$file" ] || [ $# -eq 0 ] || { file="$1"; shift; }
   [ -n "$file" ] || usage
+
+  # A directory is a repo, the same shape test status uses; anything else --
+  # present or not -- stays with the file ceremony below. A directory that is
+  # not a usable git work tree is resolve_repo's refusal, not this dispatch's.
+  if [ -d "$file" ]; then
+    [ "$algo_given" -eq 0 ] && [ -z "$length" ] \
+      || { echo "--algo/--length apply to the file review" >&2; exit 1; }
+    do_review_repo "$file"
+    return
+  fi
 
   # Only algorithms whose collision resistance still carries a trust decision.
   # The floor is 256 bits of OUTPUT (~128-bit collision resistance), applied by
@@ -3785,6 +3799,77 @@ do_review() {
 export PATH=$PATH; c=\$(cat $file; printf x); c=\${c%x}; h=\$(printf '%s' "\$c" | $hash_cmd); [ "\${h%% *}" = "$hash" ] && exec bash -c "\$c" || { echo 'hook hash mismatch -- refusing' >&2; exit 2; }
 EOF
   log_action review "$file" "$hash"
+}
+
+# The repo half of review: re-display what the pin NAMES, through the same
+# hardened path the approve ceremony used. Once a repo is pinned, the only
+# trusted re-read was for FILE pins (`cat` serves the stored witness); a repo's
+# content could only be re-read through ambient git, whose display is
+# falsifiable by repo-local diff drivers and textconv filters -- the whole
+# reason sgit exists. It RECORDS NOTHING: review rehearses, approve records.
+#
+# Unprivileged is correct here. Content-addressing carries the trust (the rev
+# names the bytes, and the pin file it comes from is root-owned), and the
+# root-owned installed binary means the display path itself cannot be swapped
+# by a user-space attacker. There is nothing to write, so nothing to elevate.
+do_review_repo() {
+  resolve_repo "$1"
+  local hash head_hash tag diff_out
+  hash="$(read_rev "$default_slot")" || exit 1
+  [ -n "$hash" ] || {
+    echo "no pin for $repo; review re-displays a pin (approve it first)" >&2
+    exit 1
+  }
+  # Availability up front: a rev the object store no longer holds (rewritten
+  # history or gc) has nothing to display, and saying so beats a raw git error
+  # arriving mid-header with part of a ceremony already on screen. cat-file -e
+  # answers existence only -- the display itself goes through sgit_diff.
+  sgit cat-file -e "${hash}^{commit}" 2>/dev/null || {
+    echo "ERROR: the pinned rev $hash is missing from this checkout (rewritten history or gc?)" >&2
+    echo "       there is nothing to re-display; restore the commit or re-approve" >&2
+    exit 1
+  }
+
+  printf '%srepo:%s       %s\n' "$C_DIM" "$C_OFF" "$repo"
+  printf '%spinned:%s     %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
+    "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
+  if [ -r "$default_slot/tag" ]; then
+    IFS= read -r tag <"$default_slot/tag" || tag=""
+    [ -z "$tag" ] \
+      || printf '%stag:%s        %s  %s(declared)%s\n' "$C_DIM" "$C_OFF" "$tag" "$C_DIM" "$C_OFF"
+  fi
+
+  # ORIENTATION ONLY -- where the checkout stands relative to the pin. The
+  # display below is of the PIN, never of HEAD, so nothing here selects what
+  # gets shown; it just keeps a reader from mistaking one for the other.
+  head_hash="$(sgit rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null || true)"
+  if [ -z "$head_hash" ]; then
+    printf '%sthis checkout has no live HEAD%s\n' "$C_DIM" "$C_OFF"
+  elif [ "$head_hash" = "$hash" ]; then
+    printf '%slive HEAD is at the pin%s\n' "$C_DIM" "$C_OFF"
+  elif sgit merge-base --is-ancestor "$hash" HEAD 2>/dev/null; then
+    printf '%slive HEAD is %s commits past the pin%s\n' "$C_DIM" \
+      "$(sgit rev-list --count "${hash}..HEAD")" "$C_OFF"
+  else
+    printf '%slive HEAD does not descend from the pin%s\n' "$C_DIM" "$C_OFF"
+  fi
+  # No dirty-tree note: approve carries one because it pins HEAD's commit while
+  # the reviewer looks at a work tree that may hold more. This display comes
+  # from the object store at a rev that is already fixed, so uncommitted
+  # changes cannot alter a byte of it and saying otherwise would be noise.
+
+  echo
+  printf '%s--- full tree at %.10s (from object store) ---%s\n' "$C_B" "$hash" "$C_OFF"
+  # 4b825d... is git's well-known empty tree: the diff from it is every byte
+  # the pin names, exactly what a first approval displays. Capture first so a
+  # git failure aborts (set -e) BEFORE anything is shown as reviewable; then
+  # page. Early pager quit (SIGPIPE) is the reader's own act.
+  diff_out="$(sgit_diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
+  printf '%s\n' "$diff_out" | page || true
+
+  # Syslog is audit history, not a record: the file review logs the same way,
+  # and neither writes a slot.
+  log_action review "$repo" "$hash"
 }
 
 # ---- slot ------------------------------------------------------------------
