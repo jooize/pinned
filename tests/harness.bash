@@ -1783,18 +1783,33 @@ if [ "$GIT_OK" -eq 1 ]; then
   # scratch dir's own surroundings: outside any repo it is resolve_repo's "not
   # a usable git work tree", but a $TMPDIR that happens to sit inside some
   # other repository (a project-local .tmp/) makes git answer yes and the
-  # unpinned-slot refusal fires instead. Both are loud, and either is the
+  # work-tree-root refusal fires instead. Both are loud, and either is the
   # contract under test -- neither displays anything.
   mkdir -p "$FIX/notarepo"
   ANS=""
   run_pinned review "$FIX/notarepo"
   assert_exit "$RC" 1 "a directory with no pin of its own refuses"
-  if grep -qE 'not a usable git work tree|^no pin for ' "$OUT"; then
-    ok "the refusal is resolve_repo's or the missing pin's, never a display"
+  if grep -qE 'not a usable git work tree|not the work-tree root' "$OUT"; then
+    ok "the refusal is resolve_repo's, never a display"
   else
     fail "unexpected refusal for a non-repo directory: $(cat "$OUT")"
   fi
   assert_missing "$OUT" "full tree at" "nothing is displayed for it"
+
+  # A subdirectory of a real repo: a pin names the whole repo, so a slot
+  # keyed on a subdir could only mislead (deploy matches inputs by root; a
+  # root slot and a subdir slot could pin one repo at two revs). resolve_repo
+  # refuses and names the root -- for every verb that resolves a repo.
+  mkdir -p "$REPO_R/subdir"
+  ANS=""
+  run_pinned review "$REPO_R/subdir"
+  assert_exit "$RC" 1 "a subdirectory of a repo refuses"
+  assert_contains "$OUT" "not the work-tree root: $REPO_R/subdir" "the refusal names the subdir"
+  assert_contains "$OUT" "name its root: $REPO_R" "and the root remediation"
+  ANS=""
+  run_pinned status "$REPO_R/subdir"
+  assert_exit "$RC" 1 "status refuses the same subdirectory"
+  assert_contains "$OUT" "not the work-tree root" "through the shared resolver"
 else
   say "S13: SKIPPED (no git fixture) -- file cases below still run"
 fi

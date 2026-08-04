@@ -1047,6 +1047,18 @@ resolve_repo() {
   # refusal into a misleading "not a git work tree".
   sgit rev-parse --is-inside-work-tree >/dev/null \
     || { echo "not a usable git work tree: $repo (git error above)" >&2; exit 1; }
+  # A repo pin names a commit of the WHOLE repo -- there is no per-subdir
+  # trust semantic, so a slot keyed on a subdirectory could only mislead:
+  # deploy matches flake inputs by repo root, and a root slot plus a subdir
+  # slot could pin one repo at two revs. Refuse rather than silently re-key
+  # to the root: a trust ceremony names its object.
+  local top
+  top="$(sgit rev-parse --show-toplevel)" || exit 1
+  if [ "$repo" != "$(readlink -f "$top")" ]; then
+    echo "not the work-tree root: $repo" >&2
+    echo "       a pin names the whole repo; name its root: $top" >&2
+    exit 1
+  fi
   default_slot="$(slot_dir_for "$(tier_user)" "$repo")"
 }
 

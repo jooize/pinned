@@ -43,6 +43,10 @@ forms, like every reading verb, run unprivileged.
 .B approve \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP] [\fB\-\-step\fP]
 (sudo) Review the diff since the last pin (the full tree on a first
 approval), approve, write the pin.
+.I repo
+must be the work-tree root: a pin names a commit of the whole
+repository, so a subdirectory is refused with the root named
+(the same rule for every verb that takes a repository).
 Before any sudo prompt, an unprivileged preview shows each repo, the
 commit about to be reviewed, and the commits since the last approval;
 the authoritative review re-derives everything from the object store
