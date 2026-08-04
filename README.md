@@ -46,7 +46,7 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       reached; one whole-delta diff stays
                                       the default)
     pinned approve <repo> --signed-tag <tag> [--signed-tag <tag> ...] [--tag <tag>]
-                                      signature gate: verify signed tag(s),
+                                      signature gate: verify each signed tag,
                                       all naming one commit -> pin (--tag:
                                       an unsigned name that must agree)
     pinned approve --file <path> [--baseline <copy>] [--ignore-json-key <key> ...]

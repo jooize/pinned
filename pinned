@@ -10,7 +10,7 @@
 #                                              move that is not forward over the
 #                                              commit graph -- reality must conform)
 #   pinned approve <repo> --signed-tag <t> [--signed-tag ..] [--tag <t>]
-#                                              verify signed tag(s) -> approve -> pin
+#                                              verify each signed tag -> approve -> pin
 #                                              (repeat --signed-tag = threshold
 #                                              multisig: all must agree on one commit;
 #                                              --tag: an unsigned name that must agree)
@@ -1012,7 +1012,7 @@ ensure_tree() {
   # changing location is not a detail to discover later. (The per-slot
   # override stays at slots/<enc>/signers/ -- slot contents are one
   # disclosure class and ride the slot's own mount.)
-  local old_signers="$udir/signers"
+  local old_signers="$udir/signers" moved=0
   if [ -f "$old_signers/allowed_signers" ]; then
     if [ -e "$udir/policy/allowed_signers" ]; then
       printf '%swarning: both %s/allowed_signers and %s/policy/allowed_signers exist;\n' \
@@ -1023,13 +1023,21 @@ ensure_tree() {
       mv -f "$old_signers/allowed_signers" "$udir/policy/allowed_signers"
       printf '%snote: moved allowed_signers into the policy dir:%s\n' "$C_YEL" "$C_OFF" >&2
       printf '      %s/allowed_signers -> %s/policy/allowed_signers\n' "$old_signers" "$udir" >&2
+      moved=1
     fi
   fi
   if [ -d "$old_signers" ]; then
     # Only an EMPTY leftover goes; anything still in there is unexplained
     # state that a trust tool must not delete on a hunch.
     if rmdir "$old_signers" 2>/dev/null; then
-      printf '%s      removed the now-empty %s%s\n' "$C_YEL" "$old_signers" "$C_OFF" >&2
+      # The removal continues the move-note only when THIS run printed one.
+      # An earlier run's move leaves the empty dir behind, and an indented
+      # continuation under nothing reads as a lost line.
+      if [ "$moved" -eq 1 ]; then
+        printf '%s      removed the now-empty %s%s\n' "$C_YEL" "$old_signers" "$C_OFF" >&2
+      else
+        printf '%snote: removed the now-empty legacy dir %s%s\n' "$C_YEL" "$old_signers" "$C_OFF" >&2
+      fi
     else
       printf '%swarning: %s is not empty; left in place (nothing reads it any more)%s\n' \
         "$C_YEL" "$old_signers" "$C_OFF" >&2
@@ -1693,7 +1701,7 @@ ignored_keys_match() {
       return 1 ;;
     *)
       ungranted="$(policy_ungranted "$POL_EFF" "$IGN_PATHS" "$path" | tr '\n' ' ')"
-      echo "note: $slot records ignored key(s) the policy no longer grants for this path:" >&2
+      echo "note: $slot records ignored key$(plural_s "$n_ungranted") the policy no longer grants for this path:" >&2
       echo "      ${ungranted% } (byte-exact verdict stands; re-approve, or: pinned ignorable add)" >&2
       return 1 ;;
   esac
@@ -5460,8 +5468,8 @@ EOF
       fi
       ahead="$(git -C "$path" -c safe.directory="$path" rev-list --count "${approved}..HEAD" 2>/dev/null || echo '?')"
       if [ "$ahead" != 0 ]; then
-        printf '  %-*s  %sgit HEAD is %s commit(s) past the pin (unapproved)%s\n' \
-          "$width" '' "$C_DIM" "$ahead" "$C_OFF"
+        printf '  %-*s  %sgit HEAD is %s commit%s past the pin (unapproved)%s\n' \
+          "$width" '' "$C_DIM" "$ahead" "$(plural_s "$ahead")" "$C_OFF"
         stale_repos+=("$path")
       fi
       if ! git -C "$path" -c safe.directory="$path" diff --no-ext-diff --no-textconv --quiet 2>/dev/null \
@@ -5547,7 +5555,7 @@ EOF
 
   if [ "$updates" -gt 0 ]; then
     sudo "${PIN_CMD[@]}"
-    printf '%s✓ flake revs updated (%s input(s))%s\n' "$C_GRN" "$updates" "$C_OFF"
+    printf '%s✓ flake revs updated (%s input%s)%s\n' "$C_GRN" "$updates" "$(plural_s "$updates")" "$C_OFF"
   fi
   sudo "${REBUILD_CMD[@]}"
   printf '%s✓ rebuild complete%s\n' "$C_GRN" "$C_OFF"

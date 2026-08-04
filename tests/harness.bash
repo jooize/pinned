@@ -2153,6 +2153,21 @@ assert_file "$PINNED_ROOT/$USERNAME/policy/allowed_signers" "allowed_signers now
 assert_eq "$(cat "$PINNED_ROOT/$USERNAME/policy/allowed_signers")" "harness ssh-ed25519 AAAAfake" \
           "the moved file keeps its content"
 assert_absent "$PINNED_ROOT/$USERNAME/signers" "the emptied legacy dir is removed"
+assert_missing "$OUT" "note: removed the now-empty legacy dir" \
+               "the removal rides the move-note when one run does both"
+
+# An EARLIER run did the move and left the empty dir behind: the removal is
+# then a note of its own, never a continuation indented under nothing.
+mkdir -p "$PINNED_ROOT/$USERNAME/signers"
+printf '%s\n' "$JSON_IN" > "$SUB/pol/heal2.json"
+ANS='y
+'
+run_pinned approve --file "$SUB/pol/heal2.json"
+assert_exit "$RC" 0 "a root ceremony runs with an empty legacy signers/ dir"
+assert_missing "$OUT" "moved allowed_signers" "there was nothing left to move"
+assert_contains "$OUT" "note: removed the now-empty legacy dir" \
+                "the orphaned removal stands on its own note"
+assert_absent "$PINNED_ROOT/$USERNAME/signers" "the empty legacy dir is removed too"
 fi
 
 # ---------------------------------------------------------------------------
