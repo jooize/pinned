@@ -74,6 +74,16 @@ assert_contains() { # file needle label
 assert_missing() { # file needle label
   if grep -qF -e "$2" "$1"; then fail "$3 (unexpected '$2' in output)"; else ok "$3"; fi
 }
+assert_row() { # file label path desc -- ONE output line carries both
+  # The upgrade plan is one row per input: label column, then the path. The
+  # pairing is what the assertions are about ("this path is highlighted for
+  # approval"), and the column width moves with the labels a plan happens to
+  # hold, so the two needles are matched on the same line, not on the page.
+  if grep -F -e "$3" "$1" | grep -qF -e "$2"; then ok "$4"; else fail "$4 (no '$2' row for $3)"; fi
+}
+assert_no_row() { # file label path desc
+  if grep -F -e "$3" "$1" | grep -qF -e "$2"; then fail "$4 (unexpected '$2' row for $3)"; else ok "$4"; fi
+}
 assert_file() { # path label
   if [ -f "$1" ]; then ok "$2"; else fail "$2 (no such file: $1)"; fi
 }
@@ -780,12 +790,14 @@ if [ "$GIT_OK" -eq 1 ] && [ -x "$REBUILD_TOOL" ]; then
 }
 EOF
 
-  # Dry run: the stale repo is named, no ceremony runs, nothing recorded.
+  # Dry run: the stale repo is highlighted, the one at its pin is present
+  # but quiet, no ceremony runs, nothing recorded.
   ANS=""
   run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
   assert_exit "$RC" 0 "upgrade --dry-run exits 0"
-  assert_contains "$OUT" "Will review + approve:" "dry run shows the plan"
-  assert_contains "$OUT" "$REPO_A" "the stale repo is named"
+  assert_contains "$OUT" "Inputs in $FIX/flake.nix:" "the plan names the flake it read"
+  assert_row "$OUT" "approve:" "$REPO_A" "the stale repo is the highlighted row"
+  assert_row "$OUT" "at pin:" "$REPO_B" "the input at its pin is a quiet row, not an omission"
   assert_contains "$OUT" "Dry run: no ceremonies" "no ceremony in a dry run"
   assert_contains "$OUT" "Dry run -- nothing executed" "deploy stays a preview"
   assert_eq "$(cat "$A_SLOT/rev.git")" "$A_PIN" "dry run records nothing"
@@ -804,11 +816,17 @@ EOF
   assert_contains "$OUT" "no tty for confirmation" "deploy stops at its confirmation gate"
   assert_contains "$FIX/flake.nix" "rev=$A_PIN" "the flake file was not rewritten"
 
-  # Nothing stale: the second round has no ceremonies to offer.
+  # Nothing stale: the second round has no ceremonies to offer -- and says
+  # so under a list that still holds every input.
   ANS=""
   run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
   assert_exit "$RC" 0 "an up-to-date upgrade dry run exits 0"
   assert_contains "$OUT" "nothing to approve" "no stale inputs reported"
+  assert_contains "$OUT" "every pinned input is at its approved rev" \
+    "an all-quiet plan keeps the at-their-pins wording"
+  assert_row "$OUT" "at pin:" "$REPO_A" "the approved repo is now a quiet row"
+  assert_row "$OUT" "at pin:" "$REPO_B" "and so is the one that never moved"
+  assert_no_row "$OUT" "approve:" "$REPO_A" "with nothing highlighted for approval"
 
   # A tag-declared slot is never plain-approved: it is listed for manual
   # approve --tag and the plain-approve list stays empty. The tag is a
@@ -822,7 +840,8 @@ EOF
   run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
   assert_exit "$RC" 0 "a tag-declared stale input does not break upgrade"
   assert_contains "$OUT" "approve --tag by hand" "tag-declared slot routed to manual approval"
-  assert_missing "$OUT" "Will review + approve:" "no plain-approve list when only tag-declared slots are stale"
+  assert_no_row "$OUT" "approve:" "$REPO_B" "a tag-declared slot is never highlighted for a plain approve"
+  assert_row "$OUT" "skipped:" "$REPO_B" "it is a skipped row instead"
   rm -f "$B_SLOT/tag"
   bgit "$REPO_B" tag -d v9 >/dev/null
 
@@ -884,8 +903,9 @@ EOF
     "a backward checkout is refused in the plan"
   assert_contains "$OUT" "checkout diverged from the pin -- approve --diverged by hand" \
     "a diverged checkout is refused in the plan"
-  assert_contains "$OUT" "Will review + approve:" "the forward repo still has a plan"
-  assert_contains "$OUT" "$REPO_FW" "the forward repo is the one listed for approval"
+  assert_row "$OUT" "approve:" "$REPO_FW" "the forward repo is the one highlighted for approval"
+  assert_no_row "$OUT" "approve:" "$REPO_BK" "the backward one is not"
+  assert_no_row "$OUT" "approve:" "$REPO_DV" "and neither is the diverged one"
 
   ANS='y
 '
@@ -897,6 +917,19 @@ EOF
     "the forward repo was approved"
   assert_eq "$(cat "$(slot_of "$REPO_BK")/rev.git")" "$BK_PIN" "the backward repo's pin is untouched"
   assert_eq "$(cat "$(slot_of "$REPO_DV")/rev.git")" "$DV_PIN" "the diverged repo's pin is untouched"
+
+  # The round done, the forward repo is a quiet at-pin row BESIDE the two
+  # refused ones -- and a plan with nothing to approve but something refused
+  # must not claim every input is at its pin.
+  ANS=""
+  run_pinned upgrade --flake "$FIX/flake3.nix" --dry-run
+  assert_exit "$RC" 0 "the follow-up plan exits 0"
+  assert_row "$OUT" "at pin:" "$REPO_FW" "the approved repo drops to a quiet row"
+  assert_row "$OUT" "refused:" "$REPO_BK" "beside the refused backward checkout"
+  assert_contains "$OUT" "no input above is a forward checkout upgrade may cover" \
+    "and the summary stays honest about why nothing is actionable"
+  assert_missing "$OUT" "every pinned input is at its approved rev" \
+    "the at-their-pins wording is not claimed over refused rows"
 
   # Availability probe: a pin the checkout no longer holds is warned about
   # EARLY (status and deploy's scan), instead of surfacing as a nix fetch
@@ -920,6 +953,37 @@ EOF
   run_pinned deploy --flake "$FIX/flake2.nix" --dry-run
   assert_exit "$RC" 0 "deploy dry run tolerates the missing rev"
   assert_contains "$OUT" "missing from the checkout" "deploy warns early about the unfetchable pin"
+
+  # EVERY input is a row. An input with no rev=, a repo with no pin slot and
+  # a pinned path with no checkout are all states upgrade will not act on --
+  # and all states the plan must SHOW, because an omitted line is
+  # indistinguishable from a tool that never looked at the input. Deploy
+  # stays the authority on them; the plan only says they are there.
+  REPO_NR="$FIX/upg-norev"; REPO_NS="$FIX/upg-noslot"; REPO_GONE="$FIX/upg-gone"
+  mkdir -p "$REPO_NR" "$REPO_NS"
+  for ur in "$REPO_NR" "$REPO_NS"; do
+    bgit "$ur" init -q
+    printf 'n1\n' > "$ur/f"; bgit "$ur" add f; bgit "$ur" commit -q -m n1
+  done
+  NR_REV="$(bgit "$REPO_NR" rev-parse 'HEAD^{commit}')"
+  NS_REV="$(bgit "$REPO_NS" rev-parse 'HEAD^{commit}')"
+  seed_state "$REPO_NR" rev.git "$NR_REV"
+  seed_state "$REPO_GONE" rev.git "$NS_REV"
+  cat > "$FIX/flake4.nix" <<EOF
+{
+  inputs.upg-norev.url = "git+file://$REPO_NR?ref=refs/heads/main";
+  inputs.upg-noslot.url = "git+file://$REPO_NS?rev=$NS_REV";
+  inputs.upg-gone.url = "git+file://$REPO_GONE?rev=$NS_REV";
+}
+EOF
+  ANS=""
+  run_pinned upgrade --flake "$FIX/flake4.nix" --dry-run
+  assert_exit "$RC" 0 "a plan of inputs upgrade cannot act on exits 0"
+  assert_row "$OUT" "no pin:" "$REPO_NR" "an input without rev= is a row"
+  assert_row "$OUT" "no slot:" "$REPO_NS" "an input without a pin slot is a row"
+  assert_row "$OUT" "no checkout:" "$REPO_GONE" "a pinned path with no checkout is a row"
+  assert_contains "$OUT" "nothing to approve" "none of the three is actionable"
+  assert_contains "$OUT" "Dry run -- nothing executed" "and the round still falls through to deploy"
 
   # Malformed argv dies before anything runs.
   ANS=""
@@ -1561,7 +1625,7 @@ EOF
   assert_exit "$RC" 0 "a plan with disagreeing verified tags exits 0"
   assert_contains "$OUT" "verified signed tags disagree -- approve --signed-tag by hand" \
     "no unique maximum is a loud skip"
-  assert_missing "$OUT" "Will review + approve:" "and the repo joins no batch"
+  assert_no_row "$OUT" "approve:" "$REPO_D2" "and the repo joins no batch"
   ANS='y
 '
   run_pinned upgrade --flake "$FIX/flake-split.nix"
@@ -1590,7 +1654,7 @@ EOF
   run_pinned upgrade --flake "$FIX/flake-old.nix" --dry-run
   assert_exit "$RC" 0 "a plan whose only signed tag is behind the pin exits 0"
   assert_missing "$OUT" "signed release" "a signed release behind the pin is no candidate"
-  assert_contains "$OUT" "Will review + approve:" "the repo takes the ordinary review route"
+  assert_row "$OUT" "approve:" "$REPO_O" "the repo takes the ordinary review route"
 
   # A signed release on a SIDE branch is not a candidate either: upgrade
   # follows the checkout's own line, and a release the checkout has not

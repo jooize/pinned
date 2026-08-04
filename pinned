@@ -1950,46 +1950,76 @@ default_flake_file() {
   fi
 }
 
-# The system flake's git+file inputs whose CHECKOUT stands somewhere other
-# than the approved pin: `<path>|<declared-tag-or-empty>|<ancestry-class>`
-# per line -- upgrade's work list and its pre-sudo plan. No slot, no
-# checkout, or HEAD at the pin is not this function's business (deploy
-# reports those states), and a malformed slot is skipped here only to refuse
-# loudly in deploy's own read. The declared tag rides along because upgrade
-# must NOT plain-approve a tag-declared slot: a plain approve clears the
-# declaration, and deploy would leave ref= aimed at a tag that no longer
-# names the rev. The class rides along because it is upgrade's FLOOR: only
-# forward inputs may join an automatic ceremony.
+# EVERY git+file input of the system flake, one line each in flake order:
+# `<path>|<declared-tag-or-empty>|<state>` -- upgrade's work list and the
+# whole picture its plan renders. An input upgrade will not act on is a
+# LINE, never a silent omission: a plan that listed only the actionable
+# inputs left a reader unable to tell "at its pin" from "this tool never
+# looked at it".
+#
+# The declared tag rides along because upgrade must NOT plain-approve a
+# tag-declared slot: a plain approve clears the declaration, and deploy
+# would leave ref= aimed at a tag that no longer names the rev. The state
+# rides along because the ancestry class is upgrade's FLOOR -- only forward
+# inputs may join an automatic ceremony -- and because everything else the
+# scan can find out is what the quiet rows say:
+#
+#   norev        the input url carries no rev= (nix floats the ref)
+#   noslot       no slot, or a slot holding no state
+#   malformed    a slot read_rev refuses -- two state files, a tombstone, a
+#                file pin, a corrupt record; deploy refuses on it too
+#   nocheckout   nothing at that path that git reads as a work tree
+#   nohead       a work tree with no commit at HEAD
+#   missing-pin  the checkout no longer holds the pinned object
+#   equal | forward | backward | diverged   HEAD's ancestry against the pin
 #
 # Staleness is the ancestry class, not a commit count. The old
 # `rev-list --count <pin>..HEAD` test answered 0 for a checkout sitting
 # BEHIND its pin, so a rolled-back working copy read as "nothing to do" and
 # never appeared anywhere; classifying makes that state visible.
-stale_flake_repos() { # <flakefile> [tier-user]
-  local flake="$1" tu="${2:-$(id -un)}" url p r slot approved head cls tag
+scan_flake_inputs() { # <flakefile> [tier-user]
+  local flake="$1" tu="${2:-$(id -un)}" url p r slot approved head tag st
   grep -oE 'git\+file:///[^"]+' "$flake" | while IFS= read -r url; do
     p="${url#git+file://}"; p="${p%%\?*}"
     r="$(printf '%s' "$url" | grep -oE '[?&]rev=[0-9a-f]{40,128}' | head -n1 | cut -d= -f2 || true)"
-    [ -n "$r" ] || continue
     slot="$(slot_dir_for "$tu" "$p")"
-    approved="$(read_rev "$slot" 2>/dev/null)" || continue
-    [ -n "$approved" ] || continue
+    # First line only: the record is one name, and a stray second line must
+    # not become a second field of this function's output.
+    tag=""
+    if [ -f "$slot/tag" ]; then IFS= read -r tag <"$slot/tag" || tag=""; fi
+    approved=""
+    if [ -z "$r" ]; then
+      st=norev
+    # read_rev's refusals (tombstone, file pin, malformed, corrupt) are one
+    # state here: the plan says deploy will refuse, and deploy's own read is
+    # where the accurate reason is printed.
+    elif ! approved="$(read_rev "$slot" 2>/dev/null)"; then
+      st=malformed
+    elif [ -z "$approved" ]; then
+      st=noslot
     # safe.directory: upgrade runs this as root on user-owned checkouts;
     # without it git's dubious-ownership refusal would silently read every
-    # repo as not-stale (same fix sgit carries).
-    { [ -d "$p" ] && git -C "$p" -c safe.directory="$p" rev-parse --git-dir >/dev/null 2>&1; } || continue
+    # repo as not-a-repo (same fix sgit carries).
+    elif ! { [ -d "$p" ] && git -C "$p" -c safe.directory="$p" rev-parse --git-dir >/dev/null 2>&1; }; then
+      st=nocheckout
     # A pin the checkout no longer holds cannot be classified against
-    # anything -- deploy's own scan is where that state is reported, with
-    # the accurate wording; guessing a class here would put a remediation
-    # in front of a human that cannot work.
-    git -C "$p" -c safe.directory="$p" cat-file -e "${approved}^{commit}" 2>/dev/null || continue
-    head="$(git -C "$p" -c safe.directory="$p" rev-parse 'HEAD^{commit}' 2>/dev/null || true)"
-    [ -n "$head" ] || continue
-    cls="$(ancestry_class "$p" "$approved" "$head")"
-    [ "$cls" != equal ] || continue
-    tag=""
-    if [ -f "$slot/tag" ]; then tag="$(cat "$slot/tag" 2>/dev/null || true)"; fi
-    printf '%s|%s|%s\n' "$p" "$tag" "$cls"
+    # anything, so it gets its own state rather than a guessed class: a
+    # remediation built on a guess is one the human cannot act on.
+    elif ! git -C "$p" -c safe.directory="$p" cat-file -e "${approved}^{commit}" 2>/dev/null; then
+      st=missing-pin
+    else
+      # --verify --quiet, not a bare rev-parse: a bare one ECHOES its
+      # argument on failure, so an unborn HEAD handed the literal
+      # 'HEAD^{commit}' to the classifier, which could relate it to nothing
+      # and answered "diverged" -- a refused row for a repo with no commit.
+      head="$(git -C "$p" -c safe.directory="$p" rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null || true)"
+      if [ -z "$head" ]; then
+        st=nohead
+      else
+        st="$(ancestry_class "$p" "$approved" "$head")"
+      fi
+    fi
+    printf '%s|%s|%s\n' "$p" "$tag" "$st"
   done || true
 }
 
@@ -2150,45 +2180,44 @@ upgrade_route() {
   upg_route=notag; upg_info="$tag"
 }
 
-# Render stale_flake_repos output for humans: the approve list (plain repos,
-# signed-release offers, and tag-declared ones whose HEAD carries their next
-# release), the by-hand remainder as explicit manual work, and the
-# non-forward checkouts as refused, each with the flag that would declare it.
+# Render scan_flake_inputs output for humans: ONE aligned row per input, in
+# flake order, and only the rows a ceremony will cover are highlighted. The
+# quiet rows are the point -- an input at its pin, without a rev=, without a
+# slot or without a checkout is a state the reader must be able to see, and
+# an omitted line is indistinguishable from a tool that never looked.
 #
-# Routing is decided ONCE per repo up front rather than re-derived per
-# section: deciding costs signature verifications, and a plan whose sections
-# could disagree with each other would be worse than a slow one.
-print_upgrade_plan() { # <stale-lines> [tier-user]
-  local p tag cls tu="${2:-$(id -un)}" upg_route upg_info
-  local r_p r_route r_info n i plain=0 t t1 tj lag
+# Routing is decided ONCE per repo up front rather than re-derived per row:
+# deciding costs signature verifications, and a plan that could disagree
+# with itself would be worse than a slow one. do_upgrade calls the same
+# scan + upgrade_route pair, so the plan and the router cannot drift.
+#
+# $1 = scan lines, $2 = tier user, $3 = the flake file the scan read.
+print_upgrade_plan() {
+  local p tag st tu="${2:-$(id -un)}" flake="${3:-}" upg_route upg_info
+  local r_p r_lbl r_lc r_pc r_det r_ex
+  local n i w=0 act=0 quiet=0 lbl lc pc det ex pad t t1 tj lag
   if [ -z "$1" ]; then
     printf '%snothing to approve -- every pinned input is at its approved rev%s\n' "$C_DIM" "$C_OFF"
     return 0
   fi
-  r_p=(); r_route=(); r_info=()
-  while IFS='|' read -r p tag cls; do
+  r_p=(); r_lbl=(); r_lc=(); r_pc=(); r_det=(); r_ex=()
+  while IFS='|' read -r p tag st; do
     [ -n "$p" ] || continue
-    r_p+=("$p")
-    if [ "$cls" = forward ]; then
-      upgrade_route "$p" "$tag" "$tu"
-      r_route+=("$upg_route"); r_info+=("$upg_info")
-    else
-      r_route+=("$cls"); r_info+=("")
-    fi
-  done <<EOF
-$1
-EOF
-  n="${#r_p[@]}"
-  i=0
-  while [ "$i" -lt "$n" ]; do
-    case "${r_route[$i]}" in
-      signed|tagged|review)
-        if [ "$plain" -eq 0 ]; then printf '%sWill review + approve:%s\n' "$C_B" "$C_OFF"; fi
-        plain=1
-        # The repos are the plan's payload -- bold cyan, the palette's own
-        # emphasis on an identifier (cyan everywhere; yellow stays attention
-        # text), so the list reads before the parentheticals do.
-        case "${r_route[$i]}" in
+    # The quiet default: dim label, dim path, dim parenthetical. Only the
+    # rows below that raise their voice say so.
+    lbl="" lc="$C_DIM" pc="$C_DIM" det="" ex=""
+    case "$st" in
+      forward)
+        upgrade_route "$p" "$tag" "$tu"
+        case "$upg_route" in
+          signed|tagged|review)
+            # The actionable rows are the plan's payload -- bold cyan path,
+            # the palette's own emphasis on an identifier (cyan everywhere;
+            # yellow stays attention text), so they read before anything
+            # quiet on the page does.
+            lbl="approve:" lc="$C_B" pc="$C_CYN$C_B"; act=1 ;;
+        esac
+        case "$upg_route" in
           signed)
             tj=""; t1=""
             while IFS= read -r t; do
@@ -2196,54 +2225,104 @@ EOF
               [ -n "$t1" ] || t1="$t"
               if [ -z "$tj" ]; then tj="$t"; else tj="$tj, $t"; fi
             done <<EOF
-${r_info[$i]}
+$upg_info
 EOF
-            printf '  %s%s%s  %s(signed release %s -- signature-gated)%s\n' \
-              "$C_CYN$C_B" "${r_p[$i]}" "$C_OFF" "$C_DIM" "$tj" "$C_OFF"
+            det="(signed release $tj -- signature-gated)"
             # The release, not HEAD, is what the ceremony pins; say so
             # wherever the two are not the same commit.
-            lag="$(signed_offer_lag "${r_p[$i]}" "$t1")"
+            lag="$(signed_offer_lag "$p" "$t1")"
             if [ -n "$lag" ]; then
-              printf '    %sHEAD is %s commit%s past the release; the release is what gets pinned%s\n' \
-                "$C_DIM" "$lag" "$(plural_s "$lag")" "$C_OFF"
+              ex="HEAD is $lag commit$(plural_s "$lag") past the release; the release is what gets pinned"
             fi ;;
           tagged)
-            printf '  %s%s%s  %s(release tag %s)%s\n' \
-              "$C_CYN$C_B" "${r_p[$i]}" "$C_OFF" "$C_DIM" "${r_info[$i]}" "$C_OFF" ;;
-          *)
-            printf '  %s%s%s\n' "$C_CYN$C_B" "${r_p[$i]}" "$C_OFF" ;;
+            det="(release tag $upg_info)" ;;
+          notag)
+            lbl="skipped:" lc="$C_YEL" pc=""
+            det="(declared tag $upg_info; no single release tag at HEAD -- approve --tag by hand)" ;;
+          disagree)
+            lbl="skipped:" lc="$C_YEL" pc=""
+            det="(verified signed tags disagree -- approve --signed-tag by hand)" ;;
         esac ;;
-    esac
-    i=$((i + 1))
-  done
-  i=0
-  while [ "$i" -lt "$n" ]; do
-    case "${r_route[$i]}" in
-      notag)
-        printf '%sskipped:%s %s %s(declared tag %s; no single release tag at HEAD -- approve --tag by hand)%s\n' \
-          "$C_YEL" "$C_OFF" "${r_p[$i]}" "$C_DIM" "${r_info[$i]}" "$C_OFF" ;;
-      disagree)
-        printf '%sskipped:%s %s %s(verified signed tags disagree -- approve --signed-tag by hand)%s\n' \
-          "$C_YEL" "$C_OFF" "${r_p[$i]}" "$C_DIM" "$C_OFF" ;;
-    esac
-    i=$((i + 1))
-  done
-  # The lattice's floor: an automatic ceremony only ever covers a forward
-  # checkout. Un-approving commits, or abandoning the pinned line, is a
-  # declaration a human makes by hand -- so these are named loudly, with
-  # their remediation, and never join the batch below.
-  i=0
-  while [ "$i" -lt "$n" ]; do
-    case "${r_route[$i]}" in
+      equal)
+        lbl="at pin:"; quiet=$((quiet + 1)) ;;
+      # norev and noslot count as quiet too: the healthy summary tail says
+      # "every PINNED input", and an input without a pin is not one -- its
+      # row right above already tells the reader what it is.
+      # The lattice's floor: an automatic ceremony only ever covers a
+      # forward checkout. Un-approving commits, or abandoning the pinned
+      # line, is a declaration a human makes by hand -- so these are named
+      # loudly, with the flag that would declare them, and join no batch.
       backward)
-        printf '%srefused:%s %s %s(checkout is backward of the pin -- approve --backward by hand)%s\n' \
-          "$C_RED$C_B" "$C_OFF" "${r_p[$i]}" "$C_DIM" "$C_OFF" ;;
+        lbl="refused:" lc="$C_RED$C_B" pc=""
+        det="(checkout is backward of the pin -- approve --backward by hand)" ;;
       diverged)
-        printf '%srefused:%s %s %s(checkout diverged from the pin -- approve --diverged by hand)%s\n' \
-          "$C_RED$C_B" "$C_OFF" "${r_p[$i]}" "$C_DIM" "$C_OFF" ;;
+        lbl="refused:" lc="$C_RED$C_B" pc=""
+        det="(checkout diverged from the pin -- approve --diverged by hand)" ;;
+      norev)
+        lbl="no pin:"; quiet=$((quiet + 1))
+        det="(no rev= in the input -- nix floats the ref; nothing to sync)" ;;
+      noslot)
+        lbl="no slot:"; quiet=$((quiet + 1))
+        det="(no pin slot -- deploys as hand-edited)" ;;
+      malformed)
+        lbl="no slot:" lc="$C_YEL" pc=""
+        det="(slot does not read as a repo rev -- deploy refuses on it)" ;;
+      nocheckout)
+        lbl="no checkout:"
+        det="(no git work tree at that path to compare against the pin)" ;;
+      nohead)
+        lbl="no head:"
+        det="(work tree with no commit at HEAD)" ;;
+      missing-pin)
+        lbl="missing pin:" lc="$C_YEL" pc=""
+        det="(pinned rev is missing from the checkout -- restore the commit or re-approve)" ;;
+      *)
+        # Unreachable while scan_flake_inputs is the only producer; printed
+        # rather than dropped, so a new state cannot go invisible.
+        lbl="?:" lc="$C_YEL" pc=""
+        det="(unrecognized state $st)" ;;
     esac
+    [ "${#lbl}" -gt "$w" ] && w="${#lbl}"
+    r_p+=("$p"); r_lbl+=("$lbl"); r_lc+=("$lc"); r_pc+=("$pc")
+    r_det+=("$det"); r_ex+=("$ex")
+  done <<EOF
+$1
+EOF
+  n="${#r_p[@]}"
+  [ "$n" -gt 0 ] || return 0
+  if [ -n "$flake" ]; then
+    printf '%sInputs in %s:%s\n' "$C_B" "$flake" "$C_OFF"
+  else
+    printf '%sInputs:%s\n' "$C_B" "$C_OFF"
+  fi
+  # The label column is padded uncolored -- %-*s counts escape bytes, so the
+  # width has to be applied before the colour is wrapped around it.
+  pad="$(printf '%*s' "$((w + 4))" '')"
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    printf '  %s%s%s  %s%s%s' \
+      "${r_lc[$i]}" "$(printf '%-*s' "$w" "${r_lbl[$i]}")" "$C_OFF" \
+      "${r_pc[$i]}" "${r_p[$i]}" "$C_OFF"
+    if [ -n "${r_det[$i]}" ]; then
+      printf '  %s%s%s' "$C_DIM" "${r_det[$i]}" "$C_OFF"
+    fi
+    printf '\n'
+    if [ -n "${r_ex[$i]}" ]; then
+      printf '%s%s%s%s\n' "$pad" "$C_DIM" "${r_ex[$i]}" "$C_OFF"
+    fi
     i=$((i + 1))
   done
+  if [ "$act" -eq 0 ]; then
+    # Same opening either way -- it is what a reader (and the harness) looks
+    # for -- but the tail must not claim every input is at its pin when the
+    # rows above say a checkout is refused or skipped.
+    if [ "$quiet" -eq "$n" ]; then
+      printf '%snothing to approve -- every pinned input is at its approved rev%s\n' "$C_DIM" "$C_OFF"
+    else
+      printf '%snothing to approve -- no input above is a forward checkout upgrade may cover%s\n' \
+        "$C_DIM" "$C_OFF"
+    fi
+  fi
 }
 
 # Root-requiring actions self-elevate: re-exec the INSTALLED (root-owned,
@@ -2291,9 +2370,10 @@ case "$action" in
         fi
         echo
       fi
-      # upgrade: the plan, free of charge -- which inputs the root-side
-      # ceremonies will cover. Orientation only: everything is re-derived
-      # as root after sudo, the same contract as approve's preview.
+      # upgrade: the plan, free of charge -- every input of the flake, with
+      # the ones the root-side ceremonies will cover highlighted among them.
+      # Orientation only: everything is re-derived as root after sudo, the
+      # same contract as approve's preview.
       # Malformed argv dies here too, before authentication.
       if [ "$action" = "upgrade" ]; then
         upg_flake="" upg_next=0
@@ -2311,7 +2391,7 @@ case "$action" in
           printf '%serror: cannot read %s -- pass --flake%s\n' "$C_RED" "$upg_flake" "$C_OFF" >&2
           exit 1
         }
-        print_upgrade_plan "$(stale_flake_repos "$upg_flake")" "$(tier_user)"
+        print_upgrade_plan "$(scan_flake_inputs "$upg_flake")" "$(tier_user)" "$upg_flake"
         printf '%sThen: deploy (sync flake revs to the pins + rebuild)%s\n\n' "$C_DIM" "$C_OFF"
       fi
       # setup: show the plan and confirm BEFORE sudo, so reading what it
@@ -5493,19 +5573,19 @@ do_upgrade() {
   # offer first, then the tag-declared rule (HEAD carries the next release),
   # then a plain review. The tag and signed routes are their own do_approve
   # call each, because their selectors bind to one repo.
-  local stale p tag cls tu upg_route upg_info repos tagged_p tagged_t
+  local scan p tag st tu upg_route upg_info repos tagged_p tagged_t
   local signed_p signed_t sargs t i
   repos=(); tagged_p=(); tagged_t=(); signed_p=(); signed_t=()
   tu="$(tier_user)"
-  stale="$(stale_flake_repos "$FLAKE" "$tu")"
-  print_upgrade_plan "$stale" "$tu"
+  scan="$(scan_flake_inputs "$FLAKE" "$tu")"
+  print_upgrade_plan "$scan" "$tu" "$FLAKE"
   echo
-  if [ -n "$stale" ]; then
-    while IFS='|' read -r p tag cls; do
-      # The ancestry floor: backward and diverged checkouts are the plan's
-      # refused list and never reach a ceremony (print_upgrade_plan named
-      # them and their by-hand remediation above).
-      [ "$cls" = forward ] || continue
+  if [ -n "$scan" ]; then
+    while IFS='|' read -r p tag st; do
+      # The ancestry floor: only a forward checkout joins a ceremony. Every
+      # other state is a row the plan already rendered -- refused, skipped,
+      # or simply quiet -- with whatever by-hand remediation it has.
+      [ "$st" = forward ] || continue
       upgrade_route "$p" "$tag" "$tu"
       case "$upg_route" in
         signed) signed_p+=("$p"); signed_t+=("$upg_info") ;;
@@ -5514,7 +5594,7 @@ do_upgrade() {
         # disagree/notag are by-hand work: named in the plan, never automatic.
       esac
     done <<EOF
-$stale
+$scan
 EOF
   fi
   if [ "${#repos[@]}" -gt 0 ] || [ "${#tagged_p[@]}" -gt 0 ] || [ "${#signed_p[@]}" -gt 0 ]; then

@@ -447,6 +447,14 @@ runs \(em upgrade removes typing, never scrutiny \(em then deploy
 syncs the flake to the approved revs and rebuilds, all behind one
 authentication.
 An unprivileged plan precedes the sudo prompt.
+The plan lists every git+file input of the flake, one aligned row each in
+flake order, and highlights only the rows a ceremony will cover
+.RB ( approve: ).
+The rest are present but quiet, each saying why it is not actionable: at
+its pin, refused, skipped for by-hand work, without a
+.BR rev= ,
+without a slot, or without a checkout \(em an input the plan omitted would
+read as one this tool never looked at.
 A declined repo is skipped, not fatal: deploy keeps its old rev.
 A slot that declares a release tag is never plain-approved (that would
 clear the declaration and strand the input's ref=).

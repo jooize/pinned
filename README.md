@@ -124,10 +124,15 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       approve every stale flake input
                                       (the same per-repo ceremonies),
                                       then deploy -- one authentication
-                                      for the whole round; a stale repo
-                                      with a newer signed release an
-                                      installed key verifies is offered
-                                      the signature gate instead of a
+                                      for the whole round; the plan lists
+                                      every input, one row each, and
+                                      highlights only the ones a ceremony
+                                      will cover -- the rest stay visible
+                                      but quiet (at pin, no rev=, no slot,
+                                      no checkout); a stale repo with a
+                                      newer signed release an installed
+                                      key verifies is offered the
+                                      signature gate instead of a
                                       review; a tag-declared slot
                                       otherwise joins only when HEAD
                                       carries exactly one release tag
