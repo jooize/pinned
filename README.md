@@ -11,8 +11,8 @@ and it writes the hash to a root-owned slot. Deploy tooling builds only
 `pinned verify`.
 
 The design signature, and the test for every surface question: **the
-root-owned record DECLARES; the live world must CONFORM; anything
-undeclared REFUSES.** The slot declares the VCS (`rev.git`) and the
+root-owned record declares; the live world must conform; anything
+undeclared refuses.** The slot declares the VCS (`rev.git`) and the
 hash algorithm (`pin.sha256`) in its filenames -- never inferred from
 attacker-writable content -- validation is exact per declaration, and
 unknown declarations refuse outright.
@@ -52,7 +52,7 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
     pinned approve --file <path> [--baseline <copy>] [--ignore-json-key <key> ...]
                    [--file <path> ...] [--algo <name>] [--store]
                                       file-pin ceremony: freeze, display
-                                      ROOT-SIDE, confirm, record the hash;
+                                      root-side, confirm, record the hash;
                                       several --file share one sudo
                                       (--ignore-json-key: keys whose later
                                       drift verify tolerates, each of which
@@ -159,7 +159,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
 
 ## Design points
 
-- Pins live in per-user SLOT DIRECTORIES: `/var/db/pinned/<user>/slots/`
+- Pins live in per-user slot directories: `/var/db/pinned/<user>/slots/`
   `<encoded-path>/`, each holding exactly one of `rev.<vcs>` (repo pin,
   one full hash), `pin.<algo>` (file pin, one pure shasum-style check
   line carrying the live absolute path -- `shasum -a 256 -c pin.sha256`
@@ -170,38 +170,38 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   glance. `<user>/` is 0750 root:`_<user>-pinned` -- the group is
   consumed from the system config, never created, and its absence fails
   closed to root-only 0700.
-- The tier has exactly TWO wrapper dirs, and they are the SELECTION
-  MENU: `slots/` (what IS pinned) and `policy/` (what MAY be trusted:
+- The tier has exactly two wrapper dirs, and they are the selection
+  menu: `slots/` (what is pinned) and `policy/` (what may be trusted:
   `allowed_signers` and `ignorable.json`). A lane's launch payload
   carries its own slot dirs and `policy/`, never `<user>/` itself,
   which would disclose every pinned path name. Two rules produced this
   shape, and both rule out loose files directly under `<user>/`:
   - **Directories are the transfer unit, never files.** Every write
     here is an atomic rename over a staged temp file, so the name gets
-    a NEW inode. Any consumer that binds a FILE (a root-owned symlink,
+    a new inode. Any consumer that binds a file (a root-owned symlink,
     a hypothetical file mount) would pin the pre-ceremony inode
     forever; naming the enclosing dir re-reads the name every time.
     Payload snapshots copy whole dirs for the same reason: a dir is a
     complete, self-consistent slot state.
   - **One dir per disclosure class.** Policy is small, boring and safe
-    to expose; the slot LIST is itself information. Flat files would
+    to expose; the slot list is itself information. Flat files would
     force a lane that needs the policy to carry the slot list with it.
   Consumers that want a friendly path use a root-owned symlink:
   `sudo ln -s "$(pinned slot <repo>)" /etc/nix-darwin/pinned-rev`.
-  SLOT NAMES NEVER LEAVE PINNED: `pinned slot <path>` resolves any path
+  Slot names never leave pinned: `pinned slot <path>` resolves any path
   -- repo or file, existing or not -- to its slot directory, so a lane
   launcher selects its launch payload with it instead of reimplementing
-  the encoding. It resolves a NAME and nothing more: it does not say
+  the encoding. It resolves a name and nothing more: it does not say
   whether the path is pinned (that is `verify`) or whether the directory
   exists (the caller's own `-d`).
-- LANES GET COPIES, NOT THE LEDGER. A lane receives a launch-time
+- **Lanes get copies, not the ledger.** A lane receives a launch-time
   snapshot of just the slot dirs it needs, installed at the verbatim host
-  paths by the LANE'S OWN root -- so the records are genuinely root-owned
+  paths by the lane's own root -- so the records are genuinely root-owned
   where they are read, and verification is the same strict check
   everywhere. `pinned` has no lane-conditional branch.
 - First approval of a repo shows the full tree (diff from the empty
   tree) unless `--trust` is passed, loudly.
-- THE ANCESTRY LATTICE. A ceremony that moves a pin first establishes
+- **The ancestry lattice.** A ceremony that moves a pin first establishes
   which way it is moving, over the commit graph -- never by parsing a
   version string, because tag and branch names are repo content and
   version sort is only a convention. Four classes: `equal` (a no-op),
@@ -221,10 +221,10 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   replayed signed release of an older version is exactly what it
   catches. It governs ceremonies only -- `verify`, `status` and
   `deploy` answer about a pin already recorded and are untouched.
-- The file-pin ceremony (`approve --file`) takes NO hash argument, ever.
+- The file-pin ceremony (`approve --file`) takes no hash argument, ever.
   A hash handoff would let a caller in a poisoned environment feed root
   an opaque digest to record sight-unseen; instead the file is frozen
-  and displayed exactly once, ROOT-SIDE, after sudo's environment reset,
+  and displayed exactly once, root-side, after sudo's environment reset,
   and the recorded hash is taken from the displayed buffer -- record ==
   seen, by construction. A caller's own display (diffs, structural
   views) is pre-sudo orientation, never what the record binds to.
@@ -235,70 +235,70 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   API). The decade is the action class and the taxonomy is shared with
   `cat` (which adds **16**, "no stored witness"); 12/14/15 are retired
   numbers that are never reused. The numbering rule, settled: renumber
-  WHOLESALE when coherence demands it (as the sweep into decade classes
+  wholesale when coherence demands it (as the sweep into decade classes
   did), never backfill a retired slot piecemeal -- a retired number is
   one some deployed consumer still remembers, and giving it a new
   meaning makes a running gate misread a verdict it thinks it
   understands, silently, until that consumer is redeployed.
-  Parsers use `--emit` (print the VERIFIED bytes, nothing on
+  Parsers use `--emit` (print the verified bytes, nothing on
   failure) or `--frozen <copy>` (verdict on caller-held bytes) so the
   bytes acted on are the bytes verified -- never verify-path-then-
-  read-path. File modes are CHECKED as an invariant (owner is the tier
+  read-path. File modes are checked as an invariant (owner is the tier
   user, no group/other write), not pinned as a value: content
   addressing catches rewrites; the owner can always chmod back.
-- IGNORED KEYS: a settings file whose `model` and `effortLevel` churn
+- **Ignored keys:** a settings file whose `model` and `effortLevel` churn
   hourly should not summon a ceremony hourly, and those keys carry no
   hardening. A slot may therefore declare `ignored.json` -- a JSON array of
-  jq key paths, e.g. `[["model"],["statusLine","command"]]` -- written ONLY
+  jq key paths, e.g. `[["model"],["statusLine","command"]]` -- written only
   by the ceremony (`approve --file <path> --ignore-json-key model
   --ignore-json-key effortLevel`). Semantics, in
-  one sentence: **the pin stays byte-exact and ignoring is a VERIFY-side
+  one sentence: **the pin stays byte-exact and ignoring is a verify-side
   tolerance.** `pin.<algo>` is still the hash of the approved bytes,
   `shasum -a 256 -c pin.sha256` still cross-checks it with stock tools, and
   nothing about what gets hashed changes. What changes is the answer to a
-  MISMATCH: verify may compare the two documents with the declared keys
+  mismatch: verify may compare the two documents with the declared keys
   projected out, and, if everything else is identical, answer **5**
   ("matches modulo declared ignored keys") instead of 11, naming each key
   that actually moved on stdout as `ignored-drift: <key>`. Consumers treat
   5 as permitted and unknown codes as refusal, exactly as before.
-  - The FORMAT is declared by the suffix, like `rev.<vcs>` and
+  - The format is declared by the suffix, like `rev.<vcs>` and
     `pin.<algo>`: `ignored.json` is the shipped grammar, and an
-    `ignored.toml` / `ignored.yaml` / anything else REFUSES rather than
+    `ignored.toml` / `ignored.yaml` / anything else refuses rather than
     being guessed at. That refusal is also the extension point -- adding a
     format means adding a reader and a flag, never inferring one. The
     content must be an array of nonempty arrays of strings; anything else
     (including an empty array, which would tolerate nothing) refuses.
-  - The record is REAL JSON because the `.json` suffix has to be truthful,
+  - The record is real JSON because the `.json` suffix has to be truthful,
     because that array is exactly what jq's `delpaths` takes (so the
     comparison consumes the record with no translation step), and because
     a JSON object key may contain any character at all -- dots, spaces,
     parentheses (`"Bash(git status:*)"` is a real settings key). A dotted
-    line cannot spell those. GENERALITY LIVES IN THE STORAGE, CONVENIENCE
-    IN THE HUMAN SURFACE: the CLI still takes `--ignore-json-key model` (or
+    line cannot spell those. Generality lives in the storage, convenience
+    in the human surface: the CLI still takes `--ignore-json-key model` (or
     `a.b.c`), displays join paths back with dots, and dot-splitting happens
     only at that surface.
   - CLI key grammar: dotted `[A-Za-z0-9_.-]`, no leading/trailing/doubled
-    dot, KEYS ONLY. No array subscripts: an index is a position, not a
+    dot, keys only. No array subscripts: an index is a position, not a
     name, and a tolerated position silently moves when something is
     inserted before it.
-  - Comparing needs the LAST-APPROVED bytes -- a WITNESS (see "The record
+  - Comparing needs the last-approved bytes -- a witness (see "The record
     and its witnesses" below). Either the slot keeps one of its own
     (`approve --file <path> --store`) or the caller brings one
     (`verify --baseline <copy> <path>`); with neither, verify stays at the
     byte-exact 11. A caller-brought copy must re-hash to the record before
     it is used -- the same self-verifying trick the ceremony's baseline
-    diff uses, so a forged baseline can only make verify STRICTER.
-  - If `approved` exists it MUST re-hash to the record beside it. A
-    violation is a MALFORMED SLOT (hard error, exit 1) rather than a
+    diff uses, so a forged baseline can only make verify stricter.
+  - If `approved` exists it must re-hash to the record beside it. A
+    violation is a malformed slot (hard error, exit 1) rather than a
     degraded comparison -- what makes this harder than a declined witness
-    is WHERE the bytes are: root custody, which nothing unprivileged can
+    is where the bytes are: root custody, which nothing unprivileged can
     have written, so root-owned bytes that are not the approved bytes are
     incoherent state, not weak evidence. Re-approve to reset it.
-  - PARSER DIFFERENTIALS are the reason this path is so suspicious of its
+  - Parser differentials are the reason this path is so suspicious of its
     input. A structural comparison is only as honest as the agreement
     between the parser doing the comparing and the parser that will
     actually read the file. So the tolerance path refuses -- loudly, back
-    to the byte-exact 11 -- on: DUPLICATE object keys anywhere on either
+    to the byte-exact 11 -- on: duplicate object keys anywhere on either
     side (jq keeps the last, other parsers differ, and guessing which one
     a consumer keeps is exactly the uncertainty this tool exists to
     avoid); more than one top-level JSON document (jq reads a concatenated
@@ -306,25 +306,25 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
     trailing one, other parsers do not); an unparseable side; a missing
     baseline; a missing jq; and of course any difference outside the
     declared keys. Duplicate detection is empirical, not assumed:
-    `jq --stream` emits one event per value OCCURRENCE while re-serializing
+    `jq --stream` emits one event per value occurrence while re-serializing
     through jq collapses duplicates to the last, so a differing event count
     proves a duplicate anywhere at any depth -- including duplicates whose
     values are objects, where the leaf paths differ and a path-multiset
     comparison would miss them.
   - The ceremony states the declaration prominently before the y/N, and an
-    approve WITHOUT `--ignore-json-key` CLEARS the declaration -- with a
-    loud note whenever that narrows or widens what was there. THE TAG RULE
+    approve without `--ignore-json-key` clears the declaration -- with a
+    loud note whenever that narrows or widens what was there. The tag rule
     covers every extra a slot can hold: each is re-stated by every
     ceremony, so an approve without `--store` drops a stored copy too, and
-    identical bytes are a no-op only when the declaration AND the custody
+    identical bytes are a no-op only when the declaration and the custody
     state are identical as well.
   - A non-JSON file simply fails the parse step and always gets the
-    byte-exact verdict; pinned never restricts which KINDS of path may
+    byte-exact verdict; pinned never restricts which kinds of path may
     carry a declaration, only which keys (below).
-- THE IGNORABLE LADDER. What a slot may declare is itself gated, because
+- **The ignorable ladder.** What a slot may declare is itself gated, because
   "which keys may drift" is exactly the decision an attacker would like to
   make for you. Two root-owned policy tiers sit above the declaration, and
-  every rung is checked at approve AND at verify:
+  every rung is checked at approve and at verify:
 
       machine policy  >=  user policy     >=  slot declaration  >=  drift
       /etc/pinned/        <user>/policy/      slots/<enc>/          tolerated
@@ -332,43 +332,43 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
 
   - Both tiers are arrays of entries:
     `[{"path":["model"],"under":"/Users/x/.config"},{"path":["effortLevel"]}]`.
-    `"under"` is optional and means EVERYWHERE when omitted; present, it is
-    an absolute prefix matched at a COMPONENT BOUNDARY, so `/a/b` covers
+    `"under"` is optional and means everywhere when omitted; present, it is
+    an absolute prefix matched at a component boundary, so `/a/b` covers
     `/a/b` and `/a/b/c` and never `/a/bb` -- the same rule `list --under`
     uses. No other object keys are accepted: one this version does not
     understand could be a narrowing constraint written by a newer one, and
     ignoring it would silently widen the grant.
-  - The MACHINE tier is optional (absent = no machine constraint) and is
+  - The machine tier is optional (absent = no machine constraint) and is
     the file a configuration manager declares (nix: `environment.etc`).
-    The USER tier is the operative allow-list, managed by the `ignorable`
-    ceremony. Absent or empty grants NOTHING, and an unreadable tier of
+    The user tier is the operative allow-list, managed by the `ignorable`
+    ceremony. Absent or empty grants nothing, and an unreadable tier of
     either kind grants nothing either -- fail closed, in the direction that
     costs a ceremony rather than a tolerance.
-  - EFFECTIVE = the intersection: a user entry counts only if the machine
+  - Effective = the intersection: a user entry counts only if the machine
     tier has the same path with a scope covering it (a user entry with no
     scope is covered only by a machine entry with no scope). `pinned
     ignorable list` prints all three -- machine, user, effective -- with
     each entry's scope, so "why was this key dropped" is answerable from
     one unprivileged command.
-  - `approve --file --ignore-json-key <key>` REFUSES a key the effective
+  - `approve --file --ignore-json-key <key>` refuses a key the effective
     policy does not grant for that path, loudly, and names the exact
     remediation (`sudo pinned ignorable add <key> --under <dir>`). The
-    semantics are UNIFORM: pinned cannot tell a human's argv from a calling
+    semantics are uniform: pinned cannot tell a human's argv from a calling
     tool's, so "a human typed it" is never a reason to allow it. The
-    ceremony display then states each declared key's grant PROVENANCE
+    ceremony display then states each declared key's grant provenance
     (`model -- user policy, under /Users/x/.config`), so the ladder is
     audited on screen while the y/N is asked.
-  - VERIFY re-checks at use time: every key recorded in `ignored.json` must
-    still be within the effective policy FOR THAT PATH, or the tolerance is
+  - `verify` re-checks at use time: every key recorded in `ignored.json` must
+    still be within the effective policy for that path, or the tolerance is
     refused and the answer is a plain 11 (with a note naming the key that
     lost its grant). Narrowing the policy therefore bites at the very next
     verify -- no re-ceremony, no stale grant surviving in a slot nobody
     revisits.
-- Tombstones are sentinel slot CONTENT, never slot deletion: a pinned
+- Tombstones are sentinel slot content, never slot deletion: a pinned
   file that vanished refuses until restored or ceremonially tombstoned,
-  and a tombstoned path that REAPPEARS refuses until re-approved --
+  and a tombstoned path that reappears refuses until re-approved --
   retired content resurrected must not read as merely new.
-- A PATH IS A RECORD'S IDENTITY, and `mv` is how an identity changes
+- A path is a record's identity, and `mv` is how an identity changes
   hands without trust changing with it. The record travels verbatim and
   the machine -- not the human -- establishes the one new claim it makes:
   the content already at the new path must be exactly what the record
@@ -420,14 +420,14 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   the one acting subcommand -- the bundled consumer for a nix system
   (a machine has exactly one configuration mechanism; any other
   consumer is the same primitive: read the pin, act on exactly that
-  rev) -- and it acts only by composing and SHOWING the commands that
+  rev) -- and it acts only by composing and showing the commands that
   run as root, then running them under ordinary sudo -- it never
   self-elevates. It scans the system flake for `git+file://` inputs,
   syncs each stale `rev=` to its approved hash, and rebuilds -- the
   rebuild runs even when every rev is already in sync, because the
-  flake matching the pins says nothing about what the SYSTEM runs. A
+  flake matching the pins says nothing about what the system runs. A
   slot that declares a release tag also gets its `ref=` synced to
-  `refs/tags/<tag>` -- after cross-checking that the LIVE tag still
+  `refs/tags/<tag>` -- after cross-checking that the live tag still
   names the approved rev; a moved or deleted tag is a clean fail-closed
   refusal, never a nix fetch error. Inputs without a pin slot are
   surfaced loudly (they deploy as hand-edited); non-local inputs are
@@ -438,7 +438,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   user-writable copy is a user-writable root command line.
 - Rendered diffs are never trusted blindly, in three layers: every git
   call sets `attr.tree` to the empty tree (so no `.gitattributes` can
-  select a driver or filter for ANY subcommand -- the only repo-wide
+  select a driver or filter for any subcommand -- the only repo-wide
   switch git offers); the review helper additionally forces
   `--no-ext-diff --no-textconv`; and reaching for any rendering
   subcommand (`diff`, `show`, `log -p`, `format-patch`, ...) another way
@@ -448,12 +448,12 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   committed; both are attacker-writable, both are shell commands, and
   scrubbing the environment does not stop them. Unhardened, a driver can
   render any diff as arbitrary text -- a textconv mapping both sides to
-  one constant shows an EMPTY diff for a commit that changed everything
-  -- and it EXECUTES during rendering, which for a tool that elevates
+  one constant shows an empty diff for a commit that changed everything
+  -- and it executes during rendering, which for a tool that elevates
   before diffing means as root.
 - `pinned review <file>` extends the same idea past git, for content
   that is gated by hash rather than by rev (e.g. a hook wired into a
-  hash-checked settings file). The security-relevant act is the READ:
+  hash-checked settings file). The security-relevant act is the read:
   one read into memory, those bytes displayed, those bytes hashed --
   never two reads with a swap in between. It prints the digest plus a
   ready-to-paste fail-closed wrapper, so the consumer hashes exactly the
@@ -461,7 +461,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   root-owned binary because a user-writable review script could show
   innocent bytes and hash malicious ones -- and unlike a falsified
   display, which fails closed at the next hash check, a falsified
-  ceremony fails OPEN. The digest equals what `shasum -a <algo> <file>`
+  ceremony fails open. The digest equals what `shasum -a <algo> <file>`
   reports, so the ceremony can be cross-checked with ordinary tools.
   Algorithms go by their standard names: sha256/sha384/sha512 work
   everywhere; `blake2b-256/-384/-512` need `b2sum` (GNU coreutils) and
@@ -469,7 +469,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   its output size is a flag, not part of the name: `--length <bits>`
   (default 256). sha1/md5 and any digest under 256 bits are
   refused: this hash is the gate. There is deliberately no flag naming a
-  hasher PATH -- whatever computes the digest decides whether the gate
+  hasher path -- whatever computes the digest decides whether the gate
   passes, so it must resolve inside the trusted PATH.
 - `pinned review <repo>` closes the same gap on the repo side: after a
   pin exists, a file pin can be re-read through custody (`cat` serves
@@ -507,13 +507,13 @@ stored, and whose hands carried it there, cannot affect a verdict. Two
 arrive by different roads and are otherwise the same kind of thing --
 the slot's own `approved` copy (root custody, written by
 `approve --file <path> --store`) and a caller-brought copy
-(`verify --baseline <copy>`). A witness can only ever NARROW a
+(`verify --baseline <copy>`). A witness can only ever narrow a
 comparison -- enable the ignored-key projection, feed the ceremony's
 baseline diff -- and never stands in for the live file: a pinned file
-that is MISSING is exit 20 no matter how many witnesses agree on what
+that is missing is exit 20 no matter how many witnesses agree on what
 it used to say.
 
-Custody is therefore OPT-IN. A stored witness serves the tolerant
+Custody is therefore opt-in. A stored witness serves the tolerant
 comparison, archives exactly what was approved, and feeds the display of
 what changed -- but it also turns a slot that discloses one digest into
 one that discloses the file's whole content. Disclosure is bounded (the
@@ -524,14 +524,14 @@ nothing, so it stays a per-slot human decision at the ceremony.
 
 ### The consumer ladder
 
-`verify` answers about a path; the consumer then has to USE the content,
+`verify` answers about a path; the consumer then has to use the content,
 and the gap between the two is where a swap would fit. Three rungs close
 it, in descending order of what the consuming software can be told to
 do:
 
 1. **It can read a path you nominate** -> point it at root custody: the
    slot's `approved` file, reached through a root-owned symlink at the
-   slot DIRECTORY (`sudo ln -s "$(pinned slot <path>)" /etc/<tool>/pin`,
+   slot directory (`sudo ln -s "$(pinned slot <path>)" /etc/<tool>/pin`,
    then read `/etc/<tool>/pin/approved`) -- the dir, never the file, for
    the same reason every other consumer binds a dir: each ceremony
    renames a fresh inode into place. No gap at all: the bytes it reads
@@ -545,7 +545,7 @@ do:
    rewrite after launch is outside what a pin can speak for.
 
 Rungs 1 and 2 need custody (`--store`); rung 3 does not. Consumers that
-must PARSE content and cannot do either use `verify --emit` or
+must parse content and cannot do either use `verify --emit` or
 `verify --frozen`, which bind the verdict and the bytes to one read.
 
 ## Glossary
@@ -579,7 +579,7 @@ one.
 - **Banners name the program and bracket authority.** The ceremony opens
   with `=== pinned: approve (authoritative) ===`; a caller's own preview
   opens with its own name and says `(orientation preview)`. Everything
-  between a banner and the next one belongs to that speaker. ONE speaker
+  between a banner and the next one belongs to that speaker. One speaker
   per banner region -- pinned never prints inside a caller's block, and a
   caller never annotates inside pinned's.
 - **A caller's display is orientation; pinned's is authority.** The
@@ -605,15 +605,15 @@ one.
   scrollback.
 - **Structural views are derived; the raw byte diff is authoritative.**
   Section labels, changed-key summaries and shape lines (`3 hunks,
-  +12/-4 lines`) orient a reader; they can lie about WHERE a change sits
-  and never about WHAT changed, because every changed line prints
+  +12/-4 lines`) orient a reader; they can lie about where a change sits
+  and never about what changed, because every changed line prints
   regardless and the digest comes from the bytes, not the view.
 
 ## Bootstrap without executing unverified code
 
 Every trust tool has a first-install chicken-and-egg: the only copy
 that exists lives in a user-writable checkout. You never have to
-EXECUTE that copy privileged, though. Copy it with the OS's own
+execute that copy privileged, though. Copy it with the OS's own
 tooling (which moves bytes but runs none of them), then read the copy
 user-space can no longer touch, then run only what you read:
 
@@ -649,7 +649,7 @@ pre-install fallback) still works and warns loudly; prefer this one.
 The manual route above is the first-class citizen: it works on any
 machine with sudo and needs nothing but this file. If a
 configuration-management tool builds your system, pinned can instead
-be installed BY that tool FROM an approved rev -- `setup` is then
+be installed by that tool from an approved rev -- `setup` is then
 never needed, because the deploy does setup's three jobs (binary,
 sudoers digest, pin root) declaratively. This repo ships a Nix flake
 for that:
