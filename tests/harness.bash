@@ -848,6 +848,56 @@ EOF
   assert_contains "$OUT" "no single release tag at HEAD" "several tags at HEAD route to manual"
   bgit "$REPO_B" tag -d v12 >/dev/null; bgit "$REPO_B" tag -d v13 >/dev/null
 
+  # THE ANCESTRY FLOOR (S8f) is upgrade's admission rule: an automatic
+  # ceremony only ever covers a FORWARD checkout. A checkout sitting behind
+  # its pin, or off the pinned line entirely, is named in the plan with the
+  # flag that would declare it and never joins the batch. (The backward one
+  # is also the state the old commit-count staleness test could not see at
+  # all: `rev-list --count <pin>..HEAD` answered 0 for it.)
+  REPO_BK="$FIX/upg-back"; REPO_DV="$FIX/upg-div"; REPO_FW="$FIX/upg-fwd"
+  mkdir -p "$REPO_BK" "$REPO_DV" "$REPO_FW"
+  for ur in "$REPO_BK" "$REPO_DV" "$REPO_FW"; do
+    bgit "$ur" init -q
+    printf 'u1\n' > "$ur/f"; bgit "$ur" add f; bgit "$ur" commit -q -m u1
+    printf 'u2\n' > "$ur/f"; bgit "$ur" commit -q -am u2
+  done
+  BK_PIN="$(bgit "$REPO_BK" rev-parse 'HEAD^{commit}')"
+  DV_PIN="$(bgit "$REPO_DV" rev-parse 'HEAD^{commit}')"
+  FW_PIN="$(bgit "$REPO_FW" rev-parse 'HEAD~1^{commit}')"
+  seed_state "$REPO_BK" rev.git "$BK_PIN"
+  seed_state "$REPO_DV" rev.git "$DV_PIN"
+  seed_state "$REPO_FW" rev.git "$FW_PIN"
+  bgit "$REPO_BK" reset --hard -q HEAD~1
+  bgit "$REPO_DV" checkout -q -b side HEAD~1
+  printf 'u3\n' > "$REPO_DV/f"; bgit "$REPO_DV" commit -q -am u3
+  cat > "$FIX/flake3.nix" <<EOF
+{
+  inputs.upg-back.url = "git+file://$REPO_BK?rev=$BK_PIN";
+  inputs.upg-div.url = "git+file://$REPO_DV?rev=$DV_PIN";
+  inputs.upg-fwd.url = "git+file://$REPO_FW?rev=$FW_PIN";
+}
+EOF
+  ANS=""
+  run_pinned upgrade --flake "$FIX/flake3.nix" --dry-run
+  assert_exit "$RC" 0 "a plan holding refused repos still exits 0"
+  assert_contains "$OUT" "checkout is BACKWARD of the pin -- approve --backward by hand" \
+    "a backward checkout is refused in the plan"
+  assert_contains "$OUT" "checkout DIVERGED from the pin -- approve --diverged by hand" \
+    "a diverged checkout is refused in the plan"
+  assert_contains "$OUT" "Will review + approve:" "the forward repo still has a plan"
+  assert_contains "$OUT" "$REPO_FW" "the forward repo is the one listed for approval"
+
+  ANS='y
+'
+  run_pinned upgrade --flake "$FIX/flake3.nix"
+  assert_exit "$RC" 2 "the mixed upgrade reaches deploy's confirmation gate"
+  assert_contains "$OUT" "1 approved, 0 declined, 0 already pinned" \
+    "only the forward repo got a ceremony"
+  assert_eq "$(cat "$(slot_of "$REPO_FW")/rev.git")" "$(bgit "$REPO_FW" rev-parse 'HEAD^{commit}')" \
+    "the forward repo was approved"
+  assert_eq "$(cat "$(slot_of "$REPO_BK")/rev.git")" "$BK_PIN" "the backward repo's pin is untouched"
+  assert_eq "$(cat "$(slot_of "$REPO_DV")/rev.git")" "$DV_PIN" "the diverged repo's pin is untouched"
+
   # Availability probe: a pin the checkout no longer holds is warned about
   # EARLY (status and deploy's scan), instead of surfacing as a nix fetch
   # error mid-rebuild. A warning, never a refusal: nix's store cache may
@@ -1121,19 +1171,198 @@ n
   assert_contains "$OUT" "approve without --step" "the refusal points at the plain ceremony"
   assert_absent "$(slot_of "$REPO_F")/rev.git" "the refused walk recorded nothing"
 
-  # The pin ahead of HEAD (reversed history) has no commits to walk: refuse
-  # and send the reviewer to the whole-delta diff, which shows the removal.
+  # The pin ahead of HEAD (reversed history) has no commits to walk. The
+  # ancestry floor (S8f) now refuses that endpoint before the walk is
+  # entered, so the refusal a reviewer meets is the lattice's -- naming the
+  # class and the flag that would declare it. --step's own "not behind HEAD"
+  # message stays in the script as the walk's internal belt-and-braces.
   seed_state "$REPO_E" rev.git "$E_HEAD"
   bgit "$REPO_E" branch -q back "$E_C2"
   bgit "$REPO_E" checkout -q back
   ANS=""
   run_pinned approve "$REPO_E" --step
   assert_exit "$RC" 1 "a pin that is not behind HEAD refuses the walk"
-  assert_contains "$OUT" "the pin is not behind HEAD" "the refusal names the shape"
+  assert_contains "$OUT" "is BACKWARD of the pin" "the refusal names the class"
   assert_eq "$(cat "$E_SLOT/rev.git")" "$E_HEAD" "the refused walk left the pin alone"
   bgit "$REPO_E" checkout -q main
 else
   say "S8e: SKIPPED (no git fixture)"
+fi
+
+# ---------------------------------------------------------------------------
+say "S8f: the ancestry lattice (forward / backward / diverged)"
+# ---------------------------------------------------------------------------
+# Ordering is ancestry over the commit graph, never a version string. The
+# ceremony classifies the candidate against the pin and refuses anything but
+# a forward move unless the human DECLARES the relationship -- and a
+# declaration that does not match reality is refused too, naming the class
+# that actually holds. Every fixture below builds real ancestry: reset
+# --hard for a backward checkout, a branch off an earlier commit for a
+# diverged one.
+#
+# The pre-sudo preview mirrors these refusals, but its elevation gate is
+# sed'd to `if false` here -- the same documented gap S8e records. The
+# root-side checks are the authoritative half and are all covered.
+if [ "$GIT_OK" -eq 1 ]; then
+  REPO_G="$FIX/latticefix"
+  mkdir -p "$REPO_G"
+  bgit "$REPO_G" init -q
+  printf 'g0\n' > "$REPO_G/g.txt"
+  bgit "$REPO_G" add g.txt; bgit "$REPO_G" commit -q -m "g0 base"
+  G_BASE="$(bgit "$REPO_G" rev-parse 'HEAD^{commit}')"
+  printf 'G1LINE\n' > "$REPO_G/g1.txt"
+  bgit "$REPO_G" add g1.txt; bgit "$REPO_G" commit -q -m "g1 first"
+  G_C1="$(bgit "$REPO_G" rev-parse 'HEAD^{commit}')"
+  printf 'G2LINE\n' > "$REPO_G/g2.txt"
+  bgit "$REPO_G" add g2.txt; bgit "$REPO_G" commit -q -m "g2 second"
+  G_C2="$(bgit "$REPO_G" rev-parse 'HEAD^{commit}')"
+  # A side line off g1: same repo, different history from g2 on.
+  bgit "$REPO_G" checkout -q -b side "$G_C1"
+  printf 'GXLINE\n' > "$REPO_G/x.txt"
+  bgit "$REPO_G" add x.txt; bgit "$REPO_G" commit -q -m "gx side"
+  G_X="$(bgit "$REPO_G" rev-parse 'HEAD^{commit}')"
+  bgit "$REPO_G" checkout -q main
+  G_SLOT="$(slot_of "$REPO_G")"
+
+  # --- the class itself, straight from the helper ---------------------------
+  run_probe_in "$REPO_G" ancestry_class "$REPO_G" "$G_BASE" "$G_C2"
+  assert_eq "$POUT" forward "a descendant of the pin is forward"
+  run_probe_in "$REPO_G" ancestry_class "$REPO_G" "$G_C2" "$G_BASE"
+  assert_eq "$POUT" backward "an ancestor of the pin is backward"
+  run_probe_in "$REPO_G" ancestry_class "$REPO_G" "$G_C2" "$G_X"
+  assert_eq "$POUT" diverged "a side line is diverged"
+  run_probe_in "$REPO_G" ancestry_class "$REPO_G" "$G_C2" "$G_C2"
+  assert_eq "$POUT" equal "the same rev is equal"
+
+  # --- forward is untouched: no alarm, the ordinary listing -----------------
+  seed_state "$REPO_G" rev.git "$G_BASE"
+  ANS='y
+'
+  run_pinned approve "$REPO_G"
+  assert_exit "$RC" 0 "a forward approve is unchanged by the lattice"
+  assert_eq "$(cat "$G_SLOT/rev.git")" "$G_C2" "the forward pin moved to HEAD"
+  assert_contains "$OUT" "--- commits since last approval ---" "forward keeps the ordinary listing"
+  assert_missing "$OUT" "!!!" "a forward move raises no alarm"
+
+  # A declaration on a forward candidate overrides nothing.
+  seed_state "$REPO_G" rev.git "$G_BASE"
+  ANS=""
+  run_pinned approve "$REPO_G" --backward
+  assert_exit "$RC" 1 "--backward on a forward candidate is refused"
+  assert_contains "$OUT" "nothing to override" "the refusal says there is nothing to override"
+  assert_eq "$(cat "$G_SLOT/rev.git")" "$G_BASE" "the refused ceremony left the pin alone"
+
+  # An already-pinned repo short-circuits BEFORE the lattice: equal is a
+  # no-op, and a declaration cannot make a no-op into a ceremony.
+  seed_state "$REPO_G" rev.git "$G_C2"
+  ANS=""
+  run_pinned approve "$REPO_G" --backward
+  assert_exit "$RC" 0 "an equal candidate still short-circuits"
+  assert_contains "$OUT" "already pinned" "equal takes the already-pinned path"
+
+  # --- backward: the checkout sits behind its pin ---------------------------
+  bgit "$REPO_G" reset --hard -q "$G_C1"
+  seed_state "$REPO_G" rev.git "$G_C2"
+  ANS='y
+'
+  run_pinned approve "$REPO_G"
+  assert_exit "$RC" 1 "an undeclared backward candidate is refused"
+  assert_contains "$OUT" "is BACKWARD of the pin" "the refusal names the class"
+  assert_contains "$OUT" "UN-approved" "the refusal says what a backward move does"
+  assert_contains "$OUT" "--backward" "the refusal names the flag that declares it"
+  assert_eq "$(cat "$G_SLOT/rev.git")" "$G_C2" "an undeclared backward move records nothing"
+
+  ANS=""
+  run_pinned approve "$REPO_G" --diverged
+  assert_exit "$RC" 1 "a mismatched declaration is refused"
+  assert_contains "$OUT" "--diverged declared, but the candidate is BACKWARD" \
+    "the refusal names the class that actually holds"
+
+  ANS='y
+'
+  run_pinned approve "$REPO_G" --backward
+  assert_exit "$RC" 0 "a declared backward move proceeds"
+  assert_eq "$(cat "$G_SLOT/rev.git")" "$G_C1" "the declared backward move recorded the pin"
+  assert_contains "$OUT" "!!! BACKWARD:" "the ceremony raises the backward alarm"
+  assert_contains "$OUT" "--- commits being un-approved ---" "the display names the reversed range"
+  assert_contains "$OUT" "g2 second" "the un-approved commit is listed"
+  assert_contains "$OUT" "--- diff " "the honest diff of the move still runs"
+
+  # A declined backward ceremony is an ordinary decline.
+  seed_state "$REPO_G" rev.git "$G_C2"
+  ANS='n
+'
+  run_pinned approve "$REPO_G" --backward
+  assert_exit "$RC" 2 "a declined backward ceremony exits 2"
+  assert_eq "$(cat "$G_SLOT/rev.git")" "$G_C2" "the declined ceremony left the pin alone"
+
+  # --- diverged: the checkout left the pinned line --------------------------
+  bgit "$REPO_G" reset --hard -q "$G_C2"
+  bgit "$REPO_G" checkout -q side
+  seed_state "$REPO_G" rev.git "$G_C2"
+  ANS='y
+'
+  run_pinned approve "$REPO_G"
+  assert_exit "$RC" 1 "an undeclared diverged candidate is refused"
+  assert_contains "$OUT" "has DIVERGED from the pin" "the refusal names the class"
+  assert_contains "$OUT" "--diverged" "the refusal names the flag that declares it"
+  assert_eq "$(cat "$G_SLOT/rev.git")" "$G_C2" "an undeclared diverged move records nothing"
+
+  ANS=""
+  run_pinned approve "$REPO_G" --backward
+  assert_exit "$RC" 1 "the other mismatched declaration is refused too"
+  assert_contains "$OUT" "--backward declared, but the candidate has DIVERGED" \
+    "the refusal names the class that actually holds"
+
+  ANS='y
+'
+  run_pinned approve "$REPO_G" --diverged
+  assert_exit "$RC" 0 "a declared diverged move proceeds"
+  assert_eq "$(cat "$G_SLOT/rev.git")" "$G_X" "the declared diverged move recorded the pin"
+  assert_contains "$OUT" "!!! DIVERGED:" "the ceremony raises the diverged alarm"
+  assert_contains "$OUT" "merge base: $G_C1" "the display names the merge base"
+  assert_contains "$OUT" "commits being un-approved (leaving the pinned line)" \
+    "the display names the abandoned range"
+  assert_contains "$OUT" "commits arriving on the new line" "the display names the arriving range"
+  assert_contains "$OUT" "g2 second" "the abandoned commit is listed"
+  assert_contains "$OUT" "gx side" "the arriving commit is listed"
+  bgit "$REPO_G" checkout -q main
+
+  # --- the declarations bind to one repo, and to nothing else ---------------
+  seed_state "$REPO_G" rev.git "$G_C2"
+  ANS=""
+  run_pinned approve "$REPO_G" --backward --diverged
+  assert_exit "$RC" 1 "two declarations at once are refused"
+  assert_contains "$OUT" "declare different relationships" "the refusal names the contradiction"
+  ANS=""
+  run_pinned approve "$REPO_G" --step --backward
+  assert_exit "$RC" 1 "a declaration with --step is refused"
+  assert_contains "$OUT" "only exist going forward" "the refusal names the walk's direction"
+  ANS=""
+  run_pinned approve "$REPO_G" --trust --backward
+  assert_exit "$RC" 1 "a declaration with --trust is refused"
+  assert_contains "$OUT" "there is no pin to move --backward from" "the refusal names the vouch"
+  ANS=""
+  run_pinned approve "$REPO_G" "$REPO_A" --backward
+  assert_exit "$RC" 1 "a declaration with two repos is refused"
+  assert_contains "$OUT" "bind to one repo" "the refusal names the one-repo rule"
+  ANS=""
+  run_pinned approve --file "$SUB/a.conf" --backward
+  assert_exit "$RC" 1 "a declaration with --file is refused"
+  assert_contains "$OUT" "its own ceremony" "the refusal names the file ceremony"
+
+  # A first approval classifies nothing: there is no pin to move from.
+  REPO_I="$FIX/latticefix-new"
+  mkdir -p "$REPO_I"
+  bgit "$REPO_I" init -q; printf 'i1\n' > "$REPO_I/f"; bgit "$REPO_I" add f
+  bgit "$REPO_I" commit -q -m i1
+  ANS=""
+  run_pinned approve "$REPO_I" --diverged
+  assert_exit "$RC" 1 "a declaration on a first approval is refused"
+  assert_contains "$OUT" "no pin for --diverged to move from" "the refusal names the missing pin"
+  assert_absent "$(slot_of "$REPO_I")/rev.git" "the refused first approval recorded nothing"
+else
+  say "S8f: SKIPPED (no git fixture)"
 fi
 
 # ---------------------------------------------------------------------------

@@ -24,11 +24,18 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
 
     pinned setup [--yes]              self-install + digest-pinned sudoers
     pinned approve <repo>... [--tag <tag>] [--trust] [--step]
+                             [--backward | --diverged]
                                       human gate: review diff -> pin
                                       (--tag: the tag's commit, not HEAD,
                                       and the declared release name;
                                       --trust: skip a first approval's
                                       full-tree review, loudly;
+                                      --backward/--diverged: DECLARE a pin
+                                      move that is not forward over the
+                                      commit graph -- the ceremony refuses
+                                      unless reality matches the
+                                      declaration, and says so loudly when
+                                      it does;
                                       --step: reading aid for a large
                                       delta -- walk the commits since the
                                       pin oldest-first, one diff and one
@@ -110,7 +117,11 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       slot joins only when HEAD carries
                                       exactly one release tag (approved
                                       under that name), else it is listed
-                                      for a manual approve --tag
+                                      for a manual approve --tag; only
+                                      FORWARD checkouts join a ceremony,
+                                      backward and diverged ones are
+                                      listed as refused with the flag
+                                      that would declare them
 
 approve, setup, tombstone, upgrade, signer add/remove and ignorable
 add/remove self-elevate via sudo (re-exec of the installed root-owned
@@ -170,6 +181,26 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   everywhere. `pinned` has no lane-conditional branch.
 - First approval of a repo shows the full tree (diff from the empty
   tree) unless `--trust` is passed, loudly.
+- THE ANCESTRY LATTICE. A ceremony that moves a pin first establishes
+  which WAY it is moving, over the commit graph -- never by parsing a
+  version string, because tag and branch names are repo content and
+  version sort is only a convention. Four classes: `equal` (a no-op),
+  `forward` (the candidate descends from the pin), `backward` (the
+  candidate is an ancestor -- the commits between are being
+  UN-approved), `diverged` (neither -- the pinned line of history is
+  being abandoned). Forward proceeds; the other two refuse unless the
+  human DECLARES them (`--backward`, `--diverged`), and a declaration
+  reality contradicts refuses too, naming the class that actually holds
+  -- declared, never inferred. A declared move opens with a full-caps
+  alarm and shows its commits in the direction that makes them
+  readable: the reversed range for backward, and the merge base plus
+  both sides for diverged (an empty `pin..candidate` listing would say
+  nothing about what is being withdrawn, which is the one thing a
+  review may never do). The floor holds for signature evidence too: a
+  signature says who vouched, never which way the pin is moving, so a
+  replayed signed release of an older version is exactly what it
+  catches. It governs CEREMONIES only -- `verify`, `status` and
+  `deploy` answer about a pin already recorded and are untouched.
 - The file-pin ceremony (`approve --file`) takes NO hash argument, ever.
   A hash handoff would let a caller in a poisoned environment feed root
   an opaque digest to record sight-unseen; instead the file is frozen

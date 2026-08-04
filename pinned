@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # pinned -- review-and-pin a git rev behind a human gate.
 #
-#   pinned approve <repo> [--tag <t>] [--trust]
+#   pinned approve <repo> [--tag <t>] [--trust] [--backward|--diverged]
 #                                              review diff since last pin -> approve -> pin
 #                                              (--tag: at the tag's commit, not HEAD;
 #                                              --trust: skip a FIRST approval's
-#                                              full-tree review, loudly)
+#                                              full-tree review, loudly;
+#                                              --backward/--diverged: declare a pin
+#                                              move that is not forward over the
+#                                              commit graph -- reality must conform)
 #   pinned approve <repo> --signed-tag <t> [--signed-tag ..] [--tag <t>]
 #                                              verify signed tag(s) -> approve -> pin
 #                                              (repeat --signed-tag = threshold
@@ -48,6 +51,18 @@
 # policy/allowed_signers as fallback; git's native format) -- that is the
 # second-machine bootstrap: clone anywhere, install the signer key once
 # (pinned signer add), approve the release.
+#
+# THE ANCESTRY LATTICE. Every ceremony that MOVES a pin first asks which
+# way it is moving, over the commit graph and never by parsing a version
+# string: equal (a no-op), forward (the candidate descends from the pin),
+# backward (the candidate is an ancestor -- commits are being UN-approved)
+# or diverged (neither -- the pinned line is being abandoned). Forward
+# proceeds; backward and diverged refuse unless the human DECLARES them
+# (--backward / --diverged), and a declaration that reality contradicts
+# refuses too, naming the class that actually holds. Declared, never
+# inferred. upgrade's automatic ceremonies never cover anything but forward
+# repos; the lattice governs ceremonies only -- verify and deploy answer
+# about a recorded pin and are untouched by it.
 #
 # Storage: /var/db/pinned/<user>/ -- two root-owned wrapper dirs:
 #   slots/<encoded-path>/  one SLOT DIRECTORY per pinned path, holding
@@ -656,6 +671,192 @@ print_commit_range() {
       }
     }
   '
+}
+
+# THE ANCESTRY LATTICE: how a candidate rev stands to the rev already
+# pinned, decided over the COMMIT GRAPH and never by parsing a version
+# string. Names are repo content and version sort is a convention; only
+# reachability says whether trust is moving forward.
+#
+#   equal      old == new                  a no-op (the already-pinned path)
+#   forward    old is an ancestor of new   the ordinary approval
+#   backward   new is an ancestor of old   commits are being UN-approved
+#   diverged   neither                     the pinned line is being abandoned
+#
+# merge-base --is-ancestor is plumbing: it answers by EXIT CODE and renders
+# nothing, so no repo-local diff driver or textconv filter is in play. It
+# still goes through sgit (env -i, no global/system config, safe.directory
+# for the root-on-user-repo case) by giving $repo a local value -- one
+# hardened git path, whether or not the caller sits in a resolved-repo
+# context.
+#
+# A rev git cannot reach (a pin the checkout gc'd away, a rewritten history)
+# makes both calls fail, which reads as "diverged": neither is provably an
+# ancestor of the other, so the ceremony refuses unless the human declares
+# it. Fail-closed is the only safe answer to "git cannot relate these".
+#
+# $1 = repo path, $2 = the pinned rev, $3 = the candidate rev.
+ancestry_class() {
+  local repo="$1" old="$2" new="$3"
+  if [ "$old" = "$new" ]; then printf 'equal'; return 0; fi
+  if sgit merge-base --is-ancestor "$old" "$new" 2>/dev/null; then
+    printf 'forward'; return 0
+  fi
+  if sgit merge-base --is-ancestor "$new" "$old" 2>/dev/null; then
+    printf 'backward'; return 0
+  fi
+  printf 'diverged'
+}
+
+# The declared non-forward alarm: the ceremony's loudest display, in the
+# --trust banner's colors and full-caps `!!!` shape, because both say the
+# same kind of thing -- trust is moving somewhere the ordinary reading does
+# not cover. Ruled off to a fixed column, so the block reads as one object
+# rather than three ragged sentences; every line is fixed-length text plus
+# an abbreviated rev, so the width is deterministic.
+# $1 = class, $2 = pinned rev, $3 = candidate rev, $4 = merge base (diverged
+# only; empty when the two revs have no common ancestor in this checkout).
+_alarm_line() { printf '%s!!! %-54s !!!%s\n' "$C_RED$C_B" "$1" "$C_OFF"; }
+print_ancestry_alarm() {
+  local l
+  case "$1" in
+    backward)
+      l="$(printf 'BACKWARD: %.10s -> %.10s' "$2" "$3")"
+      _alarm_line "$l"
+      _alarm_line "The candidate is an ANCESTOR of the current pin: the"
+      _alarm_line "commits between are being UN-approved."
+      ;;
+    diverged)
+      l="$(printf 'DIVERGED: %.10s -> %.10s' "$2" "$3")"
+      _alarm_line "$l"
+      _alarm_line "The candidate is NOT on the pinned line of history:"
+      if [ -n "${4:-}" ]; then
+        _alarm_line "$(printf 'that line is being ABANDONED at merge base %.10s' "$4")"
+        _alarm_line "(history rewrite or side branch)."
+      else
+        _alarm_line "that line is being ABANDONED, and the two revs share"
+        _alarm_line "no common ancestor in this checkout."
+      fi
+      ;;
+  esac
+}
+
+# The lattice's gate. The flag DECLARES the relationship the human believes
+# they are approving, and reality must CONFORM -- declared, never inferred:
+# a tool that inferred "you probably meant to go backward" would be deciding
+# the one thing the ceremony exists to make a human decide. So a missing
+# declaration refuses, and a WRONG declaration refuses too, naming the class
+# that actually holds.
+# Prints its refusal on stderr and returns 1; returns 0 to proceed.
+# $1 = actual class, $2 = declared class ('' = none), $3 = pinned rev,
+# $4 = candidate rev, $5 = repo path (for the remediation line).
+ancestry_gate() {
+  local actual="$1" declared="$2" old="$3" new="$4" p="$5" phrase
+  case "$actual" in
+    equal|forward)
+      [ -n "$declared" ] || return 0
+      printf '%sREFUSE: nothing to override -- the candidate is a descendant of the pin%s\n' \
+        "$C_RED$C_B" "$C_OFF" >&2
+      echo "        pinned:    $old" >&2
+      echo "        candidate: $new" >&2
+      echo "        drop --$declared" >&2
+      return 1 ;;
+    backward) phrase="is BACKWARD of the pin" ;;
+    *)        phrase="has DIVERGED from the pin" ;;
+  esac
+  if [ -z "$declared" ]; then
+    printf '%sREFUSE: the candidate %s%s\n' "$C_RED$C_B" "$phrase" "$C_OFF" >&2
+  elif [ "$declared" != "$actual" ]; then
+    printf '%sREFUSE: --%s declared, but the candidate %s%s\n' \
+      "$C_RED$C_B" "$declared" "$phrase" "$C_OFF" >&2
+  else
+    return 0
+  fi
+  echo "        pinned:    $old" >&2
+  echo "        candidate: $new" >&2
+  if [ "$actual" = backward ]; then
+    echo "        the commits between are being UN-approved" >&2
+  else
+    echo "        the pinned line of history is being abandoned" >&2
+  fi
+  echo "        declare it to proceed: pinned approve $p --$actual" >&2
+  return 1
+}
+
+# One listing header in the two shapes this script uses: the root ceremony
+# rules its sections off, the pre-sudo preview labels them.
+# $1 = style (rule|label), $2 = the header text.
+_ancestry_hdr() {
+  if [ "$1" = label ]; then
+    printf '%s%s:%s\n' "$C_B" "$2" "$C_OFF"
+  else
+    printf '%s--- %s ---%s\n' "$C_B" "$2" "$C_OFF"
+  fi
+}
+
+# The commits a move covers, listed in the direction that makes them
+# readable. `<pin>..<candidate>` is EMPTY for a candidate that sits behind
+# the pin, and a review that says nothing about what it is about to
+# un-approve is worse than no review; a diverged move has two ranges and no
+# single one of them is the story.
+# $1 = class, $2 = pinned rev, $3 = candidate rev, $4 = merge base (may be
+# empty), $5 = header style, $6 = line prefix.
+print_ancestry_listing() {
+  local cls="$1" old="$2" new="$3" mb="$4" style="${5:-rule}" pre="${6:-}"
+  case "$cls" in
+    backward)
+      _ancestry_hdr "$style" "commits being un-approved"
+      print_commit_range "$new" "$old" "$pre" || true ;;
+    diverged)
+      if [ -z "$mb" ]; then
+        _ancestry_hdr "$style" "no common ancestor in this checkout -- no range to list"
+        return 0
+      fi
+      _ancestry_hdr "$style" "commits being un-approved (leaving the pinned line)"
+      print_commit_range "$mb" "$old" "$pre" || true
+      echo
+      _ancestry_hdr "$style" "commits arriving on the new line"
+      print_commit_range "$mb" "$new" "$pre" || true ;;
+    *)
+      _ancestry_hdr "$style" "commits since last approval"
+      print_commit_range "$old" "$new" "$pre" || true ;;
+  esac
+}
+
+# The floor in one call: classify, gate, announce. Used by both evidence
+# branches of the ceremony and by the pre-sudo preview, so all three refuse
+# the same shapes with the same words.
+#
+# Leaves the class in $ancestry_cls and, for a diverged candidate, the merge
+# base in $ancestry_mb -- the inspect_slot convention (the caller declares
+# them local). Returns 1 when the ceremony must not proceed.
+# $1 = repo path, $2 = pinned rev ('' = first approval), $3 = candidate rev,
+# $4 = declared class ('' = none).
+ancestry_floor() {
+  local repo="$1"
+  ancestry_cls="" ancestry_mb=""
+  if [ -z "$2" ]; then
+    # A first approval classifies nothing: there is no pin for a
+    # relationship to hold against, so a declaration describes nothing.
+    [ -z "$4" ] || {
+      echo "first approval: there is no pin for --$4 to move from" >&2
+      return 1
+    }
+    return 0
+  fi
+  ancestry_cls="$(ancestry_class "$repo" "$2" "$3")"
+  ancestry_gate "$ancestry_cls" "$4" "$2" "$3" "$repo" || return 1
+  case "$ancestry_cls" in
+    diverged)
+      # Tolerated failure: two revs with no common ancestor in this
+      # checkout still have a class, and the alarm says so in words.
+      ancestry_mb="$(sgit merge-base "$2" "$3" 2>/dev/null || true)"
+      print_ancestry_alarm "$ancestry_cls" "$2" "$3" "$ancestry_mb"
+      echo ;;
+    backward)
+      print_ancestry_alarm "$ancestry_cls" "$2" "$3"
+      echo ;;
+  esac
 }
 
 # The plural suffix for a counted noun ("1 commit", "2 commits"). Defined up
@@ -1739,16 +1940,23 @@ default_flake_file() {
   fi
 }
 
-# The system flake's git+file inputs whose CHECKOUT moved past the approved
-# pin: `<path>|<declared-tag-or-empty>` per line -- upgrade's work list and
-# its pre-sudo plan. Only new-commit drift counts: no slot, no checkout, or
-# HEAD at the pin is not this function's business (deploy reports those
-# states), and a malformed slot is skipped here only to refuse loudly in
-# deploy's own read. The declared tag rides along because upgrade must NOT
-# plain-approve a tag-declared slot: a plain approve clears the declaration,
-# and deploy would leave ref= aimed at a tag that no longer names the rev.
+# The system flake's git+file inputs whose CHECKOUT stands somewhere other
+# than the approved pin: `<path>|<declared-tag-or-empty>|<ancestry-class>`
+# per line -- upgrade's work list and its pre-sudo plan. No slot, no
+# checkout, or HEAD at the pin is not this function's business (deploy
+# reports those states), and a malformed slot is skipped here only to refuse
+# loudly in deploy's own read. The declared tag rides along because upgrade
+# must NOT plain-approve a tag-declared slot: a plain approve clears the
+# declaration, and deploy would leave ref= aimed at a tag that no longer
+# names the rev. The class rides along because it is upgrade's FLOOR: only
+# forward inputs may join an automatic ceremony.
+#
+# Staleness is the ancestry class, not a commit count. The old
+# `rev-list --count <pin>..HEAD` test answered 0 for a checkout sitting
+# BEHIND its pin, so a rolled-back working copy read as "nothing to do" and
+# never appeared anywhere; classifying makes that state visible.
 stale_flake_repos() { # <flakefile> [tier-user]
-  local flake="$1" tu="${2:-$(id -un)}" url p r slot approved ahead tag
+  local flake="$1" tu="${2:-$(id -un)}" url p r slot approved head cls tag
   grep -oE 'git\+file:///[^"]+' "$flake" | while IFS= read -r url; do
     p="${url#git+file://}"; p="${p%%\?*}"
     r="$(printf '%s' "$url" | grep -oE '[?&]rev=[0-9a-f]{40,128}' | head -n1 | cut -d= -f2 || true)"
@@ -1760,11 +1968,18 @@ stale_flake_repos() { # <flakefile> [tier-user]
     # without it git's dubious-ownership refusal would silently read every
     # repo as not-stale (same fix sgit carries).
     { [ -d "$p" ] && git -C "$p" -c safe.directory="$p" rev-parse --git-dir >/dev/null 2>&1; } || continue
-    ahead="$(git -C "$p" -c safe.directory="$p" rev-list --count "${approved}..HEAD" 2>/dev/null || echo 0)"
-    { [ "$ahead" != 0 ] && [ "$ahead" != '?' ]; } || continue
+    # A pin the checkout no longer holds cannot be classified against
+    # anything -- deploy's own scan is where that state is reported, with
+    # the accurate wording; guessing a class here would put a remediation
+    # in front of a human that cannot work.
+    git -C "$p" -c safe.directory="$p" cat-file -e "${approved}^{commit}" 2>/dev/null || continue
+    head="$(git -C "$p" -c safe.directory="$p" rev-parse 'HEAD^{commit}' 2>/dev/null || true)"
+    [ -n "$head" ] || continue
+    cls="$(ancestry_class "$p" "$approved" "$head")"
+    [ "$cls" != equal ] || continue
     tag=""
     if [ -f "$slot/tag" ]; then tag="$(cat "$slot/tag" 2>/dev/null || true)"; fi
-    printf '%s|%s\n' "$p" "$tag"
+    printf '%s|%s|%s\n' "$p" "$tag" "$cls"
   done || true
 }
 
@@ -1788,15 +2003,17 @@ head_release_tag() { # <repo-path>
 }
 
 # Render stale_flake_repos output for humans: the approve list (plain
-# repos, and tag-declared ones whose HEAD carries their next release), and
-# the tag-declared remainder as explicit manual work.
+# repos, and tag-declared ones whose HEAD carries their next release), the
+# tag-declared remainder as explicit manual work, and the non-forward
+# checkouts as refused, each with the flag that would declare it.
 print_upgrade_plan() { # <stale-lines>
-  local line p tag ht plain=0
+  local line p tag cls ht plain=0
   if [ -z "$1" ]; then
     printf '%snothing to approve -- every pinned input is at its approved rev%s\n' "$C_DIM" "$C_OFF"
     return 0
   fi
-  while IFS='|' read -r p tag; do
+  while IFS='|' read -r p tag cls; do
+    [ "$cls" = forward ] || continue
     ht=""
     if [ -n "$tag" ]; then
       ht="$(head_release_tag "$p")"
@@ -1815,11 +2032,27 @@ print_upgrade_plan() { # <stale-lines>
   done <<EOF
 $1
 EOF
-  while IFS='|' read -r p tag; do
-    if [ -n "$tag" ] && [ -z "$(head_release_tag "$p")" ]; then
+  while IFS='|' read -r p tag cls; do
+    if [ "$cls" = forward ] && [ -n "$tag" ] && [ -z "$(head_release_tag "$p")" ]; then
       printf '%sskipped:%s %s %s(declared tag %s; no single release tag at HEAD -- approve --tag by hand)%s\n' \
         "$C_YEL" "$C_OFF" "$p" "$C_DIM" "$tag" "$C_OFF"
     fi
+  done <<EOF
+$1
+EOF
+  # The lattice's floor: an automatic ceremony only ever covers a forward
+  # checkout. Un-approving commits, or abandoning the pinned line, is a
+  # declaration a human makes by hand -- so these are named loudly, with
+  # their remediation, and never join the batch below.
+  while IFS='|' read -r p tag cls; do
+    case "$cls" in
+      backward)
+        printf '%srefused:%s %s %s(checkout is BACKWARD of the pin -- approve --backward by hand)%s\n' \
+          "$C_RED$C_B" "$C_OFF" "$p" "$C_DIM" "$C_OFF" ;;
+      diverged)
+        printf '%srefused:%s %s %s(checkout DIVERGED from the pin -- approve --diverged by hand)%s\n' \
+          "$C_RED$C_B" "$C_OFF" "$p" "$C_DIM" "$C_OFF" ;;
+    esac
   done <<EOF
 $1
 EOF
@@ -1881,7 +2114,7 @@ case "$action" in
       # from the object store as root, after sudo.
       if [ "$action" = "approve" ]; then
         preview_repos=() preview_tag="" skip_next=0 want_tag=0 file_mode=0 have_ev=0
-        preview_step=0 preview_trust=0 preview_signed=0
+        preview_step=0 preview_trust=0 preview_signed=0 preview_decl=""
         for a in "$@"; do
           if [ "$want_tag" -eq 1 ]; then preview_tag="$a"; want_tag=0; continue; fi
           if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
@@ -1894,6 +2127,14 @@ case "$action" in
             # A bare flag, not evidence -- it says HOW the review is read,
             # not why the commit is trusted. It still binds to one repo.
             --step) preview_step=1 ;;
+            # Not evidence either: an ancestry DECLARATION says which way
+            # the pin is being moved. It binds to one repo like the rest.
+            --backward|--diverged)
+              case "$preview_decl" in
+                ''|"${a#--}") preview_decl="${a#--}" ;;
+                *) echo "--backward and --diverged declare different relationships; give one" >&2
+                   exit 1 ;;
+              esac ;;
             -*) ;;
             *) preview_repos+=("$a") ;;
           esac
@@ -1917,13 +2158,31 @@ case "$action" in
             echo "--step is a per-commit review walk; signature evidence has no per-commit reading" >&2
             exit 1
           fi
+          if [ -n "$preview_decl" ]; then
+            echo "--step walks the commits between the pin and the endpoint, which only exist going forward;" >&2
+            echo "approve --$preview_decl without --step: the whole-delta diff shows what actually changes" >&2
+            exit 1
+          fi
+        fi
+        # The ancestry declarations' own refusals, mirrored pre-sudo like
+        # --step's. (The classification itself happens per repo below, where
+        # the pin is read.)
+        if [ -n "$preview_decl" ]; then
+          if [ "$file_mode" -eq 1 ]; then
+            echo "--file is its own ceremony; the ancestry declarations do not combine with it" >&2
+            exit 1
+          fi
+          if [ "$preview_trust" -eq 1 ]; then
+            echo "--trust vouches for a first approval; there is no pin to move --$preview_decl from" >&2
+            exit 1
+          fi
         fi
         # Selector and evidence flags name ONE commit of ONE repo, and the
         # step walk is one interactive read of one repo; a batch they cannot
         # bind to dies here, pre-sudo (the root side re-checks).
         if [ "${#preview_repos[@]}" -gt 1 ] \
-          && { [ "$have_ev" -eq 1 ] || [ "$preview_step" -eq 1 ]; }; then
-          echo "--tag, --signed-tag, --trust and --step bind to one repo; approve multiple repos plain" >&2
+          && { [ "$have_ev" -eq 1 ] || [ "$preview_step" -eq 1 ] || [ -n "$preview_decl" ]; }; then
+          echo "--tag, --signed-tag, --trust, --step and the ancestry declarations bind to one repo; approve multiple repos plain" >&2
           exit 1
         fi
         if [ "${#preview_repos[@]}" -gt 0 ] && [ "$file_mode" -eq 0 ]; then
@@ -1959,6 +2218,17 @@ case "$action" in
             all_pinned=0
             [ "$first_prev" -eq 1 ] || echo
             first_prev=0
+            # THE ANCESTRY FLOOR, mirrored: an undeclared backward or
+            # diverged move is refused HERE, so it never costs an
+            # authentication, and a declared one gets its alarm before the
+            # sudo prompt rather than after it. Classification is free
+            # unprivileged -- the pin is world-readable in the tier and the
+            # commit graph is the caller's own checkout. The root side
+            # re-derives all of it and stays the authority.
+            #
+            # An unreadable slot read as "no pin" above simply classifies
+            # nothing here; the root side answers such a slot accurately.
+            ancestry_floor "$repo" "$preview_pin" "$preview_head" "$preview_decl" || exit 1
             printf '%srepo:%s       %s\n' "$C_B" "$C_OFF" "$repo"
             if [ -n "$preview_tag" ]; then
               printf '%stag:%s        %s\n' "$C_B" "$C_OFF" "$preview_tag"
@@ -1970,10 +2240,13 @@ case "$action" in
             fi
             if [ -n "$preview_pin" ]; then
               printf '%spinned:%s     %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_pin" "$C_OFF"
+              if [ -n "$ancestry_mb" ]; then
+                printf '%smerge base:%s %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$ancestry_mb" "$C_OFF"
+              fi
               if [ "$preview_pin" != "$preview_head" ]; then
                 echo
-                printf '%scommits since last approval:%s\n' "$C_B" "$C_OFF"
-                print_commit_range "$preview_pin" "$preview_head" '  ' || true
+                print_ancestry_listing "$ancestry_cls" "$preview_pin" "$preview_head" \
+                  "$ancestry_mb" label '  '
                 if [ "$preview_step" -eq 1 ]; then
                   # Counted with the walk's OWN enumeration, so the number
                   # promised here is the number of confirmations that arrive.
@@ -2136,7 +2409,7 @@ do_approve() {
   # nothing is pinned. k-of-n is the caller demanding whichever k tags they
   # trust.
   local trust=0 repo_args sel_tag="" tag_args files file_base file_ign file_algo=sha256 algo_given=0
-  local store=0 ign_given=0 last step=0
+  local store=0 ign_given=0 last step=0 decl_class=""
   repo_args=(); tag_args=(); files=(); file_base=(); file_ign=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -2157,6 +2430,17 @@ do_approve() {
       # is why the walk always closes with a whole-run summary (the
       # aggregate diffstat over everything approved in one sitting).
       --step)       step=1; shift ;;
+      # The ancestry DECLARATIONS: what the human believes they are
+      # approving. Reality must conform (ancestry_gate) or the ceremony
+      # refuses -- these widen nothing on their own, they only unlock a
+      # ceremony the floor would otherwise refuse.
+      --backward|--diverged)
+        case "$decl_class" in
+          ''|"${1#--}") decl_class="${1#--}" ;;
+          *) echo "--backward and --diverged declare different relationships; give one" >&2
+             exit 1 ;;
+        esac
+        shift ;;
       --file)
         [ $# -ge 2 ] || { echo "--file needs a path" >&2; exit 1; }
         files+=("$2"); file_base+=(""); file_ign+=(""); shift 2 ;;
@@ -2204,8 +2488,8 @@ do_approve() {
   # and the repo walk say nothing about file content.
   if [ "${#files[@]}" -gt 0 ]; then
     if [ "${#repo_args[@]}" -gt 0 ] || [ -n "$sel_tag" ] || [ "$trust" -eq 1 ] \
-      || [ "${#tag_args[@]}" -gt 0 ] || [ "$step" -eq 1 ]; then
-      echo "--file is its own ceremony; repo arguments, evidence flags and --step do not combine with it" >&2
+      || [ "${#tag_args[@]}" -gt 0 ] || [ "$step" -eq 1 ] || [ -n "$decl_class" ]; then
+      echo "--file is its own ceremony; repo arguments, evidence flags, --step and the ancestry declarations do not combine with it" >&2
       exit 1
     fi
     do_approve_files
@@ -2244,14 +2528,29 @@ do_approve() {
       echo "--step is an interactive single-repo walk; it does not run inside a batch approve" >&2
       exit 1
     fi
+    # The walk is a FORWARD reading by construction: it replays the commits
+    # between the pin and the endpoint, oldest first. There are no such
+    # commits to replay when the endpoint sits behind or beside the pin.
+    if [ -n "$decl_class" ]; then
+      echo "--step walks the commits between the pin and the endpoint, which only exist going forward;" >&2
+      echo "approve --$decl_class without --step: the whole-delta diff shows what actually changes" >&2
+      exit 1
+    fi
+  fi
+  # A vouch is a first-approval-only escape from reading the tree; there is
+  # no pin for it to move away from, so it can never meet a declaration.
+  if [ "$trust" -eq 1 ] && [ -n "$decl_class" ]; then
+    echo "--trust vouches for a first approval; there is no pin to move --$decl_class from" >&2
+    exit 1
   fi
   # Selector and evidence flags name ONE commit of ONE repo, and the step
   # walk is one interactive read of one repo; a multi-repo batch is plain
   # review approvals only (the pre-sudo preview refuses the same
   # combination -- this is the authoritative re-check).
   if [ "${#repo_args[@]}" -gt 1 ] \
-    && { [ -n "$sel_tag" ] || [ "$trust" -eq 1 ] || [ "${#tag_args[@]}" -gt 0 ] || [ "$step" -eq 1 ]; }; then
-    echo "--tag, --signed-tag, --trust and --step bind to one repo; approve multiple repos plain" >&2
+    && { [ -n "$sel_tag" ] || [ "$trust" -eq 1 ] || [ "${#tag_args[@]}" -gt 0 ] || [ "$step" -eq 1 ] \
+      || [ -n "$decl_class" ]; }; then
+    echo "--tag, --signed-tag, --trust, --step and the ancestry declarations bind to one repo; approve multiple repos plain" >&2
     exit 1
   fi
 
@@ -2299,7 +2598,7 @@ do_approve() {
       verify_ancestry "$slot" || exit 1
     fi
 
-    local hash old_hash diff_out step_rc
+    local hash old_hash diff_out step_rc ancestry_cls ancestry_mb
     old_hash="$(read_rev "$slot")" || exit 1
     # The walk steps FROM a pin; there is no such thing as a first commit of
     # a tree that already exists. (The preview refuses this pre-sudo too --
@@ -2375,6 +2674,12 @@ do_approve() {
         if [ "$multi" -eq 1 ]; then n_already=$((n_already + 1)); continue; fi
         exit 0
       fi
+      # THE ANCESTRY FLOOR, before a byte of display. A signature proves WHO
+      # vouched, never WHICH WAY the pin is moving, so a replayed signed
+      # release of an older version is exactly the shape the floor exists to
+      # catch -- and a deliberate, declared downgrade to a signed release is
+      # the legitimate manual override it exists to allow.
+      ancestry_floor "$repo" "$old_hash" "$hash" "$decl_class" || exit 1
       printf '%srepo:%s       %s\n' "$C_DIM" "$C_OFF" "$repo"
       for t in "${tag_args[@]}"; do
         printf '%stag:%s     %s  %s✓ signature verified against %s%s\n' "$C_DIM" "$C_OFF" "$t" "$C_GRN" "$signers" "$C_OFF"
@@ -2387,11 +2692,13 @@ do_approve() {
         "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
       if [ -n "$old_hash" ]; then
         printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
+        if [ -n "$ancestry_mb" ]; then
+          printf '%smerge base:%s %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$ancestry_mb" "$C_OFF"
+        fi
         # Free orientation on any machine with the clone (that is, every
         # machine approve runs on); the signature stays the gate.
         echo
-        printf '%s--- commits since last approval ---%s\n' "$C_B" "$C_OFF"
-        print_commit_range "$old_hash" "$hash" || true
+        print_ancestry_listing "$ancestry_cls" "$old_hash" "$hash" "$ancestry_mb"
       fi
     else
       # Human gate: read the diff since the last pin from the object store,
@@ -2412,6 +2719,12 @@ do_approve() {
         exit 0
       fi
 
+      # THE ANCESTRY FLOOR, before a byte of display: a diff renders a
+      # backward move as an honest set of changes, which is exactly why the
+      # direction has to be established first -- the diff cannot say whether
+      # trust is being extended or withdrawn.
+      ancestry_floor "$repo" "$old_hash" "$hash" "$decl_class" || exit 1
+
       printf '%srepo:%s       %s\n' "$C_DIM" "$C_OFF" "$repo"
       if [ -n "$sel_tag" ]; then
         printf '%stag:%s        %s\n' "$C_DIM" "$C_OFF" "$sel_tag"
@@ -2423,9 +2736,11 @@ do_approve() {
       fi
       if [ -n "$old_hash" ]; then
         printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
+        if [ -n "$ancestry_mb" ]; then
+          printf '%smerge base:%s %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$ancestry_mb" "$C_OFF"
+        fi
         echo
-        printf '%s--- commits since last approval ---%s\n' "$C_B" "$C_OFF"
-        print_commit_range "$old_hash" "$hash" || true
+        print_ancestry_listing "$ancestry_cls" "$old_hash" "$hash" "$ancestry_mb"
         if [ "$step" -eq 1 ]; then
           # The walk replaces this whole-delta diff AND the single
           # confirmation below with one of each per commit, and owns the
@@ -2559,11 +2874,14 @@ EOF
   # rewritten, reversed or diverged history. The whole-delta diff renders that
   # situation honestly (it shows the removal); a walk over an empty list would
   # simply say nothing, which is the one thing a review must never do.
+  # The ancestry floor refuses those endpoints before the walk is even
+  # entered, so this is the belt to its braces -- it stays because a walk
+  # that found nothing to show must never continue on that basis.
   if [ "$m" -eq 0 ]; then
     printf '%sERROR: no commits from the pin to %.10s -- the pin is not behind HEAD%s\n' \
       "$C_RED$C_B" "$hash" "$C_OFF" >&2
-    echo "       (reversed or diverged history); approve without --step: the" >&2
-    echo "       whole-delta diff shows what actually changes" >&2
+    echo "       (reversed or diverged history); approve --backward or --diverged" >&2
+    echo "       without --step: the whole-delta diff shows what actually changes" >&2
     return 1
   fi
 
@@ -4626,6 +4944,10 @@ EOF
 # skipped, not fatal: deploy simply keeps its old rev. Tag-declared slots
 # are never plain-approved (that would clear the declaration and strand
 # the input's ref=); they are listed for a manual approve --tag instead.
+# The ancestry floor is the admission rule: only FORWARD checkouts join a
+# ceremony here. Backward and diverged ones are named in the plan with the
+# declaration flag that would approve them by hand -- an automatic round
+# must never un-approve commits or leave the pinned line of history.
 do_upgrade() {
   require_root upgrade
   local args a expect_flake=0 DRY=0 FLAKE_ARG=""
@@ -4651,13 +4973,17 @@ do_upgrade() {
   # is what the ceremonies actually cover. Tag-declared repos join only
   # when HEAD carries their next release (head_release_tag); each of
   # those is its own do_approve call because --tag binds to one repo.
-  local stale p tag ht repos tagged_p tagged_t i
+  local stale p tag cls ht repos tagged_p tagged_t i
   repos=(); tagged_p=(); tagged_t=()
   stale="$(stale_flake_repos "$FLAKE" "$(tier_user)")"
   print_upgrade_plan "$stale"
   echo
   if [ -n "$stale" ]; then
-    while IFS='|' read -r p tag; do
+    while IFS='|' read -r p tag cls; do
+      # The ancestry floor: backward and diverged checkouts are the plan's
+      # refused list and never reach a ceremony (print_upgrade_plan named
+      # them and their by-hand remediation above).
+      [ "$cls" = forward ] || continue
       if [ -z "$tag" ]; then
         repos+=("$p")
       else

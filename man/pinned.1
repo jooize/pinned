@@ -40,7 +40,7 @@ forms, like every reading verb, run unprivileged.
 .SH COMMANDS
 .SS Repository approval
 .TP
-.B approve \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP] [\fB\-\-step\fP]
+.B approve \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP] [\fB\-\-step\fP] [\fB\-\-backward\fP|\fB\-\-diverged\fP]
 (sudo) Review the diff since the last pin (the full tree on a first
 approval), approve, write the pin.
 .I repo
@@ -64,7 +64,61 @@ repo, and a summary line closes the batch.
 .BR \-\-signed\-tag ,
 and
 .B \-\-trust
-bind to a single repo \(em a batch takes plain review approvals only.
+bind to a single repo \(em a batch takes plain review approvals only, and
+so do the ancestry declarations below.
+.IP
+.B THE ANCESTRY LATTICE.
+Before anything is displayed, the candidate commit is classified against
+the recorded pin over the commit graph \(em never by parsing a version
+string, because tag and branch names are repo content and version sort is
+a convention:
+.RS
+.TP
+.B equal
+The candidate is the pin: a no-op, reported as already pinned.
+.TP
+.B forward
+The pin is an ancestor of the candidate: the ordinary approval.
+.TP
+.B backward
+The candidate is an ancestor of the pin: the commits between are being
+UN-approved.
+.TP
+.B diverged
+Neither: the pinned line of history is being abandoned (a rewrite, or a
+side branch).
+.RE
+.IP
+Forward proceeds.
+Backward and diverged REFUSE unless the human declares them with
+.B \-\-backward
+or
+.BR \-\-diverged ,
+and a declaration reality contradicts refuses too, naming the class that
+actually holds \(em declared, never inferred.
+A declaration on a forward candidate is refused as well: there is nothing
+to override.
+A first approval has no pin, so it classifies nothing and takes no
+declaration.
+.IP
+A declared move is loud.
+The ceremony opens with a full-caps alarm banner naming the class and both
+revs, then shows what the move covers in the direction that makes it
+readable: for backward, the commits being un-approved (the reversed
+range); for diverged, the merge base, the commits leaving the pinned line
+and the commits arriving on the new one.
+The authoritative diff still runs, pin to candidate \(em an honest
+rendering of what trust is moving to.
+The classification is mirrored in the pre-sudo preview, so an undeclared
+non-forward move costs no authentication.
+.IP
+The lattice governs CEREMONIES \(em the movement of a pin \(em and
+nothing else:
+.BR verify ,
+.B status
+and
+.B deploy
+answer about a pin already recorded and are unaffected.
 .RS
 .TP
 .BI \-\-tag " tag"
@@ -110,10 +164,37 @@ takes one repo and refuses every combination it cannot mean:
 .BR \-\-file ,
 .BR \-\-trust ,
 .BR \-\-signed\-tag ,
+.BR \-\-backward ,
+.BR \-\-diverged ,
 several repos, a batch approve, and a first approval (which reviews
 the full tree \(em there is nothing to step from).
-A pin that is not behind HEAD (reversed or diverged history) is
-refused too: the whole-delta diff renders that situation honestly.
+A backward or diverged endpoint is refused by the lattice before the walk
+begins: the commits a walk replays only exist going forward, and the
+whole-delta diff of a declared move renders that situation honestly.
+.TP
+.B \-\-backward
+Declare that the candidate is an ANCESTOR of the current pin \(em that
+the commits between are being un-approved.
+Refused unless that is what the commit graph actually shows.
+.TP
+.B \-\-diverged
+Declare that the candidate is NOT on the pinned line of history \(em that
+the line is being abandoned for a rewrite or a side branch.
+Refused unless that is what the commit graph actually shows.
+.IP
+Both declarations bind to one repo and combine with neither each other,
+.BR \-\-step ,
+.BR \-\-trust ,
+nor
+.BR \-\-file .
+They DO combine with
+.B \-\-signed\-tag
+and
+.BR \-\-tag :
+a signature says who vouched, never which way the pin is moving, so a
+replayed signed release of an older version is exactly what the lattice
+exists to catch \(em and a deliberate, declared downgrade to a signed
+release is the legitimate manual override it exists to allow.
 .RE
 .TP
 .B approve \fIrepo\fP \fB\-\-signed\-tag\fP \fItag\fP [\fB\-\-signed\-tag\fP \fItag\fP ...] [\fB\-\-tag\fP \fItag\fP]
@@ -337,6 +418,15 @@ instead.
 There is deliberately no latest-tag search: version sort is a
 convention, and the tag namespace is repo content \(em content must
 never choose what a ceremony reviews.
+.IP
+The ancestry lattice is upgrade's admission rule: only a FORWARD checkout
+joins an automatic ceremony.
+A checkout sitting behind its pin, or off the pinned line entirely, is
+listed as refused with the declaration flag that would approve it by hand
+.RB ( "approve \-\-backward" ,
+.BR "approve \-\-diverged" ).
+A backward checkout was invisible before the lattice \(em the commit-count
+staleness test answered "nothing to do" for it.
 With
 .B \-\-dry\-run
 no ceremony runs and deploy only previews.
