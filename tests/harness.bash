@@ -42,6 +42,11 @@
 #   - signed-tag approval / `signer` / `sign` need an SSH agent and keys
 #   - the group-read tier (0750 root:_<user>-pinned) cannot be built without
 #     root: the stub always takes ensure_tree's no-group 0700 branch
+#   - `add` clones as the harness user directly: the real `sudo -u <invoker>`
+#     drop, and the clone tree's root:_pinned-clones 2775 ownership, need
+#     root -- the stub always takes the no-group branch there too, so what
+#     S15 covers is the clone's scrubbed environment, its provenance rules
+#     and everything downstream of it, never the privilege drop itself
 #   - blake2b/blake3 algorithms are not exercised (sha256 only)
 #   - `review` and `status <repo>` dirty-tree warnings: only status's
 #     approved/never-approved verdicts are covered
@@ -114,6 +119,8 @@ POUT=""
 # fixture state; exporting them would do nothing, since the stub no longer
 # reads the environment for either.
 PINNED_ROOT="$FIX/pinroot"
+# The shared clone tree `add` provisions for url arguments (S15).
+PINNED_CLONES="$FIX/pinclones"
 export INSTALL_TARGET="$FIX/no-such-install"
 # The OPTIONAL machine tier of the ignorable policy, pointed at the fixture
 # instead of /etc/pinned so the harness never reads (or needs) machine state.
@@ -137,16 +144,22 @@ need '^  inv="\${SUDO_USER:-}"$'                            1 'require_root SUDO
 need '^  \[ -n "\$inv" \] ||'                               1 'require_root sudo check'
 need '^    root:\*) ;;$'                                    2 'owner allowlists'
 need '^PINNED_ROOT=/var/db/pinned$'                         1 'pin-root constant'
+need '^PINNED_CLONES=/var/db/pinned-clones$'                1 'clone-tree constant'
 need '^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json$'   1 'machine-policy constant'
 need '^  install -d -m 755 -o root -g wheel "\$PINNED_ROOT"$'  1 'pin-root install'
+need '^  install -d -m 755 -o root -g wheel "\$PINNED_CLONES"$' 1 'clone-tree install'
+need '^    install -d -m 2775 -o root -g "\$PINNED_CLONES_GROUP" "\$CLONE_DIR"$' 1 'clone-dir install (group)'
+need '^    install -d -m 755 -o "\$inv" "\$CLONE_DIR"$'     1 'clone-dir install (no group)'
+need '^  sudo -u "\$inv" env -i PATH="\$PATH" \\$'          1 'clone drops to the invoker'
 need '-o root -g "\$TREE_GRP" '                             4 'slot-tree installs'
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
-need '</dev/tty'                                            12 'ceremony tty reads'
+need '</dev/tty'                                            13 'ceremony tty reads'
 need '^# ---- setup ---'                                    1 'library cut marker'
 
 sed -e "s#^PINNED_ROOT=/var/db/pinned\$#PINNED_ROOT='$PINNED_ROOT'#" \
+    -e "s#^PINNED_CLONES=/var/db/pinned-clones\$#PINNED_CLONES='$PINNED_CLONES'#" \
     -e "s#^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json\$#PINNED_MACHINE_POLICY='$PINNED_MACHINE_POLICY'#" \
     -e 's/if \[ "\$EUID" -ne 0 \]; then/if false; then/' \
     -e 's/^  \[ "\$EUID" -eq 0 \] ||.*/  :/' \
@@ -154,6 +167,10 @@ sed -e "s#^PINNED_ROOT=/var/db/pinned\$#PINNED_ROOT='$PINNED_ROOT'#" \
     -e 's/^  \[ -n "\$inv" \] ||.*/  :/' \
     -e "s/^    root:\\*) ;;\$/    root:*|${USERNAME}:*) ;;/" \
     -e 's/^  install -d -m 755 -o root -g wheel "\$PINNED_ROOT"$/  install -d -m 755 "$PINNED_ROOT"/' \
+    -e 's/^  install -d -m 755 -o root -g wheel "\$PINNED_CLONES"$/  install -d -m 755 "$PINNED_CLONES"/' \
+    -e 's/^\( *\)install -d -m 2775 -o root -g "\$PINNED_CLONES_GROUP" /\1install -d -m 2775 /' \
+    -e 's/^\( *\)install -d -m 755 -o "\$inv" /\1install -d -m 755 /' \
+    -e 's/^  sudo -u "\$inv" env -i /  env -i /' \
     -e 's/-o root -g "\$TREE_GRP" //g' \
     -e 's/^\( *\)chown -R "root:\$TREE_GRP".*/\1:/' \
     -e 's/^\( *\)chown "root:\$TREE_GRP".*/\1:/' \
@@ -167,8 +184,14 @@ chmod 755 "$STUB"
 if grep -q '^PINNED_ROOT=/var/db/pinned$' "$STUB"; then
   say "STUB SED FAILED: the real pin root survives"; exit 2
 fi
+if grep -q '^PINNED_CLONES=/var/db/pinned-clones$' "$STUB"; then
+  say "STUB SED FAILED: the real clone tree survives"; exit 2
+fi
 if grep -q '^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json$' "$STUB"; then
   say "STUB SED FAILED: the real machine policy path survives"; exit 2
+fi
+if grep -q '^  sudo -u "\$inv" env -i ' "$STUB"; then
+  say "STUB SED FAILED: the clone still drops to the invoker via sudo"; exit 2
 fi
 if grep -q '</dev/tty' "$STUB"; then say "STUB SED FAILED: /dev/tty survives"; exit 2; fi
 if [ "$(grep -c 'if false; then' "$STUB")" != 2 ]; then say "STUB SED FAILED: elevation gates"; exit 2; fi
@@ -2705,6 +2728,322 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_contains "$OUT" "HEAD is approved" "and reports the moved record as approved"
 else
   say "S14: repo cases SKIPPED (no git fixture)"
+fi
+
+# ---------------------------------------------------------------------------
+say "S15: add (checkout -> pin -> flake input)"
+# ---------------------------------------------------------------------------
+# add composes three idempotent parts, and the assertions below are mostly
+# about the SEAMS between them: which part is skipped when it is already
+# satisfied, which refusals arrive before a ceremony is ever offered, and
+# what the flake looks like afterwards -- including the placeholder dance
+# (an all-zero rev goes in, the approved rev replaces it), whose whole point
+# is that an interrupted add cannot leave a fetchable-but-unapproved input.
+#
+# The pin ceremony itself is do_approve's and is covered by S8/S8b; here it
+# is driven only far enough to produce the record part 3 reads.
+
+# --- the argument grammar, unit-driven ------------------------------------
+run_probe add_input_name "/Users/x/Projects/pinned"
+assert_eq "$POUT" "pinned" "name: a local path is its last component"
+run_probe add_input_name "https://example.invalid/o/repo.git"
+assert_eq "$POUT" "repo" "name: a url loses its .git suffix"
+run_probe add_input_name "git@example.invalid:owner/thing.git"
+assert_eq "$POUT" "thing" "name: an scp-like remote resolves the same way"
+run_probe add_input_name "ssh://git@example.invalid/a/b/"
+assert_eq "$POUT" "b" "name: a trailing slash names the same repo"
+run_probe add_input_name "git@example.invalid:solo.git"
+assert_eq "$POUT" "solo" "name: an scp-like remote with no slash still resolves"
+
+run_probe validate_input_name "good_name-1"
+assert_exit "$RC" 0 "name grammar: letters, digits, underscore and dash pass"
+run_probe validate_input_name "9lives"
+assert_exit "$RC" 1 "name grammar: a leading digit is refused"
+run_probe validate_input_name "has.dot"
+assert_exit "$RC" 1 "name grammar: a dot is refused (it would split a nix attr path)"
+run_probe validate_input_name "has/slash"
+assert_exit "$RC" 1 "name grammar: a slash is refused (it becomes a directory name)"
+run_probe validate_input_name ""
+assert_exit "$RC" 1 "name grammar: the empty name is refused"
+
+run_probe add_arg_kind "$SUB"
+assert_eq "$POUT" "path" "classify: an existing directory is a checkout"
+run_probe add_arg_kind "https://example.invalid/o/repo.git"
+assert_eq "$POUT" "url" "classify: a scheme url is cloned"
+run_probe add_arg_kind "git@example.invalid:o/repo.git"
+assert_eq "$POUT" "url" "classify: an scp-like remote is cloned"
+run_probe add_arg_kind "$SUB/no-such-dir"
+assert_exit "$RC" 1 "classify: neither reading applies -> refusal"
+assert_contains "$ERRF" "neither an existing directory nor a clonable url" \
+  "the refusal names both readings"
+run_probe add_arg_kind "$SUB/a:b"
+assert_exit "$RC" 1 "classify: a colon after a slash is not a host"
+
+if printf '  nixpkgs.url = "github:NixOS/nixpkgs";\n' | "$PROBE" flake_declares_input nixpkgs; then
+  ok "input detection: <name>.url = ... reads as a declaration"
+else
+  fail "input detection: <name>.url = ... reads as a declaration"
+fi
+if printf '  inputs.nixpkgs.url = "github:NixOS/nixpkgs";\n' | "$PROBE" flake_declares_input nixpkgs; then
+  ok "input detection: inputs.<name>.url = ... reads as a declaration"
+else
+  fail "input detection: inputs.<name>.url = ... reads as a declaration"
+fi
+if printf '  nixpkgs = {\n    url = "x";\n  };\n' | "$PROBE" flake_declares_input nixpkgs; then
+  ok "input detection: <name> = { ... } reads as a declaration"
+else
+  fail "input detection: <name> = { ... } reads as a declaration"
+fi
+if printf '  outputs = { self, nixpkgs }: { };\n' | "$PROBE" flake_declares_input nixpkgs; then
+  fail "input detection: an outputs argument is not a declaration"
+else
+  ok "input detection: an outputs argument is not a declaration"
+fi
+
+if [ "$GIT_OK" -eq 1 ]; then
+  ZEROS=0000000000000000000000000000000000000000
+  new_flake() { # path -- a fixture system flake with the inputs anchor
+    cat > "$1" <<'EOF'
+{
+  description = "harness fixture system flake";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  };
+
+  outputs = { self, nixpkgs }: { };
+}
+EOF
+  }
+
+  # A repo whose COMMITTED flake.nix declares nixpkgs, plus a work tree that
+  # says otherwise: the block must follow the approved tree, never the
+  # editable one.
+  ADD_A="$FIX/add-a"
+  mkdir -p "$ADD_A"
+  bgit "$ADD_A" init -q
+  cat > "$ADD_A/flake.nix" <<'EOF'
+{
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  outputs = { self, nixpkgs }: { };
+}
+EOF
+  bgit "$ADD_A" add flake.nix; bgit "$ADD_A" commit -q -m "flake with nixpkgs"
+  A_REV="$(bgit "$ADD_A" rev-parse 'HEAD^{commit}')"
+  printf '{ outputs = { self }: { }; }\n' > "$ADD_A/flake.nix"   # dirty, not approved
+
+  FL_A="$FIX/add-flake-a.nix"
+  new_flake "$FL_A"
+  ANS='y
+y
+'
+  run_pinned add "$ADD_A" --flake "$FL_A"
+  assert_exit "$RC" 0 "add on a fresh repo exits 0"
+  assert_contains "$OUT" "used in place" "part 1 says the checkout is used as it stands"
+  assert_contains "$OUT" "full tree at" "part 2 is do_approve's own first-approval review"
+  assert_eq "$(cat "$(slot_of "$ADD_A")/rev.git")" "$A_REV" "the ceremony pinned the repo"
+  assert_contains "$OUT" "inputs.nixpkgs.follows" \
+    "the block follows nixpkgs, read from the APPROVED tree (the work tree says otherwise)"
+  assert_contains "$FL_A" "add-a = {" "the input landed under its derived name"
+  assert_contains "$FL_A" "git+file://$ADD_A?ref=refs/heads/main&rev=$A_REV" \
+    "the input url carries the approved rev and the checkout's branch"
+  assert_missing "$FL_A" "rev=$ZEROS" "the placeholder rev is gone"
+  assert_contains "$FL_A" "  inputs = {" "the anchor line survives"
+  assert_eq "$(grep -c 'add-a = {' "$FL_A")" 1 "the block was inserted exactly once"
+  # Insertion point: the block's first line is the one right after the anchor.
+  assert_eq "$(grep -A1 '^  inputs = {$' "$FL_A" | tail -n1)" "    add-a = {" \
+    "the block sits immediately after the inputs anchor"
+  assert_contains "$OUT" "Consuming it stays yours" \
+    "the close says the consuming edit is the human's"
+  assert_contains "$OUT" "pinned deploy" "and names the verb that builds from it"
+
+  # Idempotence: every part already satisfied costs nothing and asks nothing.
+  FL_A_BEFORE="$(digest_of "$FL_A")"
+  ANS=""
+  run_pinned add "$ADD_A" --flake "$FL_A"
+  assert_exit "$RC" 0 "a second add is a no-op that exits 0"
+  assert_contains "$OUT" "nothing to do" "and says so"
+  assert_contains "$OUT" "already approved" "the pin is reported, not re-asked"
+  assert_contains "$OUT" "already names this repo" "and so is the input"
+  assert_eq "$(digest_of "$FL_A")" "$FL_A_BEFORE" "the flake is untouched"
+
+  # An add interrupted between its insert and its rev sync leaves the
+  # placeholder behind. The rerun does not re-edit the flake -- syncing revs
+  # is deploy's one job -- but it must not report that state as "nothing to
+  # do" either. Simulated by putting the placeholder back.
+  sed_i_fix() { if sed --version >/dev/null 2>&1; then sed -i "$@"; else sed -i '' "$@"; fi; }
+  sed_i_fix -e "s/rev=$A_REV/rev=$ZEROS/" "$FL_A"
+  ANS=""
+  run_pinned add "$ADD_A" --flake "$FL_A"
+  assert_exit "$RC" 0 "a flake still holding the placeholder exits 0"
+  assert_contains "$OUT" "does not name the approved rev yet" "the unsynced rev is named"
+  assert_contains "$OUT" "pinned deploy" "and the verb that syncs it is pointed at"
+  assert_contains "$FL_A" "rev=$ZEROS" "add does not do deploy's job behind its back"
+  sed_i_fix -e "s/rev=$ZEROS/rev=$A_REV/" "$FL_A"
+
+  # A name already spoken for, by another path, is the human's to resolve.
+  ADD_B="$FIX/add-b"
+  mkdir -p "$ADD_B"
+  bgit "$ADD_B" init -q; printf 'b\n' > "$ADD_B/f"; bgit "$ADD_B" add f; bgit "$ADD_B" commit -q -m b
+  ANS=""
+  run_pinned add "$ADD_B" --input add-a --flake "$FL_A"
+  assert_exit "$RC" 1 "a name collision is refused"
+  assert_contains "$OUT" "already declares an input named 'add-a'" "the refusal names the collision"
+  assert_eq "$(digest_of "$FL_A")" "$FL_A_BEFORE" "and the flake is untouched"
+  assert_absent "$(slot_of "$ADD_B")/rev.git" "the collision refused BEFORE any ceremony"
+
+  # A repo with no nixpkgs input gets no follows line -- and a decline leaves
+  # the flake byte-identical.
+  FL_B="$FIX/add-flake-b.nix"
+  new_flake "$FL_B"
+  FL_B_BEFORE="$(digest_of "$FL_B")"
+  ANS='y
+n
+'
+  run_pinned add "$ADD_B" --flake "$FL_B"
+  assert_exit "$RC" 2 "declining the input block exits 2"
+  assert_contains "$OUT" "aborted; flake unchanged" "the decline names what stayed put"
+  assert_eq "$(digest_of "$FL_B")" "$FL_B_BEFORE" "the flake is byte-identical after a decline"
+  assert_missing "$OUT" "inputs.nixpkgs.follows" \
+    "a repo with no flake.nix gets no follows line"
+  assert_contains "$OUT" "no flake.nix" "and the note says why nix will refuse it"
+  # The pin the declined run recorded is real trust: it stays.
+  assert_file "$(slot_of "$ADD_B")/rev.git" "the pin the ceremony wrote survives the decline"
+
+  # Rerunning after the decline: the pin is skipped, only the input is asked
+  # for -- one y, not two.
+  ANS='y
+'
+  run_pinned add "$ADD_B" --flake "$FL_B"
+  assert_exit "$RC" 0 "the rerun needs only the input confirmation"
+  assert_contains "$OUT" "no ceremony" "the recorded pin is not re-reviewed"
+  assert_contains "$FL_B" "rev=$(bgit "$ADD_B" rev-parse 'HEAD^{commit}')" \
+    "the input carries the pin recorded earlier"
+
+  # A slot that declares a release name pins the input to that ref.
+  ADD_T="$FIX/add-tagged"
+  mkdir -p "$ADD_T"
+  bgit "$ADD_T" init -q; printf 't\n' > "$ADD_T/f"; bgit "$ADD_T" add f; bgit "$ADD_T" commit -q -m t
+  bgit "$ADD_T" tag v3
+  T_REV="$(bgit "$ADD_T" rev-parse 'HEAD^{commit}')"
+  seed_state "$ADD_T" rev.git "$T_REV"
+  printf 'v3\n' > "$(slot_of "$ADD_T")/tag"
+  FL_T="$FIX/add-flake-t.nix"
+  new_flake "$FL_T"
+  ANS='y
+'
+  run_pinned add "$ADD_T" --flake "$FL_T"
+  assert_exit "$RC" 0 "a tag-declared slot adds fine"
+  assert_contains "$FL_T" "?ref=refs/tags/v3&rev=$T_REV" \
+    "the input's ref names the declared release, not a branch"
+
+  # A detached HEAD with no declared name leaves nothing honest to write.
+  ADD_D="$FIX/add-detached"
+  mkdir -p "$ADD_D"
+  bgit "$ADD_D" init -q; printf 'd1\n' > "$ADD_D/f"; bgit "$ADD_D" add f; bgit "$ADD_D" commit -q -m d1
+  printf 'd2\n' > "$ADD_D/f"; bgit "$ADD_D" commit -q -am d2
+  bgit "$ADD_D" checkout -q --detach HEAD
+  seed_state "$ADD_D" rev.git "$(bgit "$ADD_D" rev-parse 'HEAD^{commit}')"
+  FL_D="$FIX/add-flake-d.nix"
+  new_flake "$FL_D"
+  FL_D_BEFORE="$(digest_of "$FL_D")"
+  ANS=""
+  run_pinned add "$ADD_D" --flake "$FL_D"
+  assert_exit "$RC" 1 "a detached HEAD with no declared tag is refused"
+  assert_contains "$OUT" "detached HEAD" "the refusal names the state"
+  assert_contains "$OUT" "an input needs a ref" "and why an input cannot be written"
+  assert_eq "$(digest_of "$FL_D")" "$FL_D_BEFORE" "the flake is untouched"
+
+  # No anchor, no guessing: the block is printed for by-hand placement.
+  FL_N="$FIX/add-flake-noanchor.nix"
+  printf '{\n  inputs.nixpkgs.url = "github:NixOS/nixpkgs";\n}\n' > "$FL_N"
+  FL_N_BEFORE="$(digest_of "$FL_N")"
+  ANS=""
+  run_pinned add "$ADD_T" --flake "$FL_N"
+  assert_exit "$RC" 1 "a flake without the inputs anchor is refused"
+  assert_contains "$OUT" "refusing to guess where an input belongs" "the refusal says why"
+  assert_contains "$OUT" "rev=$ZEROS" "and prints the block, placeholder and all, to place by hand"
+  assert_eq "$(digest_of "$FL_N")" "$FL_N_BEFORE" "the flake is untouched"
+
+  # A subdirectory is not a repo: resolve_repo's rule holds here too.
+  mkdir -p "$ADD_B/sub"
+  ANS=""
+  run_pinned add "$ADD_B/sub" --flake "$FL_B"
+  assert_exit "$RC" 1 "a subdirectory argument is refused"
+  assert_contains "$OUT" "not the work-tree root" "with the work-tree rule named"
+
+  # --- the url case: a real clone into the shared tree ---------------------
+  # file:// keeps it local while still going through git's transport layer
+  # (a plain path would hardlink instead of fetching).
+  ADD_SRC="$FIX/add-src"
+  mkdir -p "$ADD_SRC"
+  bgit "$ADD_SRC" init -q
+  printf '{\n  inputs.nixpkgs.url = "github:NixOS/nixpkgs";\n  outputs = { self, nixpkgs }: { };\n}\n' > "$ADD_SRC/flake.nix"
+  bgit "$ADD_SRC" add flake.nix; bgit "$ADD_SRC" commit -q -m "src flake"
+  SRC_URL="file://$ADD_SRC"
+  FL_U="$FIX/add-flake-u.nix"
+  new_flake "$FL_U"
+  ANS='y
+y
+'
+  run_pinned add "$SRC_URL" --input cloned --flake "$FL_U"
+  assert_exit "$RC" 0 "add from a url exits 0"
+  assert_contains "$OUT" "cloning:" "the clone is announced before it runs"
+  assert_file "$PINNED_CLONES/cloned/.git/config" "the clone landed in the shared tree"
+  # git lowercases the key when it writes it -- the value is what matters.
+  assert_contains "$PINNED_CLONES/cloned/.git/config" "sharedrepository = group" \
+    "the clone is group-shared at init time"
+  assert_contains "$FL_U" "cloned = {" "the input took the --input name"
+  assert_contains "$FL_U" "git+file://$PINNED_CLONES/cloned?ref=" \
+    "the input names the clone in the shared tree, not the url"
+  assert_missing "$FL_U" "rev=$ZEROS" "the placeholder was synced away"
+  assert_eq "$(cat "$(slot_of "$PINNED_CLONES/cloned")/rev.git")" \
+    "$(bgit "$ADD_SRC" rev-parse 'HEAD^{commit}')" "the clone was pinned at the source's commit"
+
+  # Second run: the destination is reused because its origin matches.
+  ANS=""
+  run_pinned add "$SRC_URL" --input cloned --flake "$FL_U"
+  assert_exit "$RC" 0 "a second url add is a no-op"
+  assert_contains "$OUT" "origin matches, nothing fetched" "the existing clone is reused"
+  assert_contains "$OUT" "nothing to do" "and every part is already satisfied"
+
+  # A destination holding somebody else's clone is never adopted.
+  ANS=""
+  run_pinned add "file://$ADD_B" --input cloned --flake "$FL_U"
+  assert_exit "$RC" 1 "a clone of another remote at the destination is refused"
+  assert_contains "$OUT" "holds a clone of another remote" "the refusal names the mismatch"
+  assert_contains "$OUT" "you asked for: file://$ADD_B" "and both urls"
+
+  # And neither is a directory that is no repository of its own. Git's
+  # discovery walks UP, so a plain directory inside another checkout answers
+  # for THAT checkout -- the clone tree is made a repository here so the
+  # fall-through is deterministic rather than a property of $TMPDIR.
+  mkdir -p "$PINNED_CLONES/squatter"
+  bgit "$PINNED_CLONES" init -q
+  ANS=""
+  run_pinned add "file://$ADD_B" --input squatter --flake "$FL_U"
+  assert_exit "$RC" 1 "a non-repository at the destination is refused"
+  assert_contains "$OUT" "is not a git repository of its own" "the refusal says what it found"
+  rm -rf "$PINNED_CLONES/.git"
+
+  # Bad argv dies before anything is created.
+  ANS=""
+  run_pinned add "$ADD_B" --input "bad name" --flake "$FL_B"
+  assert_exit "$RC" 1 "an out-of-grammar --input is refused"
+  assert_contains "$OUT" "outside the name grammar" "the refusal names the grammar"
+  ANS=""
+  run_pinned add "$ADD_B" "$ADD_A" --flake "$FL_B"
+  assert_exit "$RC" 1 "two positionals are refused"
+  assert_contains "$OUT" "add takes one repo or url" "with the one-argument rule named"
+  ANS=""
+  run_pinned add --flake "$FL_B"
+  assert_exit "$RC" 1 "add with no argument is usage"
+  ANS=""
+  run_pinned add "$ADD_B" --flake "$FIX/no-such-flake.nix"
+  assert_exit "$RC" 1 "an unreadable flake is refused"
+  assert_contains "$OUT" "cannot read" "naming the file it could not read"
+else
+  say "S15: SKIPPED (no git fixture)"
 fi
 
 # ---------------------------------------------------------------------------

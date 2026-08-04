@@ -21,6 +21,7 @@ Actions marked
 .B (sudo)
 run as root.
 .BR approve ,
+.BR add ,
 .BR tombstone ,
 .BR mv ,
 and
@@ -428,6 +429,126 @@ inside it.
 Print the slot directory for any path \(em repo or file, existing or
 not; a name resolver for consumer symlinks and lane payloads, never an
 existence answer.
+.SS Adding a repository
+.TP
+.B add \fIrepo\fP|\fIurl\fP [\fB\-\-input\fP \fIname\fP] [\fB\-\-signed\-tag\fP \fItag\fP] [\fB\-\-flake\fP \fIpath\fP]
+(sudo) Take a repository from "it exists somewhere" to "pinned, and
+declared as an input of the system flake", in three idempotent parts:
+a checkout, a pin, a declaration.
+Each part is skipped with a note when it is already satisfied, so a
+rerun after an interruption picks up exactly where it stopped, and all
+three satisfied is a no-op that exits 0.
+An unprivileged preview names the checkout, the input, the flake and
+the ceremony before the sudo prompt.
+.RS
+.PP
+.B 1. The checkout.
+An argument that is an existing directory is used in place \(em add
+never copies a checkout and never edits one.
+Anything else must be a url
+.RI ( scheme://host/path
+or the scp\-like
+.IR [user@]host:path )
+and is cloned into the shared clone tree,
+.IR /var/db/pinned\-clones/<name> .
+The clone runs as the invoking user, never as root, with a scrubbed
+environment: no user or system git config, no credential helper, and
+.I GIT_ALLOW_PROTOCOL
+limited to file, git, http, https and ssh, which is what shuts out
+.I ext::
+remote helpers (a remote helper is a command line).
+So public https and git remotes work, an agent\-backed ssh remote works
+when your sudoers keeps
+.IR SSH_AUTH_SOCK ,
+and a credentialed https remote does not \(em clone that one by hand and
+add the checkout.
+The url is transport only: trust binds after the fetch, at the ceremony,
+so a wrong or hostile remote is bounded by the review that follows.
+An existing directory at the destination is reused only when it is a
+git repository of its own whose
+.I origin
+is the very url asked for; anything else there is refused rather than
+adopted.
+The clone tree is created root\-owned at the first add; the directory
+itself is group\-writable to the
+.I _pinned\-clones
+operators group, so any configured user can fetch into it later.
+Without that group (a manual install) the clone is owned by the invoker
+alone, which is said loudly \(em content addressing gates trust either
+way, ownership only decides who may update.
+There is no shallow clone: the ancestry lattice and a first approval's
+full\-tree review both need real history.
+.PP
+.B 2. The pin.
+The first\-approval ceremony, run by
+.B approve
+itself \(em add is not a second review path.
+.B \-\-signed\-tag
+rides through to it unchanged, with approve's own semantics (repeatable,
+every named tag must verify and name the same commit), so a repository
+whose release is signed by an installed signer key can be added without
+reading the tree.
+A repository that already carries a pin keeps it: the ceremony is
+skipped, and the input is declared at the rev already approved.
+.PP
+.B 3. The declaration.
+The system flake gains one input block, shown in full and confirmed
+before a byte of the file is touched:
+.PP
+.nf
+    <name> = {
+      url = "git+file://<path>?ref=<ref>&rev=<rev>";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+.fi
+.PP
+.I <name>
+is
+.B \-\-input
+or, by default, the last path component of the argument without a
+trailing
+.IR .git ;
+it must match
+.I [A\-Za\-z_][A\-Za\-z0\-9_\-]*
+because it becomes both a nix attribute and a directory name.
+.I <ref>
+is the release the slot declares
+.RI ( refs/tags/<tag> )
+or else the checkout's own branch; a detached HEAD with no declared tag
+is refused, because an input needs a ref.
+The follows line is present only when the approved tree's own
+.I flake.nix
+declares a nixpkgs input \(em read from the object store at the pinned
+rev, never from the work tree.
+The block goes in immediately after the flake's
+.RI \(dq "  inputs = {" \(dq
+line; without that anchor add refuses and prints the block for you to
+place by hand.
+Everything outside the inserted block is preserved byte for byte.
+.PP
+.B The placeholder dance.
+The block is written with an all\-zero rev and only then synced to the
+approved one, through the same in\-place editor
+.B deploy
+uses.
+An add interrupted between the two leaves an input that can never be
+fetched, so the next rebuild fails loudly \(em an interruption cannot
+leave a floating ref that quietly builds unapproved content.
+A rerun says the declared input does not name the approved rev yet and
+points at
+.BR deploy ,
+whose one job is syncing revs; add never does that job behind its back.
+.PP
+Consuming the input stays a human edit: add declares it and never writes
+into the repositories it gates, because a tool that edited them would be
+approving its own changes.
+Wire the input up (a module import, an overlay, whatever it feeds), then
+run
+.B pinned deploy
+to build from it.
+Declining the input block exits 2 with the flake unchanged; a pin
+recorded by part 2 stays, because the trust it records is real.
+.RE
 .SS Deployment
 .TP
 .B deploy [\-\-dry\-run] [\-\-yes] [\-\-flake \fIpath\fP]
@@ -555,6 +676,14 @@ readable to that user through the
 .I _<user>\-pinned
 group.
 .TP
+.I /var/db/pinned\-clones
+Shared clone tree, one directory per input added by url.
+Created root-owned at the first
+.BR add ,
+group
+.I _pinned\-clones
+where that group exists.
+.TP
 .I /etc/pinned/ignorable.json
 Machine tier of the ignorable-key policy.
 .TP
@@ -591,6 +720,13 @@ The same, selectively:
 .nf
     pinned approve ~/Projects/some\-repo ~/Projects/other\-repo
     pinned deploy
+.fi
+.PP
+Take a new repository all the way to a declared flake input \(em clone,
+review, declare:
+.PP
+.nf
+    pinned add https://example.org/o/thing.git
 .fi
 .PP
 Pin a config file, keeping a served witness and tolerating one key:

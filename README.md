@@ -113,6 +113,29 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       answer (exit 1 only if the path
                                       cannot be resolved)
 
+    pinned add <repo|url> [--input <name>] [--signed-tag <tag>] [--flake <path>]
+                                      checkout -> pin -> flake input, in
+                                      three idempotent parts, each skipped
+                                      with a note when already satisfied
+                                      (all three satisfied: nothing to do):
+                                      an existing directory is used in
+                                      place, a url is cloned into
+                                      /var/db/pinned-clones as you (never
+                                      as root, scrubbed environment); the
+                                      pin comes from approve's own
+                                      ceremony (--signed-tag rides through
+                                      to it); the input block is shown in
+                                      full and confirmed before the system
+                                      flake is touched -- written with an
+                                      all-zero rev and synced to the pin
+                                      right after, so an interrupted add
+                                      leaves an input that cannot be
+                                      fetched rather than one that floats.
+                                      Wiring the input into a
+                                      configuration stays your edit:
+                                      pinned never writes into the repos
+                                      it gates
+
     pinned deploy [--dry-run] [--yes] [--flake <path>]
                                       sync every git+file input of the
                                       system flake to its approved rev
@@ -143,9 +166,9 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       ones are listed as refused with the
                                       flag that would declare them
 
-approve, setup, tombstone, mv, upgrade, signer add/remove and ignorable
-add/remove self-elevate via sudo (re-exec of the installed root-owned
-binary).
+approve, add, setup, tombstone, mv, upgrade, signer add/remove and
+ignorable add/remove self-elevate via sudo (re-exec of the installed
+root-owned binary).
 sign, review and cat
 run as you: sign needs your SSH agent, review and cat write nothing. The
 verb triple: `review` rehearses (no record), `approve` records, `verify`
@@ -436,6 +459,50 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   digest attests the deployer too. Run the installed root-owned copy --
   deploy composes the exact commands that run as root, so a
   user-writable copy is a user-writable root command line.
+- **`add` composes; it decides nothing.** One verb carries a repo from
+  "it exists somewhere" to "pinned and declared as a flake input", in
+  three idempotent parts -- checkout, pin, declaration -- each skipped
+  with a note when it is already satisfied, so an interrupted run is
+  resumed by rerunning it. The pin is `approve`'s own ceremony, called
+  as-is (`--signed-tag` rides through to it): a second review path
+  would be a second thing to audit. The flake edit reuses deploy's
+  in-place editor. What add adds is the seams between them, and each
+  seam is a refusal: a name already spoken for by another path, a
+  detached HEAD with no declared tag (an input needs a ref), a flake
+  with no `inputs = {` anchor (the block is printed for by-hand
+  placement instead), a clone destination whose `origin` is not the url
+  asked for. The `follows` line is written only when the *approved*
+  tree's `flake.nix` declares a nixpkgs input -- read from the object
+  store at the pinned rev, never from the editable work tree.
+- **The placeholder dance.** `add` writes its input block with a rev of
+  forty zeros and only then syncs it to the approved hash. A crash
+  between the two leaves an input that can never be fetched, so the
+  next rebuild fails loudly -- where a floating `ref=` would have
+  quietly built whatever the branch happened to point at. Fail closed
+  is cheaper than fail correct. A rerun of `add` reports the unsynced
+  input and points at `deploy`, whose one job is syncing revs; add
+  never does that job behind its back.
+- **A url is transport; the ceremony is trust.** `add <url>` clones into
+  the shared tree `/var/db/pinned-clones/<name>` -- as the invoking
+  user, never as root: root supervises the directory, git does the
+  networking unprivileged, with no user config, no credential helper,
+  and `GIT_ALLOW_PROTOCOL` cut down to file/git/http/https/ssh (which
+  is what shuts out `ext::`, where a "url" is a command line). A
+  redirected or hostile remote is bounded by the review that follows,
+  because trust binds after the fetch. The destination is reused only
+  when it already holds a repository of its own whose `origin` is the
+  url asked for; anything else is refused, never adopted. Clones are
+  group-owned (`_pinned-clones`, declared by the nix module) so several
+  operators share one checkout; without the group the clone belongs to
+  the invoker and says so -- content addressing gates trust either way,
+  so availability wins here, unlike the record tree, where an absent
+  group fails closed to root-only.
+- **`add` never edits a consuming repo.** It declares the input and
+  stops. Wiring that input into a configuration -- a module import, an
+  overlay, an anchor template's mirror -- stays a human edit, because a
+  tool that wrote into the repositories it gates would be approving its
+  own changes. The close of a successful add says so and points at
+  `pinned deploy`.
 - Rendered diffs are never trusted blindly, in three layers: every git
   call sets `attr.tree` to the empty tree (so no `.gitattributes` can
   select a driver or filter for any subcommand -- the only repo-wide
@@ -673,7 +740,13 @@ for that:
    The module installs the script into the system profile and writes
    /etc/sudoers.d/pinned with an eval-time sha256 of the exact bytes
    it installs -- digest and binary derive from one source in one
-   build, so they can never disagree. nix/module.nix is short: read it.
+   build, so they can never disagree. It also declares the two groups
+   the script consumes but never creates: `_<user>-pinned`, which makes
+   that user's record tier readable, and `_pinned-clones`, the
+   operators of the shared clone tree `pinned add <url>` fetches into.
+   Neither directory is created here -- the script provisions both
+   root-side, so a manual install lands on the same paths.
+   nix/module.nix is short: read it.
 
 3. Deploy (gated, builds the approved rev). The store-installed binary
    takes over; the bootstrap copy at /usr/local/sbin/pinned can be

@@ -35,12 +35,19 @@
 #   pinned ignorable add|remove|list          which keys a ceremony may declare
 #                                             ignored, and where (the policy)
 #   pinned status <repo|file>                 record vs live state
+#   pinned add <repo|url>                     checkout (clone if a url) ->
+#                                             approve -> declare the repo as
+#                                             a git+file input of the system
+#                                             flake (--input <name>,
+#                                             --signed-tag <t> for the
+#                                             signature gate); every part is
+#                                             skipped when already satisfied
 #   pinned deploy [--dry-run]                 sync flake inputs to approved revs, rebuild
 #   pinned setup [--yes]                      provision sudoers digest pin; self-install
 #
-# approve, setup, tombstone, mv, signer add/remove and ignorable add/remove
-# self-elevate via sudo (re-exec of the installed root-owned binary);
-# sign runs as the user because it needs the SSH agent.
+# approve, add, setup, tombstone, mv, signer add/remove and ignorable
+# add/remove self-elevate via sudo (re-exec of the installed root-owned
+# binary); sign runs as the user because it needs the SSH agent.
 #
 # approve runs root-owned code end to end: it resolves the rev to a hash, shows
 # the diff from the OBJECT STORE (scrubbed env, no user git config, no pager,
@@ -172,6 +179,24 @@ set -euo pipefail
 # it on one line in this shape.
 PINNED_ROOT=/var/db/pinned
 
+# Where `add` clones a repo named by url. A compile-time constant for the
+# same reason as PINNED_ROOT, and ONE literal spelling on both platforms
+# (the records already chose one spelling over per-platform FHS purity, and
+# a misported second name would silently give a machine two clone trees).
+# The tree is root-owned and provisioned at the first `add` -- deliberately
+# not by the nix module, so a manual install lands on the same path.
+# The harness rewrites this exact line too.
+PINNED_CLONES=/var/db/pinned-clones
+
+# The operators group of that tree: everyone allowed to fetch into the
+# shared clones. CONSUMED, never created -- the system configuration
+# provisions it (nix/module.nix declares it on both platforms), and its
+# absence degrades to a clone owned by the invoker (see do_add): content
+# addressing gates trust, ownership only decides who may update, so
+# availability wins here -- unlike the record tree, where absence fails
+# closed to root-only.
+PINNED_CLONES_GROUP=_pinned-clones
+
 # The OPTIONAL machine tier of the ignorable policy. Absent = no machine
 # constraint (the user tier stands alone); the FILE is the interface, so a
 # configuration manager can declare it (nix: environment.etc) without this
@@ -242,6 +267,7 @@ usage: pinned <action> [args]
   review <file|repo> [options]   trusted re-display; files get hash + wrapper
   list [--under <dir>]           live pins in your tier
   slot <path>                    print the slot directory for a path
+  add <repo|url> [options]       (sudo) clone if needed, approve, declare as a flake input
   deploy [--dry-run] [--yes]     sync system flake inputs to approved revs, rebuild
   upgrade [--dry-run] [--yes]    (sudo) approve every stale flake input, then deploy
   setup [--yes]                  (sudo) provision sudoers digest pin; self-install
@@ -1294,6 +1320,75 @@ validate_tag_name() {
   return 0
 }
 
+# ---- add: argument grammar (pure, so the preview and the root side share it)
+
+# What `add` was handed, printed as one word: `path` for a directory that
+# already exists (used IN PLACE -- add never copies or edits a checkout), or
+# `url` for something to clone. An argument that is neither names both
+# readings in its refusal, because "no such directory" alone would hide the
+# other half of the grammar.
+#
+# The directory test comes FIRST: a local path is unambiguous and cannot be
+# redirected anywhere, so nothing that exists is ever fetched over a network.
+add_arg_kind() {
+  [ -n "$1" ] || return 1
+  if [ -d "$1" ]; then printf 'path\n'; return 0; fi
+  case "$1" in
+    *://*) printf 'url\n'; return 0 ;;
+    # git's other remote spelling, [user@]host:path. The colon must come
+    # before the first slash, or /var/tmp/a:b would read as host `/var/tmp/a`.
+    *:*)
+      case "${1%%:*}" in
+        ''|*/*) ;;
+        *) printf 'url\n'; return 0 ;;
+      esac ;;
+  esac
+  echo "ERROR: '$1' is neither an existing directory nor a clonable url" >&2
+  echo "       directory: the checkout to pin, used in place" >&2
+  echo "       url:       scheme://host/path or [user@]host:path, cloned into $PINNED_CLONES" >&2
+  return 1
+}
+
+# The default name for the flake attribute and (for a url) the clone
+# directory: the last path component, without a trailing .git. Both remote
+# spellings end in the same component, so one derivation covers them.
+add_input_name() {
+  local n="$1"
+  n="${n%/}"        # a trailing slash names the same repo
+  n="${n##*/}"
+  n="${n##*:}"      # scp-like remotes carry no slash before the colon
+  n="${n%.git}"
+  printf '%s\n' "$n"
+}
+
+# The name grammar, fail-closed on both of its uses: the name is spliced
+# into a nix attribute path AND into a root-owned directory name under
+# $PINNED_CLONES. Deliberately narrower than nix's own identifier rules
+# (which admit quoted anything) -- a name outside this set is typed
+# differently, not admitted by loosening the check. Validated names are also
+# regex-safe, which is what lets flake_declares_input below interpolate one.
+validate_input_name() {
+  case "$1" in
+    ''|[!A-Za-z_]*) return 1 ;;
+    *[!A-Za-z0-9_-]*) return 1 ;;
+  esac
+  return 0
+}
+
+# Does the flake source on stdin declare an input by this name? A HEURISTIC
+# over nix source -- pinned parses no nix -- matching the three spellings a
+# hand-written flake uses at the start of a line:
+#     inputs.<name>.url = ...      <name>.url = ...      <name> = {
+# It is used for two questions, and both fail SAFE rather than silently:
+# a name collision in the system flake (refused; a false positive costs the
+# human one rename), and whether an approved repo declares a `nixpkgs` input
+# (which decides only whether the added block carries a follows line -- and
+# nix itself errors loudly at eval if that guess is wrong).
+# $1 must have passed validate_input_name: no regex metacharacter survives it.
+flake_declares_input() {
+  grep -qE "^[[:space:]]*(inputs\.)?$1([[:space:]]*=|\.[A-Za-z0-9_.-]+[[:space:]]*=)"
+}
+
 # ---- ignored keys (verify-side tolerance) ----------------------------------
 #
 # A file slot may declare `ignored.<format>`: keys whose later drift verify
@@ -1949,7 +2044,19 @@ elevation_cmd_disp() { # elev action args...
   printf '%s' "$out"
 }
 
-# Per-OS system flake file; deploy and upgrade share one default.
+# The in-place editor every flake write goes through: sed, not perl -- sed
+# is POSIX-everywhere while perl is not guaranteed (minimal NixOS). Only the
+# -i spelling differs by flavor (GNU: -i; BSD: -i ''), detected like stat
+# above. Sets SED_I in the CALLER's scope, which both callers declare local:
+# deploy syncs a stale rev= to its pin, add syncs its placeholder to the rev
+# just approved, and the two must not drift into two spellings of the same
+# edit. Expressions stay safe as literals because every operand is validated
+# hex or a regex-escaped path.
+set_sed_i() {
+  if sed --version >/dev/null 2>&1; then SED_I=(sed -i); else SED_I=(sed -i ''); fi
+}
+
+# Per-OS system flake file; deploy, upgrade and add share one default.
 default_flake_file() {
   if [ "$(uname -s)" = Darwin ]; then
     printf '/etc/nix-darwin/flake.nix'
@@ -2339,7 +2446,7 @@ EOF
 # back to this script's own path. Sits after the helper definitions so the
 # approve preview below can reuse them.
 case "$action" in
-  approve|setup|tombstone|upgrade|mv)
+  approve|add|setup|tombstone|upgrade|mv)
     if [ "$EUID" -ne 0 ]; then
       # tombstone without exactly its <path> can only ever reach usage --
       # fail here, before authentication costs a sudo prompt.
@@ -2579,6 +2686,93 @@ case "$action" in
           echo
         fi
       fi
+      # add: orientation for each of the three parts -- which checkout, which
+      # ceremony, which flake -- so the sudo prompt never arrives
+      # context-free. Argv that can only ever reach a root-side argument
+      # error dies here, before authentication costs a prompt. Everything
+      # below is re-derived as root after sudo, which stays the authority.
+      if [ "$action" = "add" ]; then
+        add_arg="" add_name="" add_flake="" add_want="" add_signed=0
+        for a in "$@"; do
+          if [ -n "$add_want" ]; then
+            # The token is the flag's own name, so a value missing at the
+            # end of argv is named accurately in the refusal below.
+            case "$add_want" in
+              input) add_name="$a" ;;
+              flake) add_flake="$a" ;;
+            esac
+            add_want=""; continue
+          fi
+          case "$a" in
+            --input) add_want=input ;;
+            --flake) add_want=flake ;;
+            --signed-tag) add_signed=1; add_want=signed-tag ;;
+            -*) usage ;;
+            *)
+              [ -z "$add_arg" ] || { echo "add takes one repo or url" >&2; exit 1; }
+              add_arg="$a" ;;
+          esac
+        done
+        # Word for word what the root side says, so a refusal reads the same
+        # whichever half of the verb produced it.
+        if [ -n "$add_want" ]; then
+          case "$add_want" in
+            input)      echo "--input needs a name" >&2 ;;
+            flake)      echo "--flake needs a path" >&2 ;;
+            signed-tag) echo "--signed-tag needs a tag" >&2 ;;
+          esac
+          exit 1
+        fi
+        [ -n "$add_arg" ] || usage
+        add_kind="$(add_arg_kind "$add_arg")" || exit 1
+        [ -n "$add_name" ] || add_name="$(add_input_name "$add_arg")"
+        validate_input_name "$add_name" || {
+          echo "ERROR: input name '$add_name' is outside the name grammar [A-Za-z_][A-Za-z0-9_-]*" >&2
+          echo "       it becomes a nix attribute and a root-owned directory name; pass --input <name>" >&2
+          exit 1
+        }
+        [ -n "$add_flake" ] || add_flake="$(default_flake_file)"
+        [ -r "$add_flake" ] || {
+          printf '%serror: cannot read %s -- pass --flake%s\n' "$C_RED" "$add_flake" "$C_OFF" >&2
+          exit 1
+        }
+        if [ "$add_kind" = path ]; then
+          add_checkout="$(canon_path "$add_arg")" || exit 1
+          printf '%sargument:%s   %s  %s(existing checkout, used in place)%s\n' \
+            "$C_B" "$C_OFF" "$add_arg" "$C_DIM" "$C_OFF"
+        else
+          add_checkout="$PINNED_CLONES/$add_name"
+          if [ -d "$add_checkout" ]; then
+            printf '%sargument:%s   %s  %s(url; a clone is already at the destination)%s\n' \
+              "$C_B" "$C_OFF" "$add_arg" "$C_DIM" "$C_OFF"
+          else
+            printf '%sargument:%s   %s  %s(url; cloned as %s, never as root)%s\n' \
+              "$C_B" "$C_OFF" "$add_arg" "$C_DIM" "$(id -un)" "$C_OFF"
+          fi
+        fi
+        printf '%scheckout:%s   %s\n' "$C_B" "$C_OFF" "$add_checkout"
+        printf '%sinput:%s      %s\n' "$C_B" "$C_OFF" "$add_name"
+        printf '%sflake:%s      %s\n' "$C_B" "$C_OFF" "$add_flake"
+        # Errors silenced: the tier is root-only until the group exists, so
+        # an unreadable slot simply reads as "no pin" here.
+        add_pin=""
+        if [ -d "$add_checkout" ]; then
+          add_pin="$(read_rev "$(slot_dir_for "$(tier_user)" "$(canon_path "$add_checkout")")" 2>/dev/null)" \
+            || add_pin=""
+        fi
+        if [ -n "$add_pin" ]; then
+          printf '%sceremony:%s   %s(none -- already pinned at %s)%s\n' \
+            "$C_B" "$C_OFF" "$C_DIM" "${add_pin:0:10}" "$C_OFF"
+        elif [ "$add_signed" -eq 1 ]; then
+          printf '%sceremony:%s   signature gate %s(the named tags must verify against your allowed signers)%s\n' \
+            "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
+        else
+          printf '%sceremony:%s   first approval %s(full-tree review)%s\n' \
+            "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
+        fi
+        printf '%sThen: the input block, shown in full and confirmed before the flake is touched%s\n\n' \
+          "$C_DIM" "$C_OFF"
+      fi
       elev="$INSTALL_TARGET"
       if [ -x "$elev" ]; then
         # Refuse to hand sudo a target that is not root-owned end to end.
@@ -2620,7 +2814,8 @@ case "$action" in
       # deploy's shape: the exact command, one highlighted headline, dim
       # details separating what was checked here (root ownership) from
       # what the system enforces at exec (the sudoers digest).
-      if { [ "$action" = "approve" ] || [ "$action" = "upgrade" ]; } && [ "$elev" = "$INSTALL_TARGET" ]; then
+      if { [ "$action" = "approve" ] || [ "$action" = "upgrade" ] || [ "$action" = "add" ]; } \
+        && [ "$elev" = "$INSTALL_TARGET" ]; then
         cmd_disp="$(elevation_cmd_disp "$elev" "$action" "$@")"
         printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
         printf '  %s\n\n' "$cmd_disp"
@@ -5370,13 +5565,10 @@ do_deploy() {
 $inputs
 EOF
 
-  # In-place editor: sed, not perl -- sed is POSIX-everywhere while perl is
-  # not guaranteed (minimal NixOS). Only the -i spelling differs by flavor
-  # (GNU: -i; BSD: -i ''), detected like stat above; the expressions are
-  # safe as literals because both revs are validated hex. Each stale input
-  # contributes one -e expression to a single invocation.
+  # The shared in-place editor (set_sed_i); each stale input contributes one
+  # -e expression to a single invocation.
   local SED_I=()
-  if sed --version >/dev/null 2>&1; then SED_I=(sed -i); else SED_I=(sed -i ''); fi
+  set_sed_i
 
   local sed_exprs=() updates=0 unpinned=0 slot approved ahead
   local decl_tag want_ref ref_stale live_tag tag_detail esc
@@ -5662,8 +5854,365 @@ EOF
   do_deploy ${args[@]+"${args[@]}"}
 }
 
+# ---- add -------------------------------------------------------------------
+
+# Part 1 for a url argument: the shared clone tree at $PINNED_CLONES.
+# Sets CLONE_DIR. Root supervises; git never runs as root here.
+#
+# THE URL IS TRANSPORT, NOTHING ELSE. Trust binds AFTER the fetch -- the
+# ceremony reviews the tree, or a signature gates it -- so a redirected,
+# hostile or simply wrong remote is bounded by the review that follows, not
+# by how the bytes arrived. What the fetch must not do is EXECUTE anything:
+# GIT_ALLOW_PROTOCOL keeps git to the four transports below, which is what
+# shuts out `ext::` (a remote helper is a command line), and the scrubbed
+# HOME means no user git config and no credential helper participates.
+# Consequences worth knowing: public https/git works, agent-backed ssh works
+# when the socket survives sudo, and credentialed https does not -- clone
+# that one by hand and `pinned add <path>` the checkout.
+add_clone() { # <url> <name>
+  CLONE_DIR="$PINNED_CLONES/$2"
+  local origin rc=0
+  if [ -e "$CLONE_DIR" ]; then
+    # An existing destination is REUSED only when its provenance matches:
+    # same url, in a real repository. Anything else is unexplained state
+    # that a trust tool must not adopt on a hunch.
+    [ -d "$CLONE_DIR" ] \
+      || { echo "ERROR: $CLONE_DIR exists and is not a directory; refusing" >&2; exit 1; }
+    # --show-toplevel, and it must be this very directory: git's repository
+    # discovery walks UP, so a plain directory sitting inside some other
+    # checkout answers for that checkout instead. Reading a parent's origin
+    # here would compare the wrong remote entirely.
+    local top=""
+    top="$(git -C "$CLONE_DIR" -c safe.directory="$CLONE_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -z "$top" ] || [ "$(canon_path "$top")" != "$(canon_path "$CLONE_DIR")" ]; then
+      echo "ERROR: $CLONE_DIR exists but is not a git repository of its own; refusing" >&2
+      echo "       inspect it, move it aside, or name another input with --input" >&2
+      exit 1
+    fi
+    origin="$(git -C "$CLONE_DIR" -c safe.directory="$CLONE_DIR" config --get remote.origin.url 2>/dev/null || true)"
+    if [ "$origin" != "$1" ]; then
+      echo "ERROR: $CLONE_DIR holds a clone of another remote; refusing" >&2
+      printf '       its origin:    %s\n' "${origin:-(none)}" >&2
+      printf '       you asked for: %s\n' "$1" >&2
+      exit 1
+    fi
+    printf '%s✓ clone:%s    %s %s(already here; origin matches, nothing fetched)%s\n' \
+      "$C_GRN" "$C_OFF" "$CLONE_DIR" "$C_DIM" "$C_OFF"
+    return 0
+  fi
+  install -d -m 755 -o root -g wheel "$PINNED_CLONES"
+  if group_exists "$PINNED_CLONES_GROUP"; then
+    # Group-writable, because updating the clone is what operators do, and
+    # setgid so that later objects carry the group on Linux too -- BSD
+    # directories inherit their parent's group natively, Linux ones only
+    # with this bit.
+    install -d -m 2775 -o root -g "$PINNED_CLONES_GROUP" "$CLONE_DIR"
+  else
+    printf '%swarning: group %s does not exist -- %s will be owned by %s alone%s\n' \
+      "$C_YEL" "$PINNED_CLONES_GROUP" "$CLONE_DIR" "$inv" "$C_OFF" >&2
+    printf '%s         sharing the clone with other operators needs that group; the system\n' "$C_YEL" >&2
+    printf '         configuration declares it (nix: security.pinned)%s\n' "$C_OFF" >&2
+    install -d -m 755 -o "$inv" "$CLONE_DIR"
+  fi
+  printf '%scloning:%s    %s\n' "$C_DIM" "$C_OFF" "$1"
+  # AS THE INVOKER, never as root: root's job here is the directory, not the
+  # network. core.sharedRepository=group lands in the new repo's config at
+  # init time, so later fetches by another operator leave readable objects.
+  # No --depth: the ancestry lattice and the full-tree review of a first
+  # approval both need real history.
+  # SSH_AUTH_SOCK survives to here only if your sudoers keeps it; without it
+  # an agent-backed remote cannot authenticate, which is the by-hand case.
+  sudo -u "$inv" env -i PATH="$PATH" \
+    GIT_CONFIG_NOSYSTEM=1 HOME=/var/empty \
+    SSH_AUTH_SOCK="${SSH_AUTH_SOCK:-}" \
+    GIT_ALLOW_PROTOCOL=file:git:http:https:ssh \
+    git clone --config core.sharedRepository=group -- "$1" "$CLONE_DIR" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "ERROR: clone failed; nothing was pinned or declared" >&2
+    if rmdir "$CLONE_DIR" 2>/dev/null; then
+      echo "       removed the empty $CLONE_DIR" >&2
+    else
+      echo "       $CLONE_DIR holds a partial clone; inspect and remove it by hand" >&2
+    fi
+    exit 1
+  fi
+  printf '%s✓ cloned:%s   %s\n' "$C_GRN" "$C_OFF" "$CLONE_DIR"
+}
+
+# One verb from "this repo exists somewhere" to "pinned, and declared as an
+# input of the system flake", in three idempotent parts -- a checkout, a
+# pin, a declaration -- each skipped with a note when it is already
+# satisfied, and all three satisfied meaning there is nothing to do.
+#
+# NOTHING HERE IS A SECOND REVIEW PATH: the pin comes from do_approve, the
+# same ceremony `pinned approve` runs, and the flake edit reuses deploy's
+# in-place editor. add composes; it decides nothing about trust on its own.
+#
+# add never edits a CONSUMING repo. Wiring the input into a configuration
+# (module imports, overlays, an anchor template's mirror) stays a human
+# edit, because a tool that wrote into the repos it gates would be
+# approving its own changes.
+#
+# THE PLACEHOLDER DANCE. The block is written with an all-zero rev and only
+# then synced to the approved one. A crash between the two leaves a rev that
+# can never be fetched, so the next rebuild fails loudly instead of building
+# whatever a floating ref happens to point at -- the interruption fails
+# closed, and the shape is the one nix-config's anchor template documents.
+do_add() {
+  require_root add
+
+  local arg="" name="" flake_arg="" tag_args
+  tag_args=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --input)
+        [ $# -ge 2 ] || { echo "--input needs a name" >&2; exit 1; }
+        [ -z "$name" ] || { echo "--input may be given once (it names one input)" >&2; exit 1; }
+        name="$2"; shift 2 ;;
+      # Rides through to the ceremony unchanged, with approve's own
+      # semantics: repeatable, and every named tag must verify AND name the
+      # same commit (threshold multisig).
+      --signed-tag)
+        [ $# -ge 2 ] || { echo "--signed-tag needs a tag" >&2; exit 1; }
+        tag_args+=(--signed-tag "$2"); shift 2 ;;
+      --flake)
+        [ $# -ge 2 ] || { echo "--flake needs a path" >&2; exit 1; }
+        flake_arg="$2"; shift 2 ;;
+      -*) usage ;;
+      *)
+        [ -z "$arg" ] || { echo "add takes one repo or url" >&2; exit 1; }
+        arg="$1"; shift ;;
+    esac
+  done
+  [ -n "$arg" ] || usage
+
+  local kind
+  kind="$(add_arg_kind "$arg")" || exit 1
+  [ -n "$name" ] || name="$(add_input_name "$arg")"
+  validate_input_name "$name" || {
+    echo "ERROR: input name '$name' is outside the name grammar [A-Za-z_][A-Za-z0-9_-]*" >&2
+    echo "       it becomes a nix attribute and a root-owned directory name; pass --input <name>" >&2
+    exit 1
+  }
+  local FLAKE
+  FLAKE="${flake_arg:-$(default_flake_file)}"
+  [ -r "$FLAKE" ] || {
+    printf '%serror: cannot read %s -- pass --flake%s\n' "$C_RED" "$FLAKE" "$C_OFF" >&2
+    exit 1
+  }
+  ensure_tree "$inv"
+
+  # ---- part 1: the checkout ------------------------------------------------
+  local checkout
+  if [ "$kind" = path ]; then
+    checkout="$arg"
+    printf '%s✓ checkout:%s %s %s(used in place; add never copies or edits a checkout)%s\n' \
+      "$C_GRN" "$C_OFF" "$(canon_path "$arg")" "$C_DIM" "$C_OFF"
+  else
+    add_clone "$arg" "$name"
+    checkout="$CLONE_DIR"
+  fi
+  resolve_repo "$checkout"
+  local slot="$default_slot"
+
+  # ---- part 3, the free half: is the input already there? ------------------
+  # Cheap refusals before any ceremony: a name collision the human has to
+  # resolve should never cost a review first.
+  local declared=0
+  if grep -qF -e "git+file://${repo}?" -e "git+file://${repo}\"" "$FLAKE"; then
+    declared=1
+    printf '%s✓ input:%s    %s %s(a git+file input already names this repo)%s\n' \
+      "$C_GRN" "$C_OFF" "$FLAKE" "$C_DIM" "$C_OFF"
+  elif flake_declares_input "$name" <"$FLAKE"; then
+    echo "ERROR: $FLAKE already declares an input named '$name', for another path; refusing" >&2
+    echo "       which repo owns that name is yours to resolve: pass --input <other-name>" >&2
+    exit 1
+  fi
+
+  # ---- part 2: the pin -----------------------------------------------------
+  local pin
+  pin="$(read_rev "$slot")" || exit 1
+  if [ -n "$pin" ]; then
+    printf '%s✓ pin:%s      %s%s%s %s(already approved; no ceremony)%s\n' \
+      "$C_GRN" "$C_OFF" "$C_CYN" "$pin" "$C_OFF" "$C_DIM" "$C_OFF"
+    if [ "${#tag_args[@]}" -gt 0 ]; then
+      printf '%snote: --signed-tag has nothing to gate here; the repo is already pinned%s\n' \
+        "$C_YEL" "$C_OFF" >&2
+    fi
+  else
+    echo
+    do_approve "$repo" ${tag_args[@]+"${tag_args[@]}"}
+    pin="$(read_rev "$slot")" || exit 1
+    # Defensive: the ceremony exits 2 on a decline, so reaching this with no
+    # record would mean a shape neither verb knows about. Never declare an
+    # input for a repo nothing vouched for.
+    [ -n "$pin" ] || {
+      echo "ERROR: the ceremony recorded no pin; refusing to declare an input" >&2
+      exit 1
+    }
+    echo
+  fi
+
+  if [ "$declared" -eq 1 ]; then
+    # Whether that input's rev is the approved one is DEPLOY's question, not
+    # add's -- syncing revs is the one thing deploy exists for, and doing it
+    # here would be a second answer to it. Saying which state the flake is in
+    # still belongs here: this is also how an add interrupted between its
+    # insert and its rev sync gets repaired.
+    local decl_lines
+    decl_lines="$(grep -F "git+file://${repo}?" "$FLAKE" || true)"
+    case "$decl_lines" in
+      *"rev=${pin}"*)
+        printf '%snothing to do -- checkout, pin and input are all in place%s\n' "$C_DIM" "$C_OFF" ;;
+      *)
+        printf '%snote: the declared input does not name the approved rev yet%s\n' "$C_YEL" "$C_OFF"
+        printf '  %spinned deploy%s   %s(syncs every input to its pin, rebuilds)%s\n' \
+          "$C_CYN" "$C_OFF" "$C_DIM" "$C_OFF" ;;
+    esac
+    return 0
+  fi
+
+  # ---- part 3: the declaration ---------------------------------------------
+  # The ref an input needs. A slot that declares a release name pins to that
+  # name (the same declaration deploy syncs ref= to); otherwise the
+  # checkout's own branch. A detached HEAD with no declared name leaves
+  # nothing honest to write, so it refuses rather than guessing a branch.
+  local ref="" decl_tag=""
+  if [ -f "$slot/tag" ]; then
+    verify_record_file "$slot/tag" || exit 1
+    IFS= read -r decl_tag <"$slot/tag" || decl_tag=""
+    validate_tag_name "$decl_tag" || {
+      echo "ERROR: $slot/tag declares an invalid tag name; refusing" >&2
+      exit 1
+    }
+    ref="refs/tags/$decl_tag"
+  else
+    ref="$(sgit symbolic-ref --quiet HEAD 2>/dev/null || true)"
+    case "$ref" in
+      refs/heads/?*) ;;
+      *)
+        echo "ERROR: $repo is on a detached HEAD and its slot declares no tag" >&2
+        echo "       an input needs a ref: check out the branch you deploy from," >&2
+        echo "       or approve --tag <tag> so the record declares one" >&2
+        exit 1 ;;
+    esac
+    # The same declared-name grammar tags answer to: the ref is spliced into
+    # a flake url and into sed expressions, and git admits ref names ('&',
+    # for one) that neither survives.
+    validate_tag_name "$ref" || {
+      echo "ERROR: branch name '${ref#refs/heads/}' is outside the declared-name grammar [A-Za-z0-9._/+-]" >&2
+      exit 1
+    }
+  fi
+
+  # The follows line is included only when the APPROVED tree declares a
+  # nixpkgs input -- read from the object store at the pinned rev, never from
+  # the work tree, so what the block says about the repo is what was
+  # approved. cat-file, not show: sgit refuses every rendering subcommand.
+  local follows=0 has_flake=1 blob=""
+  if sgit cat-file -e "${pin}:flake.nix" 2>/dev/null; then
+    blob="$(sgit cat-file blob "${pin}:flake.nix")"
+    if flake_declares_input nixpkgs <<<"$blob"; then follows=1; fi
+  else
+    has_flake=0
+  fi
+
+  local zeros=0000000000000000000000000000000000000000
+  local block url
+  url="git+file://${repo}?ref=${ref}&rev=${zeros}"
+  block="    ${name} = {${NL}      url = \"${url}\";${NL}"
+  if [ "$follows" -eq 1 ]; then
+    block="${block}      inputs.nixpkgs.follows = \"nixpkgs\";${NL}"
+  fi
+  block="${block}    };${NL}"
+
+  # The insertion point is the flake's own inputs block. Absent, there is no
+  # honest place for this to go, and a trust-adjacent file the human
+  # hand-maintains is not one to guess at: print the block and let them
+  # place it.
+  if ! grep -q '^  inputs = {' "$FLAKE"; then
+    echo "ERROR: no '  inputs = {' line in $FLAKE -- refusing to guess where an input belongs" >&2
+    echo "       insert this block by hand, then rerun to sync its rev:" >&2
+    printf '%s' "$block" >&2
+    exit 1
+  fi
+
+  printf '%sinput block%s %s(inserted after the inputs = { line of %s)%s\n\n' \
+    "$C_B" "$C_OFF" "$C_DIM" "$FLAKE" "$C_OFF"
+  printf '%s\n' "$block"
+  if [ "$has_flake" -eq 0 ]; then
+    printf '%snote: the approved tree has no flake.nix -- nix will refuse this input at\n' "$C_YEL"
+    printf '      eval time; add one, approve it, then rerun%s\n' "$C_OFF"
+  elif [ "$follows" -eq 0 ]; then
+    printf '%snote: the approved flake.nix declares no nixpkgs input, so the block carries\n' "$C_DIM"
+    printf '      no follows line%s\n' "$C_OFF"
+  fi
+  printf '%sthe rev goes in as %s zeros and is synced to the pin right after -- an\n' "$C_DIM" "${#zeros}"
+  printf 'interrupted add leaves an input that cannot be fetched, never one that floats%s\n\n' "$C_OFF"
+
+  local answer
+  printf '%sadd this input to %s%s%s? [y/N]%s ' \
+    "$C_B" "$C_CYN" "$FLAKE" "$C_OFF$C_B" "$C_OFF"
+  read -r answer </dev/tty
+  case "$answer" in
+    y|Y|yes) ;;
+    *)
+      printf '%saborted; flake unchanged%s\n' "$C_YEL" "$C_OFF"
+      log_action add "$repo" "$pin" abort
+      exit 2
+      ;;
+  esac
+
+  # Written root-side, atomically: a staged copy in the same directory (so
+  # the rename cannot cross a filesystem) carrying the original's owner and
+  # mode. Every byte outside the inserted block is copied through unchanged
+  # -- this file is hand-maintained, and add is a guest in it.
+  # The block travels to awk through a file, not through -v: a -v value
+  # holding newlines is a fatal error in BSD awk (macOS ships one).
+  local fdir tmp fowner fmode blk_file
+  [ -n "$workdir" ] || workdir="$(mktemp -d)"
+  blk_file="$workdir/inputblock"
+  printf '%s' "$block" >"$blk_file"
+  fdir="$(dirname "$FLAKE")"
+  fowner="$(stat_owner "$FLAKE")"
+  fmode="$(stat_mode "$FLAKE")"
+  tmp="$(mktemp "$fdir/.pinned-add.XXXXXX")"
+  awk -v blkfile="$blk_file" '
+    BEGIN { while ((getline l < blkfile) > 0) blk = blk l "\n" }
+    { print }
+    !placed && index($0, "  inputs = {") == 1 { printf "%s", blk; placed = 1 }
+  ' "$FLAKE" >"$tmp"
+  chown "$fowner" "$tmp"
+  chmod "$fmode" "$tmp"
+  mv -f "$tmp" "$FLAKE"
+
+  # The sync half of the placeholder dance, through deploy's own in-place
+  # editor. Scoped to this input by its literal path (regex-escaped), so the
+  # placeholder of an unrelated, interrupted add is left for its own rerun;
+  # the rev operands are validated hex on both sides.
+  local SED_I=() esc
+  set_sed_i
+  esc="$(printf '%s' "$repo" | sed 's/[][\.*^$|]/\\&/g')"
+  "${SED_I[@]}" -e "s|\\(git+file://${esc}?[^\"]*\\)rev=${zeros}|\\1rev=${pin}|" "$FLAKE"
+  grep -qF "git+file://${repo}?ref=${ref}&rev=${pin}" "$FLAKE" || {
+    echo "ERROR: the input's rev did not sync to the pin in $FLAKE; inspect it before rebuilding" >&2
+    exit 1
+  }
+  printf '%s✓ input:%s    %s -> %s %s(rev %s)%s\n' \
+    "$C_GRN$C_B" "$C_OFF" "$name" "$FLAKE" "$C_DIM" "${pin:0:10}" "$C_OFF"
+  log_action add "$repo" "$pin"
+
+  echo
+  printf '%sConsuming it stays yours:%s pinned declares the input and never edits the\n' "$C_B" "$C_OFF"
+  printf 'repositories it gates, so the module import (or overlay, or whatever this\n'
+  printf 'input feeds) is a hand edit. Once it is wired:\n'
+  printf '  %spinned deploy%s   %s(sync every input to its pin, rebuild)%s\n' \
+    "$C_CYN" "$C_OFF" "$C_DIM" "$C_OFF"
+}
+
 case "$action" in
   approve)   do_approve "$@" ;;
+  add)       do_add "$@" ;;
   tombstone) do_tombstone "$@" ;;
   mv)        do_mv "$@" ;;
   verify)    do_verify "$@" ;;
