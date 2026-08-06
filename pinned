@@ -210,9 +210,12 @@ PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json
 if [ -t 1 ]; then
   C_OFF=$'\033[0m' C_B=$'\033[1m' C_DIM=$'\033[2m'
   C_RED=$'\033[31m' C_GRN=$'\033[32m' C_YEL=$'\033[33m' C_CYN=$'\033[36m'
+  # Reserved for repo identity: cyan is the workhorse accent, so the repo
+  # under review gets a color nothing else uses.
+  C_MAG=$'\033[35m'
   DIFF_COLOR=always
 else
-  C_OFF='' C_B='' C_DIM='' C_RED='' C_GRN='' C_YEL='' C_CYN=''
+  C_OFF='' C_B='' C_DIM='' C_RED='' C_GRN='' C_YEL='' C_CYN='' C_MAG=''
   DIFF_COLOR=never
 fi
 NL=$'\n' TAB=$'\t'
@@ -2646,7 +2649,8 @@ case "$action" in
             # An unreadable slot read as "no pin" above simply classifies
             # nothing here; the root side answers such a slot accurately.
             ancestry_floor "$repo" "$preview_pin" "$preview_head" "$preview_decl" || exit 1
-            printf '%srepo:%s       %s\n' "$C_B" "$C_OFF" "$repo"
+            printf '%srepo:%s       %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_B$C_MAG" "${repo##*/}" "$C_OFF" \
+              "$C_DIM" "$repo" "$C_OFF"
             if [ -n "$preview_tag" ]; then
               printf '%stag:%s        %s\n' "$C_B" "$C_OFF" "$preview_tag"
               printf '%scommit:%s     %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_head" "$C_OFF" \
@@ -3185,7 +3189,8 @@ do_approve() {
       # catch -- and a deliberate, declared downgrade to a signed release is
       # the legitimate manual override it exists to allow.
       ancestry_floor "$repo" "$old_hash" "$hash" "$decl_class" || exit 1
-      printf '%srepo:%s       %s\n' "$C_DIM" "$C_OFF" "$repo"
+      printf '%srepo:%s       %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_B$C_MAG" "${repo##*/}" "$C_OFF" \
+        "$C_DIM" "$repo" "$C_OFF"
       for t in "${tag_args[@]}"; do
         printf '%stag:%s     %s  %s✓ signature verified against %s%s\n' "$C_DIM" "$C_OFF" "$t" "$C_GRN" "$signers" "$C_OFF"
       done
@@ -3230,7 +3235,8 @@ do_approve() {
       # trust is being extended or withdrawn.
       ancestry_floor "$repo" "$old_hash" "$hash" "$decl_class" || exit 1
 
-      printf '%srepo:%s       %s\n' "$C_DIM" "$C_OFF" "$repo"
+      printf '%srepo:%s       %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_B$C_MAG" "${repo##*/}" "$C_OFF" \
+        "$C_DIM" "$repo" "$C_OFF"
       if [ -n "$sel_tag" ]; then
         printf '%stag:%s        %s\n' "$C_DIM" "$C_OFF" "$sel_tag"
         printf '%scommit:%s     %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
@@ -3280,7 +3286,8 @@ do_approve() {
     echo
 
     local answer
-    printf '%sapprove %s%s%s? [y/N]%s ' "$C_B" "$C_CYN" "$hash" "$C_OFF$C_B" "$C_OFF"
+    printf '%sapprove %s%s%s %s%s%s? [y/N]%s ' "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
+      "$C_CYN" "$hash" "$C_OFF$C_B" "$C_OFF"
     read -r answer </dev/tty
     case "$answer" in
       y|Y|yes) ;;
@@ -3405,7 +3412,8 @@ EOF
     diff_out="$(sgit_diff "$prev" "$c")"
     printf '%s\n' "$diff_out" | page || true
     echo
-    printf '%sapprove %s%s%s? [y/N]%s ' "$C_B" "$C_CYN" "$c" "$C_OFF$C_B" "$C_OFF"
+    printf '%sapprove %s%s%s %s%s%s? [y/N]%s ' "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
+      "$C_CYN" "$c" "$C_OFF$C_B" "$C_OFF"
     read -r answer </dev/tty
     case "$answer" in
       y|Y|yes) ;;
@@ -4493,7 +4501,8 @@ do_status() {
   hash="$(read_rev "$slot")" || exit 1
   head_hash="$(sgit rev-parse 'HEAD^{commit}')"
 
-  printf '%srepo:%s       %s\n' "$C_DIM" "$C_OFF" "$repo"
+  printf '%srepo:%s       %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_B$C_MAG" "${repo##*/}" "$C_OFF" \
+    "$C_DIM" "$repo" "$C_OFF"
   printf '%sslot:%s       %s\n' "$C_DIM" "$C_OFF" "$slot"
   if [ -z "$hash" ]; then
     printf '%spinned:%s     (none)\n' "$C_DIM" "$C_OFF"
@@ -5002,7 +5011,8 @@ do_review_repo() {
     exit 1
   }
 
-  printf '%srepo:%s       %s\n' "$C_DIM" "$C_OFF" "$repo"
+  printf '%srepo:%s       %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_B$C_MAG" "${repo##*/}" "$C_OFF" \
+    "$C_DIM" "$repo" "$C_OFF"
   printf '%spinned:%s     %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
     "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
   if [ -r "$default_slot/tag" ]; then
