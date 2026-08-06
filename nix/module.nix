@@ -30,6 +30,18 @@ let
   # any anchor ever changes shape in the script.
   anchors = [
     {
+      # sudo passes the caller's full PATH through (probed live
+      # 2026-08-06 on the reference Mac: `sudo printenv PATH` returned
+      # the user's complete PATH), and env resolves the interpreter from
+      # it BEFORE the script's own PATH export runs -- so `env bash`
+      # would let the invoker's environment pick root's interpreter. Pin
+      # it to the store bash: root-owned, immutable, present on both
+      # platforms. (locked pins /bin/bash instead; that tool is
+      # Darwin-only and targets the SIP-sealed system bash.)
+      from = "#!/usr/bin/env bash";
+      to = "#!${pkgs.bash}/bin/bash";
+    }
+    {
       from = '': "''${INSTALL_TARGET:=/usr/local/sbin/pinned}"'';
       to = '': "''${INSTALL_TARGET:=${cfg.installPath}}"'';
     }
