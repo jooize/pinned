@@ -165,20 +165,24 @@ in
         exactly this gid -- the preferred, declarative mode: the numbers
         live in the config, and on-disk group ownership keeps its
         meaning across any recreation. On Darwin every managed group
-        must either appear here or be covered by allocateGids = true.
+        must either appear here or be covered by allocateIds = true.
         Deletion is a manual ceremony either way: nix-darwin refuses to
         delete accounts with ids <= 501.
       '';
     };
 
-    allocateGids = lib.mkOption {
+    allocateIds = lib.mkOption {
       type = lib.types.bool;
       default = false;
       description = ''
-        Darwin only: allow groups NOT named in gids to be created
-        imperatively at activation with the first free gid in 401-499.
-        The explicit opt-out for a config that must not carry
-        machine-specific numbers; never a silent fallback.
+        Allow groups NOT named in gids to get an allocated id -- the
+        explicit opt-out for a config that must not carry
+        machine-specific numbers, never a silent fallback. On Darwin
+        that means imperative creation at activation with the first
+        free gid in 401-499; on NixOS the system allocator already does
+        this for numberless declared groups, so the option is not
+        required there. (One option name, allocateIds, across this
+        module family -- see security.locked.allocateIds.)
       '';
     };
 
@@ -239,9 +243,9 @@ in
           # Declarative is the default expectation (the config carries
           # the numbers); imperative allocation is an explicit opt-out.
           assertion = !pkgs.stdenv.hostPlatform.isDarwin
-            || cfg.allocateGids
+            || cfg.allocateIds
             || lib.all (g: cfg.gids ? ${g.name}) allGroups;
-          message = "security.pinned: on Darwin declare every managed group in gids (declarative, preferred) or set allocateGids = true for first-free allocation of the rest";
+          message = "security.pinned: on Darwin declare every managed group in gids (declarative, preferred) or set allocateIds = true for first-free allocation of the rest";
         }
       ];
 
