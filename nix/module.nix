@@ -162,11 +162,23 @@ in
         Optional fixed gids, keyed by group name (the per-user read
         groups _<user>-pinned and the operators group _pinned-clones).
         A group named here is declared via users.groups/knownGroups with
-        exactly this gid instead of being created imperatively at
-        activation with the first free gid in 401-499. Pinning the
-        number keeps on-disk group ownership meaningful across any
-        recreation. Deletion is a manual ceremony either way: nix-darwin
-        refuses to delete accounts with ids <= 501.
+        exactly this gid -- the preferred, declarative mode: the numbers
+        live in the config, and on-disk group ownership keeps its
+        meaning across any recreation. On Darwin every managed group
+        must either appear here or be covered by allocateGids = true.
+        Deletion is a manual ceremony either way: nix-darwin refuses to
+        delete accounts with ids <= 501.
+      '';
+    };
+
+    allocateGids = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Darwin only: allow groups NOT named in gids to be created
+        imperatively at activation with the first free gid in 401-499.
+        The explicit opt-out for a config that must not carry
+        machine-specific numbers; never a silent fallback.
       '';
     };
 
@@ -222,6 +234,14 @@ in
           # still gets an imperative first-free gid.
           assertion = lib.all (n: lib.any (g: g.name == n) allGroups) (lib.attrNames cfg.gids);
           message = "security.pinned.gids names a group this module does not manage (expected _<user>-pinned for a configured user, or ${clonesGroup})";
+        }
+        {
+          # Declarative is the default expectation (the config carries
+          # the numbers); imperative allocation is an explicit opt-out.
+          assertion = !pkgs.stdenv.hostPlatform.isDarwin
+            || cfg.allocateGids
+            || lib.all (g: cfg.gids ? ${g.name}) allGroups;
+          message = "security.pinned: on Darwin declare every managed group in gids (declarative, preferred) or set allocateGids = true for first-free allocation of the rest";
         }
       ];
 
