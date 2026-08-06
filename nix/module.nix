@@ -100,13 +100,29 @@ let
   # with the same ownership. Only the group, which no script may create.
   clonesGroup = "_pinned-clones";
 
+  # Every group this module owns, one definition feeding both provisioning
+  # modes and both platforms: the per-user read groups and the shared
+  # clone-tree group differ only in name, purpose and who belongs to them.
+  allGroups =
+    map (user: {
+      name = "_${user}-pinned";
+      comment = "Root-owned pinned approval records ${user} may read";
+      members = [ user ];
+    }) cfg.users
+    ++ [{
+      name = clonesGroup;
+      comment = "Operators of the shared pinned clone tree";
+      members = cfg.users;
+    }];
+  declaredGroups = builtins.filter (g: cfg.gids ? ${g.name}) allGroups;
+  imperativeGroups = builtins.filter (g: !(cfg.gids ? ${g.name})) allGroups;
+
   # Darwin has no gid allocator: users.groups demands an explicit gid, and an
   # unpinned `dseditgroup -o create` may land a gid >=500 that the login
-  # window would SHOW. So scan for the lowest free gid in the hidden 401..499
-  # service range and create imperatively (idempotent, root, activation-time);
-  # membership is asserted on every activation. One emitter for both the
-  # per-user read groups and the shared clone-tree group -- the two differ
-  # only in name, purpose and who belongs to them.
+  # window would SHOW. So, unless a group's gid is pinned via cfg.gids,
+  # scan for the lowest free gid in the hidden 401..499 service range and
+  # create imperatively (idempotent, root, activation-time); membership is
+  # asserted on every activation.
   darwinGroup = { name, comment, members }: ''
     if ! /usr/bin/dscl . -read "/Groups/${name}" PrimaryGroupID >/dev/null 2>&1; then
       taken="$(/usr/bin/dscl . -list /Groups PrimaryGroupID | /usr/bin/awk '{print $2}')"
@@ -135,6 +151,22 @@ in
       description = ''
         Users granted sudo for the pinned binary, digest-pinned to the
         installed bytes. No NOPASSWD: sudo still authenticates.
+      '';
+    };
+
+    gids = lib.mkOption {
+      type = lib.types.attrsOf lib.types.int;
+      default = { };
+      example = lib.literalExpression ''{ "_alice-pinned" = 411; "_pinned-clones" = 412; }'';
+      description = ''
+        Optional fixed gids, keyed by group name (the per-user read
+        groups _<user>-pinned and the operators group _pinned-clones).
+        A group named here is declared via users.groups/knownGroups with
+        exactly this gid instead of being created imperatively at
+        activation with the first free gid in 401-499. Pinning the
+        number keeps on-disk group ownership meaningful across any
+        recreation. Deletion is a manual ceremony either way: nix-darwin
+        refuses to delete accounts with ids <= 501.
       '';
     };
 
@@ -185,6 +217,12 @@ in
           assertion = lib.all validUser cfg.users;
           message = "security.pinned.users: user names must match [A-Za-z_][A-Za-z0-9_-]* (they are spliced into sudoers)";
         }
+        {
+          # A stray key would otherwise be a silent no-op while its group
+          # still gets an imperative first-free gid.
+          assertion = lib.all (n: lib.any (g: g.name == n) allGroups) (lib.attrNames cfg.gids);
+          message = "security.pinned.gids names a group this module does not manage (expected _<user>-pinned for a configured user, or ${clonesGroup})";
+        }
       ];
 
       environment.systemPackages = [ package manPage ];
@@ -210,27 +248,25 @@ in
     # Per-OS split: NixOS declares groups (auto-allocated system gids);
     # Darwin creates them imperatively at activation (see darwinGroup).
     (lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
-      system.activationScripts.extraActivation.text = lib.mkAfter (
-        lib.concatMapStrings
-          (user: darwinGroup {
-            name = "_${user}-pinned";
-            comment = "Root-owned pinned approval records ${user} may read";
-            members = [ user ];
-          })
-          cfg.users
-        + darwinGroup {
-          name = clonesGroup;
-          comment = "Operators of the shared pinned clone tree";
-          members = cfg.users;
-        });
+      users.knownGroups = map (g: g.name) declaredGroups;
+      users.groups = lib.listToAttrs (map (g: {
+        name = g.name;
+        value = {
+          gid = cfg.gids.${g.name};
+          description = g.comment;
+          members = g.members;
+        };
+      }) declaredGroups);
+      system.activationScripts.extraActivation.text = lib.mkAfter
+        (lib.concatMapStrings darwinGroup imperativeGroups);
     })
     (lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
-      users.groups = lib.listToAttrs (map (user: {
-        name = "_${user}-pinned";
-        value = { members = [ user ]; };
-      }) cfg.users) // {
-        ${clonesGroup} = { members = cfg.users; };
-      };
+      # NixOS allocates system gids itself; a declared gid just pins it.
+      users.groups = lib.listToAttrs (map (g: {
+        name = g.name;
+        value = { members = g.members; }
+          // lib.optionalAttrs (cfg.gids ? ${g.name}) { gid = cfg.gids.${g.name}; };
+      }) allGroups);
     })
   ]);
 }
