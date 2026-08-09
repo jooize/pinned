@@ -19,7 +19,8 @@
 #      records)
 #   4. `install -o root -g ...` / `chown root:...` -> plain install / no-op
 #   5. `read -r answer </dev/tty` -> read from stdin, so ceremonies are
-#      driven by $ANS
+#      driven by $ANS (each diff pager sits behind an Enter-gate, so a
+#      gated review consumes one extra line -- blank -- before its y/N)
 #   6. log_action's `logger -t pinned` -> no-op, so fixture ceremonies never
 #      land in the machine's real approval history
 # Every anchor is counted in the source BEFORE the sed (see need()), so a
@@ -155,7 +156,7 @@ need '-o root -g "\$TREE_GRP" '                             4 'slot-tree install
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
-need '</dev/tty'                                            13 'ceremony tty reads'
+need '</dev/tty'                                            16 'ceremony tty reads'
 need '^# ---- setup ---'                                    1 'library cut marker'
 
 sed -e "s#^PINNED_ROOT=/var/db/pinned\$#PINNED_ROOT='$PINNED_ROOT'#" \
@@ -698,7 +699,8 @@ if [ "$GIT_OK" -eq 1 ]; then
   # refuse every brand-new repo -- the same defect approve --file fixed
   # with its `[ -d "$slot" ]` branch (see S4). The slot dir is deliberately
   # NOT pre-created here: its absence is the case under test.
-  ANS='y
+  ANS='
+y
 '
   run_pinned approve "$REPO_FIX"
   assert_exit "$RC" 0 "first-ever repo approval succeeds (no slot dir pre-created)"
@@ -778,7 +780,9 @@ if [ "$GIT_OK" -eq 1 ]; then
 
   # Two first-ever approvals in ONE invocation: sequential ceremonies, two
   # answers on one stdin, one summary line.
-  ANS='y
+  ANS='
+y
+
 y
 '
   run_pinned approve "$REPO_A" "$REPO_B"
@@ -794,7 +798,9 @@ y
   A_OLD="$(cat "$A_SLOT/rev.git")"
   printf 'a2\n' > "$REPO_A/f"; bgit "$REPO_A" commit -q -am a2
   printf 'b2\n' > "$REPO_B/f"; bgit "$REPO_B" commit -q -am b2
-  ANS='n
+  ANS='
+n
+
 y
 '
   run_pinned approve "$REPO_A" "$REPO_B"
@@ -805,7 +811,8 @@ y
 
   # Already-pinned repos are counted, never re-asked: catch repo A up, then
   # run the batch again -- both at their pins, no answer is consumed.
-  ANS='y
+  ANS='
+y
 '
   run_pinned approve "$REPO_A"
   assert_exit "$RC" 0 "catch-up approve of the declined repo"
@@ -821,7 +828,8 @@ y
   assert_exit "$RC" 0 "single already-pinned repo still exits 0"
   assert_missing "$OUT" "declined," "single-repo approve prints no batch summary"
   printf 'a3\n' > "$REPO_A/f"; bgit "$REPO_A" commit -q -am a3
-  ANS='n
+  ANS='
+n
 '
   run_pinned approve "$REPO_A"
   assert_exit "$RC" 2 "a single-repo decline still exits 2"
@@ -873,7 +881,8 @@ EOF
   # deploy), then deploy wants to sync the flake and stops at its
   # confirmation gate -- the harness has no tty, so that gate is the
   # no-tty refusal, and no root command ever runs.
-  ANS='y
+  ANS='
+y
 '
   run_pinned upgrade --flake "$FIX/flake.nix"
   assert_exit "$RC" 2 "deploy's confirmation gate aborts with 2"
@@ -916,7 +925,8 @@ EOF
   # declaration follows the release (v9 -> v10).
   printf 'v9\n' > "$B_SLOT/tag"
   bgit "$REPO_B" tag v10
-  ANS='y
+  ANS='
+y
 '
   run_pinned upgrade --flake "$FIX/flake.nix"
   assert_exit "$RC" 2 "tagged upgrade reaches deploy's confirmation gate"
@@ -973,7 +983,8 @@ EOF
   assert_no_row "$OUT" "approve:" "$REPO_BK" "the backward one is not"
   assert_no_row "$OUT" "approve:" "$REPO_DV" "and neither is the diverged one"
 
-  ANS='y
+  ANS='
+y
 '
   run_pinned upgrade --flake "$FIX/flake3.nix"
   assert_exit "$RC" 2 "the mixed upgrade reaches deploy's confirmation gate"
@@ -1072,7 +1083,8 @@ if [ "$GIT_OK" -eq 1 ]; then
   printf 'l1\nl2\nl3\n' > "$REPO_D/a.txt"
   bgit "$REPO_D" add a.txt; bgit "$REPO_D" commit -q -m "d1 base"
   D_SLOT="$(slot_of "$REPO_D")"
-  ANS='y
+  ANS='
+y
 '
   run_pinned approve "$REPO_D"
   assert_exit "$RC" 0 "diffstat fixture pins its base commit"
@@ -1095,7 +1107,8 @@ if [ "$GIT_OK" -eq 1 ]; then
   bgit "$REPO_D" add d.bin; bgit "$REPO_D" commit -q -m "d6 binary"
   D_HEAD="$(bgit "$REPO_D" rev-parse 'HEAD^{commit}')"
 
-  ANS='y
+  ANS='
+y
 '
   run_pinned approve "$REPO_D"
   assert_exit "$RC" 0 "approve over the diffstat range exits 0"
@@ -1164,8 +1177,11 @@ if [ "$GIT_OK" -eq 1 ]; then
 
   # --- three yeses: the pin lands on HEAD, one step per commit -------------
   seed_state "$REPO_E" rev.git "$E_BASE"
-  ANS='y
+  ANS='
 y
+
+y
+
 y
 '
   run_pinned approve "$REPO_E" --step
@@ -1193,7 +1209,9 @@ y
 
   # --- yes then no: the pin rests where reading stopped --------------------
   seed_state "$REPO_E" rev.git "$E_BASE"
-  ANS='y
+  ANS='
+y
+
 n
 '
   run_pinned approve "$REPO_E" --step
@@ -1206,8 +1224,11 @@ n
 
   # --- two yeses then no: the singular remainder reads as one --------------
   seed_state "$REPO_E" rev.git "$E_BASE"
-  ANS='y
+  ANS='
 y
+
+y
+
 n
 '
   run_pinned approve "$REPO_E" --step
@@ -1218,7 +1239,8 @@ n
 
   # --- a first no: nothing changes, exit 2 (the single-repo contract) ------
   seed_state "$REPO_E" rev.git "$E_BASE"
-  ANS='n
+  ANS='
+n
 '
   run_pinned approve "$REPO_E" --step
   assert_exit "$RC" 2 "a walk that approves nothing exits 2"
@@ -1230,7 +1252,9 @@ n
   # --- a stepped yes clears a declared release name ------------------------
   seed_state "$REPO_E" rev.git "$E_BASE"
   printf 'v1\n' > "$E_SLOT/tag"
-  ANS='y
+  ANS='
+y
+
 n
 '
   run_pinned approve "$REPO_E" --step
@@ -1242,7 +1266,9 @@ n
   # the commit past the tag (e3) must never be offered.
   bgit "$REPO_E" tag v9 "$E_C2"
   seed_state "$REPO_E" rev.git "$E_BASE"
-  ANS='y
+  ANS='
+y
+
 y
 '
   run_pinned approve "$REPO_E" --step --tag v9
@@ -1254,7 +1280,9 @@ y
 
   # Stopping early leaves the slot rev-only and says so.
   seed_state "$REPO_E" rev.git "$E_BASE"
-  ANS='y
+  ANS='
+y
+
 n
 '
   run_pinned approve "$REPO_E" --step --tag v9
@@ -1366,7 +1394,8 @@ if [ "$GIT_OK" -eq 1 ]; then
 
   # --- forward is untouched: no alarm, the ordinary listing -----------------
   seed_state "$REPO_G" rev.git "$G_BASE"
-  ANS='y
+  ANS='
+y
 '
   run_pinned approve "$REPO_G"
   assert_exit "$RC" 0 "a forward approve is unchanged by the lattice"
@@ -1408,7 +1437,8 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_contains "$OUT" "--diverged declared, but the candidate is backward" \
     "the refusal names the class that actually holds"
 
-  ANS='y
+  ANS='
+y
 '
   run_pinned approve "$REPO_G" --backward
   assert_exit "$RC" 0 "a declared backward move proceeds"
@@ -1420,7 +1450,8 @@ if [ "$GIT_OK" -eq 1 ]; then
 
   # A declined backward ceremony is an ordinary decline.
   seed_state "$REPO_G" rev.git "$G_C2"
-  ANS='n
+  ANS='
+n
 '
   run_pinned approve "$REPO_G" --backward
   assert_exit "$RC" 2 "a declined backward ceremony exits 2"
@@ -1444,7 +1475,8 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_contains "$OUT" "--backward declared, but the candidate has diverged" \
     "the refusal names the class that actually holds"
 
-  ANS='y
+  ANS='
+y
 '
   run_pinned approve "$REPO_G" --diverged
   assert_exit "$RC" 0 "a declared diverged move proceeds"
@@ -2380,7 +2412,8 @@ if [ "$GIT_OK" -eq 1 ]; then
     "the refusal names the missing pin and the remedy"
   assert_absent "$R_SLOT" "a refused review creates no slot dir"
 
-  ANS='y
+  ANS='
+y
 '
   run_pinned approve "$REPO_R"
   assert_exit "$RC" 0 "fixture: the review repo is pinned at its base commit"
@@ -2682,7 +2715,8 @@ if [ "$GIT_OK" -eq 1 ]; then
   MVR_HASH="$(mgit "$MVR_OLD" rev-parse 'HEAD^{commit}')"
   mgit "$MVR_OTHER" init -q
   printf 'o1\n' > "$MVR_OTHER/f"; mgit "$MVR_OTHER" add f; mgit "$MVR_OTHER" commit -q -m o1
-  ANS='y
+  ANS='
+y
 '
   run_pinned approve "$MVR_OLD" --tag v1
   assert_exit "$RC" 0 "fixture: the repo record exists, with a declared tag"
@@ -2834,7 +2868,8 @@ EOF
 
   FL_A="$FIX/add-flake-a.nix"
   new_flake "$FL_A"
-  ANS='y
+  ANS='
+y
 y
 '
   run_pinned add "$ADD_A" --flake "$FL_A"
@@ -2897,7 +2932,8 @@ y
   FL_B="$FIX/add-flake-b.nix"
   new_flake "$FL_B"
   FL_B_BEFORE="$(digest_of "$FL_B")"
-  ANS='y
+  ANS='
+y
 n
 '
   run_pinned add "$ADD_B" --flake "$FL_B"
@@ -2983,7 +3019,8 @@ n
   SRC_URL="file://$ADD_SRC"
   FL_U="$FIX/add-flake-u.nix"
   new_flake "$FL_U"
-  ANS='y
+  ANS='
+y
 y
 '
   run_pinned add "$SRC_URL" --input cloned --flake "$FL_U"

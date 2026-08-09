@@ -2815,20 +2815,17 @@ case "$action" in
         fi
       fi
       # Say what the authentication buys BEFORE sudo asks for it, in
-      # deploy's shape: the exact command, one highlighted headline, dim
-      # details separating what was checked here (root ownership) from
-      # what the system enforces at exec (the sudoers digest).
+      # deploy's shape: the exact command, then one dim line for the
+      # contract. The ownership/digest details that used to follow said
+      # nothing the checks just above had not already enforced -- the
+      # command line and the contract are the parts a reader acts on.
       if { [ "$action" = "approve" ] || [ "$action" = "upgrade" ] || [ "$action" = "add" ]; } \
         && [ "$elev" = "$INSTALL_TARGET" ]; then
         cmd_disp="$(elevation_cmd_disp "$elev" "$action" "$@")"
         printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
         printf '  %s\n\n' "$cmd_disp"
-        printf '%ssudo asks you to authenticate; the root-side re-run shows the authoritative\n' "$C_YEL$C_B"
-        printf 'review -- nothing is pinned until you answer y after it.%s\n\n' "$C_OFF"
-        printf '%s  The preview above was orientation only.\n' "$C_DIM"
-        printf '  The binary is root-owned (path and ancestry verified just now) and\n'
-        printf '  digest-pinned in sudoers (a swapped binary makes sudo refuse).\n'
-        printf '  If your sudo prompt shows the command, it must name exactly that binary.%s\n\n' "$C_OFF"
+        printf '%sThe preview above was orientation only; the root side re-derives it --\n' "$C_DIM"
+        printf 'nothing is pinned until you confirm there.%s\n\n' "$C_OFF"
       fi
       exec sudo -- "$elev" "$action" "$@"
     fi
@@ -3262,6 +3259,18 @@ do_approve() {
           exit "$step_rc"
         fi
         echo
+        # The gate before the pager: in a batch the next repo's diff would
+        # otherwise open unannounced, with no statement of whose bytes or
+        # how much is about to fill the screen. Enter is the only answer --
+        # this is orientation, not a decision. Off-tty the read fails and
+        # set -e aborts: the same fail-closed contract as the confirms.
+        local n_range
+        n_range="$(sgit rev-list --count "${old_hash}..${hash}")"
+        printf '%snext: review %s%s%s %s%.10s..%.10s%s (%s commit%s); Enter opens the diff%s ' \
+          "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
+          "$C_CYN" "$old_hash" "$hash" "$C_OFF$C_B" \
+          "$n_range" "$(plural_s "$n_range")" "$C_OFF"
+        read -r answer </dev/tty
         printf '%s--- diff %.10s..%.10s (from object store) ---%s\n' "$C_B" "$old_hash" "$hash" "$C_OFF"
         # Capture first so a git failure aborts (set -e) BEFORE anything is
         # shown as reviewable; then page. Early pager quit (SIGPIPE) is the
@@ -3277,6 +3286,11 @@ do_approve() {
       else
         printf '%spinned:%s     (none -- first approval: full tree review)\n' "$C_DIM" "$C_OFF"
         echo
+        # Same gate as the whole-delta pager; no range exists yet.
+        printf '%snext: review %s%s%s full tree at %s%.10s%s; Enter opens the diff%s ' \
+          "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
+          "$C_CYN" "$hash" "$C_OFF$C_B" "$C_OFF"
+        read -r answer </dev/tty
         printf '%s--- full tree at %.10s (diff from empty) ---%s\n' "$C_B" "$hash" "$C_OFF"
         # 4b825d... is git's well-known empty tree; this shows every approved byte.
         diff_out="$(sgit_diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
@@ -3406,6 +3420,11 @@ EOF
     printf '%s--- step %s/%s ---%s\n' "$C_B" "$k" "$m" "$C_OFF"
     print_commit_range "$prev" "$c" || true
     echo
+    # Same gate as the whole-delta pager; a step is always one commit.
+    printf '%snext: review %s%s%s %s%.10s..%.10s%s (1 commit); Enter opens the diff%s ' \
+      "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
+      "$C_CYN" "$prev" "$c" "$C_OFF$C_B" "$C_OFF"
+    read -r answer </dev/tty
     # Capture first so a git failure aborts (set -e) BEFORE anything is shown
     # as reviewable; then page. Early pager quit (SIGPIPE) is the reviewer's
     # own act -- the diff itself already succeeded.
