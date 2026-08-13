@@ -2,7 +2,7 @@
 
 Review-and-pin trust records behind a human gate. An agent can commit
 anything to a repo you deploy from, or rewrite any file a gate reads;
-nothing becomes trusted until a sudo ceremony says so. `pinned approve`
+nothing becomes trusted until a sudo ceremony says so. `pinned review`
 shows the content root-side -- a repo's diff since the last approval
 straight from the object store (scrubbed git environment: no user
 config, no pager, no hooks), or a file's frozen bytes -- you approve,
@@ -23,7 +23,7 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
 `man man/pinned.1`.
 
     pinned setup [--yes]              self-install + digest-pinned sudoers
-    pinned approve <repo>... [--tag <tag>] [--trust] [--step]
+    pinned review <repo>... [--tag <tag>] [--trust] [--step]
                              [--backward | --diverged]
                                       human gate: review diff -> pin
                                       (--tag: the tag's commit, not HEAD,
@@ -45,11 +45,11 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       commit, declaring the name only if
                                       reached; one whole-delta diff stays
                                       the default)
-    pinned approve <repo> --signed-tag <tag> [--signed-tag <tag> ...] [--tag <tag>]
+    pinned review <repo> --signed-tag <tag> [--signed-tag <tag> ...] [--tag <tag>]
                                       signature gate: verify each signed tag,
                                       all naming one commit -> pin (--tag:
                                       an unsigned name that must agree)
-    pinned approve --file <path> [--baseline <copy>] [--ignore-json-key <key> ...]
+    pinned review --file <path> [--baseline <copy>] [--ignore-json-key <key> ...]
                    [--file <path> ...] [--algo <name>] [--store]
                                       file-pin ceremony: freeze, display
                                       root-side, confirm, record the hash;
@@ -122,7 +122,7 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       place, a url is cloned into
                                       /var/db/pinned-clones as you (never
                                       as root, scrubbed environment); the
-                                      pin comes from approve's own
+                                      pin comes from review's own
                                       ceremony (--signed-tag rides through
                                       to it); the input block is shown in
                                       full and confirmed before the system
@@ -144,7 +144,7 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       never self-elevates
 
     pinned upgrade [--dry-run] [--yes] [--flake <path>]
-                                      approve every stale flake input
+                                      review every stale flake input
                                       (the same per-repo ceremonies),
                                       then deploy -- one authentication
                                       for the whole round; the plan lists
@@ -160,21 +160,22 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       otherwise joins only when HEAD
                                       carries exactly one release tag
                                       (approved under that name), else it
-                                      is listed for a manual approve
+                                      is listed for a manual review
                                       --tag; only forward checkouts join
                                       a ceremony, backward and diverged
                                       ones are listed as refused with the
                                       flag that would declare them
 
-approve, add, setup, tombstone, mv, upgrade, signer add/remove and
+review, add, setup, tombstone, mv, upgrade, signer add/remove and
 ignorable add/remove self-elevate via sudo (re-exec of the installed
 root-owned binary).
 sign, show and cat
 run as you: sign needs your SSH agent, show and cat write nothing. The
-verb triple: `show` rehearses (no record), `approve` records, `verify`
-answers -- humans review, machines verify, records happen only in
-approve. The triple covers both kinds: `show <file>` rehearses a hash
-gate, and `show <repo>` re-displays the tree a pin already names,
+verb triple: `show` rehearses (no record), `review` records, `verify`
+answers -- humans review, machines verify; the record happens only in
+the review ceremony. The triple covers both kinds: `show <file>`
+rehearses a hash gate, and `show <repo>` re-displays the tree a pin
+already names,
 through the same hardened git path the ceremony used. `cat` is
 custody's reader, and reads nothing else.
 
@@ -244,7 +245,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   replayed signed release of an older version is exactly what it
   catches. It governs ceremonies only -- `verify`, `status` and
   `deploy` answer about a pin already recorded and are untouched.
-- The file-pin ceremony (`approve --file`) takes no hash argument, ever.
+- The file-pin ceremony (`review --file`) takes no hash argument, ever.
   A hash handoff would let a caller in a poisoned environment feed root
   an opaque digest to record sight-unseen; instead the file is frozen
   and displayed exactly once, root-side, after sudo's environment reset,
@@ -273,7 +274,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   hourly should not summon a ceremony hourly, and those keys carry no
   hardening. A slot may therefore declare `ignored.json` -- a JSON array of
   jq key paths, e.g. `[["model"],["statusLine","command"]]` -- written only
-  by the ceremony (`approve --file <path> --ignore-json-key model
+  by the ceremony (`review --file <path> --ignore-json-key model
   --ignore-json-key effortLevel`). Semantics, in
   one sentence: **the pin stays byte-exact and ignoring is a verify-side
   tolerance.** `pin.<algo>` is still the hash of the approved bytes,
@@ -306,7 +307,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
     inserted before it.
   - Comparing needs the last-approved bytes -- a witness (see "The record
     and its witnesses" below). Either the slot keeps one of its own
-    (`approve --file <path> --store`) or the caller brings one
+    (`review --file <path> --store`) or the caller brings one
     (`verify --baseline <copy> <path>`); with neither, verify stays at the
     byte-exact 11. A caller-brought copy must re-hash to the record before
     it is used -- the same self-verifying trick the ceremony's baseline
@@ -335,10 +336,10 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
     values are objects, where the leaf paths differ and a path-multiset
     comparison would miss them.
   - The ceremony states the declaration prominently before the y/N, and an
-    approve without `--ignore-json-key` clears the declaration -- with a
+    review without `--ignore-json-key` clears the declaration -- with a
     loud note whenever that narrows or widens what was there. The tag rule
     covers every extra a slot can hold: each is re-stated by every
-    ceremony, so an approve without `--store` drops a stored copy too, and
+    ceremony, so a review without `--store` drops a stored copy too, and
     identical bytes are a no-op only when the declaration and the custody
     state are identical as well.
   - A non-JSON file simply fails the parse step and always gets the
@@ -347,7 +348,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
 - **The ignorable ladder.** What a slot may declare is itself gated, because
   "which keys may drift" is exactly the decision an attacker would like to
   make for you. Two root-owned policy tiers sit above the declaration, and
-  every rung is checked at approve and at verify:
+  every rung is checked at review and at verify:
 
       machine policy  >=  user policy     >=  slot declaration  >=  drift
       /etc/pinned/        <user>/policy/      slots/<enc>/          tolerated
@@ -373,7 +374,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
     ignorable list` prints all three -- machine, user, effective -- with
     each entry's scope, so "why was this key dropped" is answerable from
     one unprivileged command.
-  - `approve --file --ignore-json-key <key>` refuses a key the effective
+  - `review --file --ignore-json-key <key>` refuses a key the effective
     policy does not grant for that path, loudly, and names the exact
     remediation (`sudo pinned ignorable add <key> --under <dir>`). The
     semantics are uniform: pinned cannot tell a human's argv from a calling
@@ -402,9 +403,9 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   path is exactly what has to fail closed.
 - Signing exports the pin. `pinned sign` creates a perfectly normal
   signed release tag, but the hash it signs comes from the root-owned
-  pin file: you read once at approve; nothing is re-read at sign time,
+  pin file: you read once at review; nothing is re-read at sign time,
   so a compromised environment has nothing to MITM (SSH-agent signing
-  is blind -- the binding to content is this code path). `approve --signed-tag`
+  is blind -- the binding to content is this code path). `review --signed-tag`
   verifies such a tag against root-owned allowed signers -- the slot's
   `signers/allowed_signers` first, the user tier's
   `policy/allowed_signers` as fallback, so a key
@@ -419,12 +420,12 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   tag is refused. Co-signers use distinct tag names by convention
   (v1.2.3-alice, v1.2.3-bob) -- consumers approve whichever name they
   trust; allowed_signers is any-of. Threshold multisig: repeat --signed-tag
-  (`approve <repo> --signed-tag v1.2.3-alice --signed-tag v1.2.3-bob`) -- every
+  (`review <repo> --signed-tag v1.2.3-alice --signed-tag v1.2.3-bob`) -- every
   named tag must verify and name the same commit or nothing is pinned;
   k-of-n is the consumer demanding whichever k tags they trust.
 - `upgrade` offers that gate. A stale repo whose tags include a newer
   signed release this machine's allowed signers verify is routed to
-  `approve --signed-tag` instead of a review ceremony -- the plan says
+  `review --signed-tag` instead of a plain review -- the plan says
   `(signed release <t> -- signature-gated)`, and the ceremony's own
   `[y/N]` is the offer's acceptance (declining skips that repo, like any
   batch decline). It outranks both the release-at-HEAD rule and a plain
@@ -438,7 +439,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   safe here precisely because nobody without the signer key can enter a
   candidate: an attacker-writable name never chooses what a ceremony
   covers. Verified tags on lines that do not contain one another have no
-  maximum and are listed for a manual `approve --signed-tag`.
+  maximum and are listed for a manual `review --signed-tag`.
 - The pin-stating paths never execute what they approve; `deploy` is
   the one acting subcommand -- the bundled consumer for a nix system
   (a machine has exactly one configuration mechanism; any other
@@ -463,7 +464,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   "it exists somewhere" to "pinned and declared as a flake input", in
   three idempotent parts -- checkout, pin, declaration -- each skipped
   with a note when it is already satisfied, so an interrupted run is
-  resumed by rerunning it. The pin is `approve`'s own ceremony, called
+  resumed by rerunning it. The pin is `review`'s own ceremony, called
   as-is (`--signed-tag` rides through to it): a second review path
   would be a second thing to audit. The flake edit reuses deploy's
   in-place editor. What add adds is the seams between them, and each
@@ -573,7 +574,7 @@ witness against the record before using it, so where a witness was
 stored, and whose hands carried it there, cannot affect a verdict. Two
 arrive by different roads and are otherwise the same kind of thing --
 the slot's own `approved` copy (root custody, written by
-`approve --file <path> --store`) and a caller-brought copy
+`review --file <path> --store`) and a caller-brought copy
 (`verify --baseline <copy>`). A witness can only ever narrow a
 comparison -- enable the ignored-key projection, feed the ceremony's
 baseline diff -- and never stands in for the live file: a pinned file
@@ -648,7 +649,7 @@ before handing off), and two speakers sharing a screen must not read as
 one.
 
 - **Banners name the program and bracket authority.** The ceremony opens
-  with `=== pinned: approve (authoritative) ===`; a caller's own preview
+  with `=== pinned: review (authoritative) ===`; a caller's own preview
   opens with its own name and says `(orientation preview)`. Everything
   between a banner and the next one belongs to that speaker. One speaker
   per banner region -- pinned never prints inside a caller's block, and a
@@ -693,7 +694,7 @@ user-space can no longer touch, then run only what you read:
     less /usr/local/sbin/pinned-unverified   # THE read that anchors trust
     sudo mv /usr/local/sbin/pinned-unverified /usr/local/sbin/pinned
     sudo chmod 755 /usr/local/sbin/pinned
-    sudo /usr/local/sbin/pinned setup        # or: approve <repo> --trust
+    sudo /usr/local/sbin/pinned setup        # or: review <repo> --trust
 
 The staging keeps two invariants visible in the filesystem: the final
 name only ever holds bytes a human has read, and the execute bit only
@@ -725,10 +726,10 @@ never needed, because the deploy does setup's three jobs (binary,
 sudoers digest, pin root) declaratively. This repo ships a Nix flake
 for that:
 
-1. Approve the config repo using the bootstrap above -- approve
+1. Approve the config repo using the bootstrap above -- review
    creates the /var/db/pinned tree itself, so setup never runs:
 
-       sudo /usr/local/sbin/pinned approve <repo> --trust
+       sudo /usr/local/sbin/pinned review <repo> --trust
 
 2. Import the flake module and declare who may run it:
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # pinned -- review-and-pin a git rev behind a human gate.
 #
-#   pinned approve <repo> [--tag <t>] [--trust] [--backward|--diverged]
+#   pinned review <repo> [--tag <t>] [--trust] [--backward|--diverged]
 #                                              review diff since last pin -> approve -> pin
 #                                              (--tag: at the tag's commit, not HEAD;
 #                                              --trust: skip a FIRST approval's
@@ -9,12 +9,12 @@
 #                                              --backward/--diverged: declare a pin
 #                                              move that is not forward over the
 #                                              commit graph -- reality must conform)
-#   pinned approve <repo> --signed-tag <t> [--signed-tag ..] [--tag <t>]
+#   pinned review <repo> --signed-tag <t> [--signed-tag ..] [--tag <t>]
 #                                              verify each signed tag -> approve -> pin
 #                                              (repeat --signed-tag = threshold
 #                                              multisig: all must agree on one commit;
 #                                              --tag: an unsigned name that must agree)
-#   pinned approve --file <path> ...          file-pin ceremony: frozen display
+#   pinned review --file <path> ...          file-pin ceremony: frozen display
 #                                             root-side -> confirm -> record hash
 #                                             (--ignore-json-key <key>: keys
 #                                             whose later drift needs no ceremony)
@@ -36,7 +36,7 @@
 #                                             ignored, and where (the policy)
 #   pinned status <repo|file>                 record vs live state
 #   pinned add <repo|url>                     checkout (clone if a url) ->
-#                                             approve -> declare the repo as
+#                                             review -> declare the repo as
 #                                             a git+file input of the system
 #                                             flake (--input <name>,
 #                                             --signed-tag <t> for the
@@ -45,11 +45,11 @@
 #   pinned deploy [--dry-run]                 sync flake inputs to approved revs, rebuild
 #   pinned setup [--yes]                      provision sudoers digest pin; self-install
 #
-# approve, add, setup, tombstone, mv, signer add/remove and ignorable
+# review, add, setup, tombstone, mv, signer add/remove and ignorable
 # add/remove self-elevate via sudo (re-exec of the installed root-owned
 # binary); sign runs as the user because it needs the SSH agent.
 #
-# approve runs root-owned code end to end: it resolves the rev to a hash, shows
+# review runs root-owned code end to end: it resolves the rev to a hash, shows
 # the diff from the OBJECT STORE (scrubbed env, no user git config, no pager,
 # no hooks), and writes the approved hash to a root-owned pin file. Deploy
 # tooling builds git+file://<repo>?rev=<hash> and nothing else. The hash never
@@ -57,8 +57,8 @@
 #
 # Signing exports the pin: sign creates a perfectly normal signed release
 # tag (git tag -s, nothing pinned-specific in the repo), but the hash it
-# signs comes from the root-owned pin file -- you read once at approve;
-# nothing is re-read at sign time, so there is nothing to MITM. approve
+# signs comes from the root-owned pin file -- you read once at review;
+# nothing is re-read at sign time, so there is nothing to MITM. review
 # --signed-tag verifies such a tag against root-owned allowed signers
 # (per-slot signers/allowed_signers first, the user tier's
 # policy/allowed_signers as fallback; git's native format) -- that is the
@@ -119,7 +119,7 @@
 #
 # IGNORED KEYS: a file slot may additionally declare `ignored.json` (a JSON
 # array of jq key paths, e.g. [["model"],["statusLine","command"]]) --
-# written ONLY by the approve ceremony. The PIN stays byte-exact -- `shasum
+# written ONLY by the review ceremony. The PIN stays byte-exact -- `shasum
 # -c pin.sha256` still verifies -- and ignoring is a VERIFY-side tolerance:
 # when the live bytes differ, verify may compare the live side against a
 # witness with those keys projected out and answer 5 instead of 11. Every
@@ -133,12 +133,12 @@
 # launch-time payload of only the slot dirs it is measured against, whose
 # files the lane already reads through its own mounts. Bounded is not
 # nothing, though, so it stays a per-slot human decision, re-stated by every
-# ceremony exactly like `tag`: an approve without --store DROPS a copy the
+# ceremony exactly like `tag`: a review without --store DROPS a copy the
 # slot holds today, loudly. `pinned cat` is custody's verified reader --
 # consumers must never open a slot file directly.
 #
 # THE IGNORABLE LADDER. What a slot may declare is itself gated, by two
-# root-owned policy tiers, and every rung is checked at approve AND at
+# root-owned policy tiers, and every rung is checked at review AND at
 # verify -- narrowing the policy bites at the next verify, with no
 # re-ceremony:
 #
@@ -243,7 +243,7 @@ ${C_B}pinned setup will:${C_OFF}
 If a package manager or configuration-management tool installs pinned
 for you, you may prefer declaring the binary and sudoers entry there
 instead of running setup: see ${C_CYN}README, "Declarative install"${C_OFF}
-${C_DIM}(this repo ships a Nix flake)${C_OFF} -- approve works pre-install,
+${C_DIM}(this repo ships a Nix flake)${C_OFF} -- review works pre-install,
 so setup is not required on such machines.
 
 ${C_DIM}The exception: when pinned will gate that configuration's own deploys,
@@ -257,8 +257,8 @@ usage() {
   cat >&2 <<EOF
 usage: pinned <action> [args]
 
-  approve <repo>... [options]    (sudo) review the diff since the last pin, write pin
-  approve --file <path> ...      (sudo) file-pin ceremony: freeze, review, record hash
+  review <repo>... [options]     (sudo) review the diff since the last pin, write pin
+  review --file <path> ...       (sudo) file-pin ceremony: freeze, review, record hash
   tombstone <path>               (sudo) retire a pinned file that is gone
   mv <old> <new>                 (sudo) re-key a record to a moved path
   verify [options] <path>        file-pin verdict; quiet exit-code contract for gates
@@ -270,9 +270,9 @@ usage: pinned <action> [args]
   show <file|repo> [options]     trusted re-display; files get hash + wrapper
   list [--under <dir>]           live pins in your tier
   slot <path>                    print the slot directory for a path
-  add <repo|url> [options]       (sudo) clone if needed, approve, declare as a flake input
+  add <repo|url> [options]       (sudo) clone if needed, review, declare as a flake input
   deploy [--dry-run] [--yes]     sync system flake inputs to approved revs, rebuild
-  upgrade [--dry-run] [--yes]    (sudo) approve every stale flake input, then deploy
+  upgrade [--dry-run] [--yes]    (sudo) review every stale flake input, then deploy
   setup [--yes]                  (sudo) provision sudoers digest pin; self-install
 
 full options, exit codes, and the contract: man pinned
@@ -398,7 +398,7 @@ require_root() {
 
 # git resolved from the pinned PATH above (root-owned dirs only), so a
 # user-writable prefix can never shadow it. Fail loud up front rather than
-# confusingly mid-approve. If your trusted git lives outside those dirs, edit
+# confusingly mid-ceremony. If your trusted git lives outside those dirs, edit
 # the PATH line BEFORE bootstrapping: this hand-read file is the configuration
 # surface (declarative installs substitute it at build time instead).
 command -v git >/dev/null 2>&1 || {
@@ -429,11 +429,11 @@ page() {
 # The root-side ceremony announces itself: everything below this line is
 # pinned's own authoritative display, not a caller's orientation preview.
 # Printed only after the self-elevation, never in the pre-sudo handoff, and
-# with NO leading blank -- a direct `pinned approve` must not open with a
+# with NO leading blank -- a direct `pinned review` must not open with a
 # stray empty line, so the separator before the handoff belongs to whoever
 # called us (see the hardening shim's claude wrapper).
 ceremony_banner() {
-  printf '%s=== pinned: approve (authoritative) ===%s\n' "$C_B" "$C_OFF"
+  printf '%s=== pinned: review (authoritative) ===%s\n' "$C_B" "$C_OFF"
 }
 
 # ---- review-display highlighters -------------------------------------------
@@ -818,7 +818,7 @@ ancestry_gate() {
   else
     echo "        the pinned line of history is being abandoned" >&2
   fi
-  echo "        declare it to proceed: pinned approve $p --$actual" >&2
+  echo "        declare it to proceed: pinned review $p --$actual" >&2
   return 1
 }
 
@@ -929,7 +929,7 @@ plural_s() { [ "$1" = 1 ] || printf s; }
 # file -- the normalization-insensitive default macOS volume -- canon_path
 # has already resolved it: readlink -f returns the spelling the filesystem
 # stores, whichever spelling it was given, and every recorded key goes
-# through it (approve --file refuses a path that is not a regular file). The
+# through it (review --file refuses a path that is not a regular file). The
 # filesystem is the authority on whether two names are one file; this
 # function must not second-guess it.
 encode() {
@@ -1556,7 +1556,7 @@ slot_declares_ignore() {
 # and an unreadable tier of either kind grants nothing either.
 
 # The shared jq preamble: the two coverage rules live in exactly one place,
-# so the approve-side check, the verify-side check and the intersection can
+# so the review-side check, the verify-side check and the intersection can
 # never drift apart. norm() folds a trailing slash and spells the root as
 # "" (so "" + "/" prefixes every absolute path).
 POLICY_JQ='
@@ -1615,7 +1615,7 @@ read_policy_file() {
 # Load both tiers and their intersection for tier user $1:
 #   POL_MACHINE  the machine tier, "" when there is none
 #   POL_USER     the user tier ([] when absent)
-#   POL_EFF      what approve and verify actually check against
+#   POL_EFF      what review and verify actually check against
 # Returns 1, loudly, when a tier that EXISTS cannot be read: an unreadable
 # policy grants nothing rather than everything.
 POL_MACHINE="" POL_USER="[]" POL_EFF="[]"
@@ -2007,7 +2007,7 @@ do_setup() {
   log_action setup
   echo
   echo "setup complete"
-  echo "  next: sudo pinned approve <repo>"
+  echo "  next: sudo pinned review <repo>"
 }
 
 if [ "$action" = "setup" ]; then
@@ -2075,8 +2075,8 @@ default_flake_file() {
 # inputs left a reader unable to tell "at its pin" from "this tool never
 # looked at it".
 #
-# The declared tag rides along because upgrade must NOT plain-approve a
-# tag-declared slot: a plain approve clears the declaration, and deploy
+# The declared tag rides along because upgrade must NOT route a tag-declared
+# slot through a plain review: that clears the declaration, and deploy
 # would leave ref= aimed at a tag that no longer names the rev. The state
 # rides along because the ancestry class is upgrade's FLOOR -- only forward
 # inputs may join an automatic ceremony -- and because everything else the
@@ -2144,12 +2144,12 @@ scan_flake_inputs() { # <flakefile> [tier-user]
 # The single release tag at a repo's HEAD, if there is EXACTLY one and it
 # passes the declared-name grammar -- upgrade's deterministic selector for
 # tag-declared slots. Empty output = no unambiguous release at HEAD (none,
-# several, or an out-of-grammar name): route to a manual approve --tag,
+# several, or an out-of-grammar name): route to a manual review --tag,
 # never guess. A name-sorted "latest release" search is deliberately NOT
 # offered: version sort is a convention, and the tag namespace is
 # attacker-writable repo content -- an invented v99 or a backward-pointing
 # tag must never CHOOSE what a ceremony reviews. A tag AT HEAD adds only a
-# name to the commit a plain approve would already review.
+# name to the commit a plain review would already cover.
 head_release_tag() { # <repo-path>
   local t n
   t="$(git -C "$1" -c safe.directory="$1" tag --points-at HEAD 2>/dev/null || true)"
@@ -2161,7 +2161,7 @@ head_release_tag() { # <repo-path>
 }
 
 # The signed-release OFFER's discovery: for one stale forward repo, the tags
-# upgrade would hand to `approve --signed-tag`, one per line.
+# upgrade would hand to `review --signed-tag`, one per line.
 #
 # WHY SELECTION MAY HAPPEN HERE AND NOT IN head_release_tag ABOVE. Tag names
 # are attacker-writable repo content, so an UNVERIFIED name must never CHOOSE
@@ -2278,11 +2278,11 @@ signed_offer_lag() {
 # word, because a command substitution's subshell would strip the second
 # half. The detail is the agreeing tag names for `signed`, the HEAD release
 # for `tagged`, the stale declaration for `notag`, empty for the rest.
-#   signed    approve --signed-tag <tags>
+#   signed    review --signed-tag <tags>
 #   disagree  verified tags with no unique maximum -- by-hand work
-#   tagged    approve --tag <release at HEAD>
+#   tagged    review --tag <release at HEAD>
 #   notag     tag-declared, no single release at HEAD -- by-hand work
-#   review    plain approve
+#   review    plain review
 # $1 = repo path, $2 = declared tag ('' = rev-only slot), $3 = tier user.
 upgrade_route() {
   local p="$1" tag="$2" tu="$3" rc=0 so ht
@@ -2333,7 +2333,7 @@ print_upgrade_plan() {
             # the palette's own emphasis on an identifier (cyan everywhere;
             # yellow stays attention text), so they read before anything
             # quiet on the page does.
-            lbl="approve:" lc="$C_B" pc="$C_CYN$C_B"; act=1 ;;
+            lbl="review:" lc="$C_B" pc="$C_CYN$C_B"; act=1 ;;
         esac
         case "$upg_route" in
           signed)
@@ -2356,10 +2356,10 @@ EOF
             det="(release tag $upg_info)" ;;
           notag)
             lbl="skipped:" lc="$C_YEL" pc=""
-            det="(declared tag $upg_info; no single release tag at HEAD -- approve --tag by hand)" ;;
+            det="(declared tag $upg_info; no single release tag at HEAD -- review --tag by hand)" ;;
           disagree)
             lbl="skipped:" lc="$C_YEL" pc=""
-            det="(verified signed tags disagree -- approve --signed-tag by hand)" ;;
+            det="(verified signed tags disagree -- review --signed-tag by hand)" ;;
         esac ;;
       equal)
         lbl="at pin:"; quiet=$((quiet + 1)) ;;
@@ -2372,10 +2372,10 @@ EOF
       # loudly, with the flag that would declare them, and join no batch.
       backward)
         lbl="refused:" lc="$C_RED$C_B" pc=""
-        det="(checkout is backward of the pin -- approve --backward by hand)" ;;
+        det="(checkout is backward of the pin -- review --backward by hand)" ;;
       diverged)
         lbl="refused:" lc="$C_RED$C_B" pc=""
-        det="(checkout diverged from the pin -- approve --diverged by hand)" ;;
+        det="(checkout diverged from the pin -- review --diverged by hand)" ;;
       norev)
         lbl="no pin:"; quiet=$((quiet + 1))
         det="(no rev= in the input -- nix floats the ref; nothing to sync)" ;;
@@ -2447,9 +2447,9 @@ EOF
 # digest-pinned) binary under sudo so the elevated code is never a copy the
 # invoker could have modified. Pre-install (setup from a checkout) falls
 # back to this script's own path. Sits after the helper definitions so the
-# approve preview below can reuse them.
+# review preview below can reuse them.
 case "$action" in
-  approve|add|setup|tombstone|upgrade|mv)
+  review|add|setup|tombstone|upgrade|mv)
     if [ "$EUID" -ne 0 ]; then
       # tombstone without exactly its <path> can only ever reach usage --
       # fail here, before authentication costs a sudo prompt.
@@ -2468,7 +2468,7 @@ case "$action" in
         fi
         if [ -e "$mv_old" ]; then
           echo "REFUSE: $mv_old still exists -- you mv a record whose content has already moved" >&2
-          echo "        (move the content first, or approve $mv_new instead)" >&2
+          echo "        (move the content first, or review $mv_new instead)" >&2
           exit 1
         fi
         printf '%sold:%s        %s %s(gone)%s\n' "$C_B" "$C_OFF" "$mv_old" "$C_DIM" "$C_OFF"
@@ -2491,7 +2491,7 @@ case "$action" in
       # upgrade: the plan, free of charge -- every input of the flake, with
       # the ones the root-side ceremonies will cover highlighted among them.
       # Orientation only: everything is re-derived as root after sudo, the
-      # same contract as approve's preview.
+      # same contract as review's preview.
       # Malformed argv dies here too, before authentication.
       if [ "$action" = "upgrade" ]; then
         upg_flake="" upg_next=0
@@ -2528,11 +2528,11 @@ case "$action" in
           set -- --yes "$@"
         fi
       fi
-      # approve: an unprivileged PREVIEW of what authenticating will let
+      # review: an unprivileged PREVIEW of what authenticating will let
       # you review, so the sudo prompt never arrives context-free. This is
       # orientation only -- the authoritative review re-derives everything
       # from the object store as root, after sudo.
-      if [ "$action" = "approve" ]; then
+      if [ "$action" = "review" ]; then
         preview_repos=() preview_tag="" skip_next=0 want_tag=0 file_mode=0 have_ev=0
         preview_step=0 preview_trust=0 preview_signed=0 preview_decl=""
         for a in "$@"; do
@@ -2559,7 +2559,7 @@ case "$action" in
             *) preview_repos+=("$a") ;;
           esac
         done
-        # A bare approve -- no repo, no --file -- can only ever reach
+        # A bare review -- no repo, no --file -- can only ever reach
         # usage; fail here, before authentication costs a sudo prompt.
         if [ "${#preview_repos[@]}" -eq 0 ] && [ "$file_mode" -eq 0 ]; then usage; fi
         # --step's refusals, mirrored pre-sudo. The root side re-checks every
@@ -2580,7 +2580,7 @@ case "$action" in
           fi
           if [ -n "$preview_decl" ]; then
             echo "--step walks the commits between the pin and the endpoint, which only exist going forward;" >&2
-            echo "approve --$preview_decl without --step: the whole-delta diff shows what actually changes" >&2
+            echo "review --$preview_decl without --step: the whole-delta diff shows what actually changes" >&2
             exit 1
           fi
         fi
@@ -2602,7 +2602,7 @@ case "$action" in
         # bind to dies here, pre-sudo (the root side re-checks).
         if [ "${#preview_repos[@]}" -gt 1 ] \
           && { [ "$have_ev" -eq 1 ] || [ "$preview_step" -eq 1 ] || [ -n "$preview_decl" ]; }; then
-          echo "--tag, --signed-tag, --trust, --step and the ancestry declarations bind to one repo; approve multiple repos plain" >&2
+          echo "--tag, --signed-tag, --trust, --step and the ancestry declarations bind to one repo; review multiple repos plain" >&2
           exit 1
         fi
         if [ "${#preview_repos[@]}" -gt 0 ] && [ "$file_mode" -eq 0 ]; then
@@ -2625,7 +2625,7 @@ case "$action" in
             # reads as "no pin" here because the read above is silenced; the
             # root side answers such a slot with its own, accurate refusal.)
             if [ "$preview_step" -eq 1 ] && [ -z "$preview_pin" ]; then
-              echo "first approval reviews the full tree; approve without --step" >&2
+              echo "first approval reviews the full tree; review without --step" >&2
               exit 1
             fi
             # Same short-circuit the privileged side would take -- but here it
@@ -2819,7 +2819,7 @@ case "$action" in
       # contract. The ownership/digest details that used to follow said
       # nothing the checks just above had not already enforced -- the
       # command line and the contract are the parts a reader acts on.
-      if { [ "$action" = "approve" ] || [ "$action" = "upgrade" ] || [ "$action" = "add" ]; } \
+      if { [ "$action" = "review" ] || [ "$action" = "upgrade" ] || [ "$action" = "add" ]; } \
         && [ "$elev" = "$INSTALL_TARGET" ]; then
         cmd_disp="$(elevation_cmd_disp "$elev" "$action" "$@")"
         printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
@@ -2839,7 +2839,7 @@ case "$action" in
         if [ "$EUID" -ne 0 ]; then
           # Argv that can only ever reach a root-side argument error fails
           # HERE, before authentication costs a sudo prompt -- the same
-          # contract as approve's preview. Grammar and content stay
+          # contract as review's preview. Grammar and content stay
           # root-side; presence of the ceremony's object is checkable free.
           if [ "$action" = "signer" ]; then
             has_key=0 skip_next=0
@@ -2885,7 +2885,7 @@ case "$action" in
               *) echo "aborted"; exit 2 ;;
             esac
           fi
-          # The pre-sudo handoff approve gives, in the same shape: the
+          # The pre-sudo handoff review gives, in the same shape: the
           # exact command, then what the authentication buys. The root
           # side stays authoritative -- it displays the object and
           # confirms before writing.
@@ -2902,10 +2902,10 @@ case "$action" in
     ;;
 esac
 
-# ---- approve -----------------------------------------------------------------
+# ---- review ------------------------------------------------------------------
 
 do_approve() {
-  require_root approve
+  require_root review
 
   # Orthogonal surface: --tag selects WHICH commit (default HEAD) and, once
   # slots record names, what deploy declares; the evidence flags say WHY it
@@ -3010,7 +3010,7 @@ do_approve() {
   # A vouch adds nothing to a signature gate; refuse the no-op combination
   # rather than silently ignoring one flag.
   if [ "$trust" -eq 1 ] && [ "${#tag_args[@]}" -gt 0 ]; then
-    echo "--trust adds nothing to a signature-gated approve; drop one" >&2
+    echo "--trust adds nothing to a signature-gated review; drop one" >&2
     exit 1
   fi
   # --step's refusals (the preview refuses the same set pre-sudo; these are
@@ -3031,7 +3031,7 @@ do_approve() {
     # deploy step, which a walk that advances the pin mid-flight cannot
     # honour. Defensive -- upgrade never passes --step.
     if [ "${APPROVE_BATCH:-0}" -ne 0 ]; then
-      echo "--step is an interactive single-repo walk; it does not run inside a batch approve" >&2
+      echo "--step is an interactive single-repo walk; it does not run inside a batch review" >&2
       exit 1
     fi
     # The walk is a FORWARD reading by construction: it replays the commits
@@ -3039,7 +3039,7 @@ do_approve() {
     # commits to replay when the endpoint sits behind or beside the pin.
     if [ -n "$decl_class" ]; then
       echo "--step walks the commits between the pin and the endpoint, which only exist going forward;" >&2
-      echo "approve --$decl_class without --step: the whole-delta diff shows what actually changes" >&2
+      echo "review --$decl_class without --step: the whole-delta diff shows what actually changes" >&2
       exit 1
     fi
   fi
@@ -3056,11 +3056,11 @@ do_approve() {
   if [ "${#repo_args[@]}" -gt 1 ] \
     && { [ -n "$sel_tag" ] || [ "$trust" -eq 1 ] || [ "${#tag_args[@]}" -gt 0 ] || [ "$step" -eq 1 ] \
       || [ -n "$decl_class" ]; }; then
-    echo "--tag, --signed-tag, --trust, --step and the ancestry declarations bind to one repo; approve multiple repos plain" >&2
+    echo "--tag, --signed-tag, --trust, --step and the ancestry declarations bind to one repo; review multiple repos plain" >&2
     exit 1
   fi
 
-  # Create the pin tree BEFORE the ancestry checks -- approve must work on
+  # Create the pin tree BEFORE the ancestry checks -- review must work on
   # machines that never ran setup (declarative installs); ensure_tree also
   # re-asserts ownership and modes on an existing tree.
   ensure_tree "$inv"
@@ -3110,7 +3110,7 @@ do_approve() {
     # a tree that already exists. (The preview refuses this pre-sudo too --
     # this is the authoritative re-check.)
     if [ "$step" -eq 1 ] && [ -z "$old_hash" ]; then
-      echo "first approval reviews the full tree; approve without --step" >&2
+      echo "first approval reviews the full tree; review without --step" >&2
       exit 1
     fi
 
@@ -3203,7 +3203,7 @@ do_approve() {
           printf '%smerge base:%s %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$ancestry_mb" "$C_OFF"
         fi
         # Free orientation on any machine with the clone (that is, every
-        # machine approve runs on); the signature stays the gate.
+        # machine review runs on); the signature stays the gate.
         echo
         print_ancestry_listing "$ancestry_cls" "$old_hash" "$hash" "$ancestry_mb"
       fi
@@ -3327,7 +3327,7 @@ do_approve() {
     # only): deploy syncs the input's ref= to it after cross-checking the
     # live tag still names the pinned rev. The --tag selector is the
     # declared name; with only --signed-tag evidence the first signed name
-    # is the fallback; a plain review approve with no tag CLEARS any prior
+    # is the fallback; a plain review with no tag CLEARS any prior
     # declaration (no declaration -> rev-only sync, a supported shape).
     local decl_tag="$sel_tag"
     if [ -z "$decl_tag" ] && [ "${#tag_args[@]}" -gt 0 ]; then
@@ -3406,7 +3406,7 @@ EOF
   if [ "$m" -eq 0 ]; then
     printf '%sERROR: no commits from the pin to %.10s -- the pin is not behind HEAD%s\n' \
       "$C_RED$C_B" "$hash" "$C_OFF" >&2
-    echo "       (reversed or diverged history); approve --backward or --diverged" >&2
+    echo "       (reversed or diverged history); review --backward or --diverged" >&2
     echo "       without --step: the whole-delta diff shows what actually changes" >&2
     return 1
   fi
@@ -3445,7 +3445,7 @@ EOF
     # A repo pin has no JSON keys to tolerate: taking the slot over from a
     # file pin drops any ignored-key declaration with it.
     clear_slot_ignore "$slot"
-    # A mid-walk yes is a plain review approve, so it CLEARS any declared
+    # A mid-walk yes is a plain review, so it CLEARS any declared
     # release name; the declaration is written back only if this yes is the
     # --tag selector's own commit -- the walk arriving at the name it was
     # asked to walk to.
@@ -3640,7 +3640,7 @@ do_approve_files() {
     new_digest="$(hash_file "$file_algo" "$fro")" || exit 1
 
     # THE TAG RULE, over every extra a slot can hold: the ceremony re-states
-    # ALL of them EVERY time, so an approve carrying no --ignore clears the
+    # ALL of them EVERY time, so a review carrying no --ignore clears the
     # declaration and one carrying no --store drops the stored witness.
     # Identical bytes are therefore a no-op only when the declaration AND the
     # custody state are identical too -- otherwise the human still has a
@@ -3847,7 +3847,7 @@ do_tombstone() {
   path="$(canon_path "$1")" || exit 1
   if [ -e "$path" ]; then
     echo "REFUSE: $path still exists -- you tombstone what's gone, not what's live" >&2
-    echo "        (retire the content first, or approve the current content instead)" >&2
+    echo "        (retire the content first, or review the current content instead)" >&2
     exit 1
   fi
   ensure_tree "$inv"
@@ -3932,19 +3932,19 @@ do_mv() {
   new_slot="$(slot_dir_for "$inv" "$new")"
 
   inspect_slot "$old_slot" || {
-    echo "       a malformed record cannot be moved; fix the slot by hand, or approve $new" >&2
+    echo "       a malformed record cannot be moved; fix the slot by hand, or review $new" >&2
     exit 1
   }
   case "$slot_state" in
     none)
       echo "no slot: $old was never approved; there is no record to move" >&2
-      echo "       (approve $new instead)" >&2
+      echo "       (review $new instead)" >&2
       exit 1 ;;
     tombstone)
       IFS= read -r line <"$slot_file" || line=""
       echo "REFUSE: $old is tombstoned ($line)" >&2
       echo "        a tombstone marks the old path's own history; it does not travel --" >&2
-      echo "        approve $new instead" >&2
+      echo "        review $new instead" >&2
       exit 1 ;;
   esac
   state="$slot_state" kind="$slot_kind" src="$slot_file"
@@ -3955,7 +3955,7 @@ do_mv() {
   # one record.
   if [ -e "$old" ]; then
     echo "REFUSE: $old still exists -- you mv a record whose content has already moved" >&2
-    echo "        (move the content first, or approve $new instead)" >&2
+    echo "        (move the content first, or review $new instead)" >&2
     exit 1
   fi
 
@@ -3967,7 +3967,7 @@ do_mv() {
     inspect_slot "$new_slot" || exit 1
     if [ "$slot_state" != none ]; then
       echo "REFUSE: $new already has a record ($slot_state); records do not merge" >&2
-      echo "        tombstone or approve $new explicitly" >&2
+      echo "        tombstone or review $new explicitly" >&2
       exit 1
     fi
     if [ -e "$new_slot/signers" ]; then
@@ -3988,7 +3988,7 @@ do_mv() {
     rev) target="rev.$kind"; what=rev ;;
     *)   target="pin.$kind"; what=digest ;;
   esac
-  # Same shape as approve: walk from the state file when the slot exists,
+  # Same shape as review: walk from the state file when the slot exists,
   # from the slot itself when this write is about to create it.
   if [ -d "$new_slot" ]; then
     verify_ancestry "$new_slot/$target" || exit 1
@@ -4053,7 +4053,7 @@ do_mv() {
         11)
           mv_verify_said "$old" "$new" "$vout"
           echo "REFUSE: the content at $new is not what $old's record names" >&2
-          echo "        a mv carries the record verbatim; approve $new instead" >&2
+          echo "        a mv carries the record verbatim; review $new instead" >&2
           exit 1 ;;
         *)
           mv_verify_said "$old" "$new" "$vout"
@@ -4177,7 +4177,7 @@ do_mv() {
 # ---- verify ----------------------------------------------------------------
 
 # The consumer verdict for file pins -- replaces every consumer's
-# private copy of the state table (writer/reader split: approve records,
+# private copy of the state table (writer/reader split: review records,
 # verify answers). Exit contract, a stable API:
 #   0   state matches the record (pin + match, or tombstone + absent)
 #   5   the bytes differ, but ONLY in keys the slot declared ignored (see
@@ -4191,7 +4191,7 @@ do_mv() {
 #   30  mode/ownership invariant violated
 # The decade is the consumer's action class, and it is ONE taxonomy across
 # the verbs that answer about a record (verify here, cat below): teens
-# "approve fixes it", twenties "restore or tombstone", thirties "invariant".
+# "review fixes it", twenties "restore or tombstone", thirties "invariant".
 # 12, 14 and 15 are RETIRED and never reused; 16 belongs to cat ("no stored
 # witness"). A new code takes the next free number in its class.
 #
@@ -4221,7 +4221,7 @@ do_mv() {
 #   verify --baseline <copy> <path>
 #                                 a CALLER-BROUGHT WITNESS for the ignored-key
 #                                 comparison, for a slot that keeps none of
-#                                 its own (approve --store is what keeps one).
+#                                 its own (review --store is what keeps one).
 #                                 A permanent interface, not a shim: custody
 #                                 is opt-in, so a caller that held the last
 #                                 approved bytes is an ordinary case. The copy
@@ -4312,7 +4312,7 @@ do_verify() {
       echo "ERROR: $slot/approved does not re-hash to its own record; malformed slot" >&2
       echo "  record $label: $rec_digest" >&2
       echo "  copy   $label: $copy_digest" >&2
-      echo "  re-approve the path to reset the slot: pinned approve --file $path ..." >&2
+      echo "  re-approve the path to reset the slot: pinned review --file $path ..." >&2
       exit 1
     }
   fi
@@ -4408,7 +4408,7 @@ do_verify() {
 #   10  no record for this path
 #   13  tombstoned
 #   16  the record is valid but the slot keeps NO witness (remediation:
-#       pinned approve --file <path> --store)
+#       pinned review --file <path> --store)
 #   20  the record is live but the FILE is missing
 #   30  a slot ownership/mode invariant is violated
 # NOTHING reaches stdout in any failure case: a consumer piping cat into a
@@ -4425,7 +4425,7 @@ do_verify() {
 # 20 BEFORE 16, deliberately: a deleted file signals retirement, and custody
 # must not go on serving a removed file's content to consumers that never
 # notice it is gone -- restore it, or tombstone it. Answering 16 first would
-# also name a remediation that cannot run, since approve --file refuses a
+# also name a remediation that cannot run, since review --file refuses a
 # path that is not there.
 #
 # SERVES DESPITE DRIFT, deliberately: a consumer pointed straight at the
@@ -4483,7 +4483,7 @@ do_cat() {
 
   if [ ! -e "$slot/approved" ]; then
     echo "REFUSE: $slot keeps no approved copy; there is nothing to serve" >&2
-    echo "        (custody is opt-in: pinned approve --file $path --store)" >&2
+    echo "        (custody is opt-in: pinned review --file $path --store)" >&2
     exit 16
   fi
   [ -f "$slot/approved" ] || {
@@ -4497,7 +4497,7 @@ do_cat() {
     echo "ERROR: $slot/approved does not re-hash to its own record; malformed slot" >&2
     echo "  record $REC_LABEL: $REC_DIGEST" >&2
     echo "  copy   $REC_LABEL: $copy_digest" >&2
-    echo "  re-approve the path to reset the slot: pinned approve --file $path --store" >&2
+    echo "  re-approve the path to reset the slot: pinned review --file $path --store" >&2
     exit 1
   }
   # Only now, and raw. The bytes are the deliverable, so nothing decorates
@@ -4646,7 +4646,7 @@ do_sign() {
 
   local hash
   hash="$(read_rev "$default_slot")" || exit 1
-  [ -n "$hash" ] || { echo "no pin for $repo -- approve first" >&2; exit 1; }
+  [ -n "$hash" ] || { echo "no pin for $repo -- review first" >&2; exit 1; }
 
   # An existing tag may be signed IF it already points at the pinned rev
   # (e.g. an unsigned release tag being promoted). Pointing anywhere else
@@ -4658,7 +4658,7 @@ do_sign() {
     existing="$(sgit rev-parse "refs/tags/${tag_name}"'^{commit}')"
     if [ "$existing" != "$hash" ]; then
       echo "ERROR: tag $tag_name exists at $existing, not the pinned $hash" >&2
-      echo "       refusing to move it -- pick another name, or approve that rev first" >&2
+      echo "       refusing to move it -- pick another name, or review that rev first" >&2
       exit 1
     fi
     echo "note: $tag_name already points at the pinned rev; re-signing in place"
@@ -4676,7 +4676,7 @@ do_sign() {
     git -C "$repo" --no-pager tag -s -m "signed by $inv via pinned" "$tag_name" "$hash"
   fi
   printf '%s✓ signed:%s %s at %s%s%s (the pinned hash)\n' "$C_GRN$C_B" "$C_OFF" "$tag_name" "$C_CYN" "$hash" "$C_OFF"
-  printf '%s  consumers verify with approve --signed-tag %s against their allowed_signers%s\n' "$C_DIM" "$tag_name" "$C_OFF"
+  printf '%s  consumers verify with review --signed-tag %s against their allowed_signers%s\n' "$C_DIM" "$tag_name" "$C_OFF"
   log_action sign "$repo" "$hash"
 }
 
@@ -4792,10 +4792,11 @@ do_list() {
 # Trusted display of a file OUTSIDE any repo, for hash-gated consumers (e.g. a
 # hook wired in a content-gated settings file: the wrapper reads once, hashes
 # what it read, and executes only on match). Show is the REHEARSAL: it
-# records nothing -- `approve --file` is the ceremony that does, and
-# `verify --emit` is the programmatic read. Humans review, machines verify,
-# records happen only in approve. A DIRECTORY argument takes the repo branch
-# below (do_show_repo) instead; the file ceremony here is untouched by it.
+# records nothing -- `review --file` is the ceremony that does, and
+# `verify --emit` is the programmatic read. Humans review, machines verify;
+# the record happens only in the review ceremony. A DIRECTORY argument
+# takes the repo branch below (do_show_repo) instead; the file ceremony
+# here is untouched by it.
 #
 # The security-relevant act is the READ, not the hash. Hashing is trivial;
 # what earns trust is that the bytes shown to you and the bytes hashed are the
@@ -5002,11 +5003,11 @@ EOF
 }
 
 # The repo half of show: re-display what the pin NAMES, through the same
-# hardened path the approve ceremony used. Once a repo is pinned, the only
+# hardened path the review ceremony used. Once a repo is pinned, the only
 # trusted re-read was for FILE pins (`cat` serves the stored witness); a repo's
 # content could only be re-read through ambient git, whose display is
 # falsifiable by repo-local diff drivers and textconv filters -- the whole
-# reason sgit exists. It RECORDS NOTHING: show rehearses, approve records.
+# reason sgit exists. It RECORDS NOTHING: show rehearses, review records.
 #
 # Unprivileged is correct here. Content-addressing carries the trust (the rev
 # names the bytes, and the pin file it comes from is root-owned), and the
@@ -5017,7 +5018,7 @@ do_show_repo() {
   local hash head_hash tag diff_out ahead
   hash="$(read_rev "$default_slot")" || exit 1
   [ -n "$hash" ] || {
-    echo "no pin for $repo; show re-displays a pin (approve it first)" >&2
+    echo "no pin for $repo; show re-displays a pin (review it first)" >&2
     exit 1
   }
   # Availability up front: a rev the object store no longer holds (rewritten
@@ -5055,7 +5056,7 @@ do_show_repo() {
   else
     printf '%slive HEAD does not descend from the pin%s\n' "$C_DIM" "$C_OFF"
   fi
-  # No dirty-tree note: approve carries one because it pins HEAD's commit while
+  # No dirty-tree note: review carries one because it pins HEAD's commit while
   # the reviewer looks at a work tree that may hold more. This display comes
   # from the object store at a rev that is already fixed, so uncommitted
   # changes cannot alter a byte of it and saying otherwise would be noise.
@@ -5118,7 +5119,7 @@ do_slot() {
 # list); --repo writes the per-slot override at slots/<enc>/signers/,
 # which stays with the slot because slot contents are one disclosure
 # class. `signer add --repo` may create a slot dir holding only signers/ -- a legitimate
-# pre-approve bootstrap, since approve --signed-tag verifies AGAINST the
+# pre-approve bootstrap, since review --signed-tag verifies AGAINST the
 # signers; verify still answers "no slot" for such a dir. remove is
 # first-class: key compromise response must not be the hand-edited path.
 #
@@ -5167,7 +5168,7 @@ do_signer() {
   done
 
   # Resolve the target file. resolve_repo keys the slot to the ceremony
-  # tier (SUDO_USER when elevated), same as approve.
+  # tier (SUDO_USER when elevated), same as review.
   local tier target
   tier="$(tier_user)"
   if [ -n "$repo_arg" ]; then
@@ -5333,7 +5334,7 @@ EOF
 # The user tier of the ignorable policy, managed by the same kind of
 # ceremony the signers get: display, confirm, atomic root-owned write,
 # syslog line. Nothing here decides that a key IS ignored -- that stays the
-# approve ceremony's per-path declaration. This decides only what such a
+# review ceremony's per-path declaration. This decides only what such a
 # declaration is ALLOWED to say, which is why it is a separate root act:
 # granting "model may drift under my settings dir" once is a decision worth
 # making deliberately; re-confirming it at every settings edit is not.
@@ -5437,7 +5438,7 @@ do_ignorable() {
     "$C_B" "$C_OFF" "$C_CYN" "$key" "$C_OFF" "$C_DIM" "$path_json" "$C_OFF"
   printf '%sscope:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$scope_disp" "$C_OFF"
   if [ "$sub" = add ]; then
-    printf '            %sapprove --file may then declare this key ignored for paths in%s\n' "$C_DIM" "$C_OFF"
+    printf '            %sreview --file may then declare this key ignored for paths in%s\n' "$C_DIM" "$C_OFF"
     printf '            %sscope; verify answers 5 instead of 11 when only it drifts%s\n' "$C_DIM" "$C_OFF"
     if [ "$covered" -eq 0 ]; then
       printf '%snote:%s        %sthe machine policy (%s) does not cover this scope --\n' \
@@ -5509,7 +5510,7 @@ do_ignorable_list() {
     policy_print_entries "$POL_USER"
   fi
   echo
-  printf '%seffective%s %s(machine intersect user -- what approve and verify check)%s\n' \
+  printf '%seffective%s %s(machine intersect user -- what review and verify check)%s\n' \
     "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
   policy_print_entries "$POL_EFF"
 }
@@ -5704,11 +5705,11 @@ $inputs
 EOF
   printf '\n'
 
-  # The update path: upgrade chains the batch of approve ceremonies and
+  # The update path: upgrade chains the batch of review ceremonies and
   # this deploy behind one authentication; the selective form stays
   # pasteable. Approval remains its own ceremony -- deploy only points.
   if [ "${#stale_repos[@]}" -gt 0 ]; then
-    upd_cmd="pinned approve"
+    upd_cmd="pinned review"
     for p in "${stale_repos[@]}"; do upd_cmd="$upd_cmd $p"; done
     printf '%sTo update (each repo still reviewed):%s\n' "$C_B" "$C_OFF"
     printf '  pinned upgrade\n'
@@ -5784,15 +5785,15 @@ EOF
 
 # ---- upgrade ---------------------------------------------------------------
 
-# approve + deploy, chained: every git+file input whose checkout moved past
-# its pin gets the SAME review ceremony `approve` runs -- upgrade removes
+# review + deploy, chained: every git+file input whose checkout moved past
+# its pin gets the SAME ceremony `review` runs -- upgrade removes
 # typing, never scrutiny -- then deploy syncs the flake to the approved
 # revs and rebuilds. The whole verb runs behind ONE self-elevation, so the
 # batch of ceremonies and the rebuild cost a single authentication
 # (deploy's own sudo calls are no-ops for root). A declined repo is
 # skipped, not fatal: deploy simply keeps its old rev. Tag-declared slots
 # are never plain-approved (that would clear the declaration and strand
-# the input's ref=); they are listed for a manual approve --tag instead.
+# the input's ref=); they are listed for a manual review --tag instead.
 # The ancestry floor is the admission rule: only FORWARD checkouts join a
 # ceremony here. Backward and diverged ones are named in the plan with the
 # declaration flag that would approve them by hand -- an automatic round
@@ -5974,7 +5975,7 @@ add_clone() { # <url> <name>
 # satisfied, and all three satisfied meaning there is nothing to do.
 #
 # NOTHING HERE IS A SECOND REVIEW PATH: the pin comes from do_approve, the
-# same ceremony `pinned approve` runs, and the flake edit reuses deploy's
+# same ceremony `pinned review` runs, and the flake edit reuses deploy's
 # in-place editor. add composes; it decides nothing about trust on its own.
 #
 # add never edits a CONSUMING repo. Wiring the input into a configuration
@@ -5998,7 +5999,7 @@ do_add() {
         [ $# -ge 2 ] || { echo "--input needs a name" >&2; exit 1; }
         [ -z "$name" ] || { echo "--input may be given once (it names one input)" >&2; exit 1; }
         name="$2"; shift 2 ;;
-      # Rides through to the ceremony unchanged, with approve's own
+      # Rides through to the ceremony unchanged, with review's own
       # semantics: repeatable, and every named tag must verify AND name the
       # same commit (threshold multisig).
       --signed-tag)
@@ -6122,7 +6123,7 @@ do_add() {
       *)
         echo "ERROR: $repo is on a detached HEAD and its slot declares no tag" >&2
         echo "       an input needs a ref: check out the branch you deploy from," >&2
-        echo "       or approve --tag <tag> so the record declares one" >&2
+        echo "       or review --tag <tag> so the record declares one" >&2
         exit 1 ;;
     esac
     # The same declared-name grammar tags answer to: the ref is spliced into
@@ -6171,7 +6172,7 @@ do_add() {
   printf '%s\n' "$block"
   if [ "$has_flake" -eq 0 ]; then
     printf '%snote: the approved tree has no flake.nix -- nix will refuse this input at\n' "$C_YEL"
-    printf '      eval time; add one, approve it, then rerun%s\n' "$C_OFF"
+    printf '      eval time; add one, review it, then rerun%s\n' "$C_OFF"
   elif [ "$follows" -eq 0 ]; then
     printf '%snote: the approved flake.nix declares no nixpkgs input, so the block carries\n' "$C_DIM"
     printf '      no follows line%s\n' "$C_OFF"
@@ -6240,7 +6241,7 @@ do_add() {
 }
 
 case "$action" in
-  approve)   do_approve "$@" ;;
+  review)    do_approve "$@" ;;
   add)       do_add "$@" ;;
   tombstone) do_tombstone "$@" ;;
   mv)        do_mv "$@" ;;

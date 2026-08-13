@@ -38,7 +38,7 @@
 # KNOWN COVERAGE GAPS (deliberate):
 #   - no real sudo, so the self-elevation preview, the sudoers digest pin,
 #     `setup` and `deploy` are untested here -- including the preview's
-#     mirrored copies of approve --step's refusals (S8e covers the root-side
+#     mirrored copies of review --step's refusals (S8e covers the root-side
 #     originals, which are the authoritative half)
 #   - signed-tag approval / `signer` / `sign` need an SSH agent and keys
 #   - the group-read tier (0750 root:_<user>-pinned) cannot be built without
@@ -54,7 +54,7 @@
 #
 # S8's first case is a REGRESSION test: a first-ever repo approval (no slot
 # dir yet) must succeed. This harness caught it refusing on delivery day --
-# the same not-yet-created-slot ancestry defect approve --file had -- and
+# the same not-yet-created-slot ancestry defect review --file had -- and
 # the fix landed with the harness. Details at the S8 comment.
 
 set -euo pipefail
@@ -411,7 +411,7 @@ assert_exit "$RC" 10 "absent path under a MISSING parent, no slot -> 10 (launch 
 assert_contains "$OUT" "no slot" "the missing-parent case still reaches the slot verdict"
 
 # ---------------------------------------------------------------------------
-say "S4: approve --file ceremony"
+say "S4: review --file ceremony"
 # ---------------------------------------------------------------------------
 mkdir -p "$SUB/a"
 printf 'first ever\n' > "$SUB/a/first.txt"
@@ -419,7 +419,7 @@ FIRST_SLOT="$(slot_of "$SUB/a/first.txt")"
 assert_absent "$FIRST_SLOT" "precondition: no slot dir before the first approval"
 ANS='y
 '
-run_pinned approve --file "$SUB/a/first.txt"
+run_pinned review --file "$SUB/a/first.txt"
 assert_exit "$RC" 0 "first-ever approval of an unpinned path succeeds (regression)"
 assert_contains "$OUT" "first approval" "ceremony announces the first approval"
 assert_contains "$OUT" "pin.sha256" "ceremony names the record it wrote"
@@ -430,7 +430,7 @@ assert_eq "$(cat "$FIRST_SLOT/pin.sha256")" \
 assert_eq "$(count_state "$FIRST_SLOT")" 1 "slot holds exactly one state file"
 # CUSTODY IS OPT-IN. A plain ceremony records a digest and keeps no witness:
 # the slot discloses one hash and nothing about the file's content.
-assert_absent "$FIRST_SLOT/approved" "a plain approve keeps no stored copy"
+assert_absent "$FIRST_SLOT/approved" "a plain review keeps no stored copy"
 assert_missing "$OUT" "(+approved copy)" "and does not claim to have written one"
 assert_contains "$OUT" "custody:" "the ceremony states custody in both directions"
 assert_contains "$OUT" "No copy is kept at rest" "and says what 'none' means before the confirm"
@@ -438,7 +438,7 @@ run_pinned verify "$SUB/a/first.txt"
 assert_exit "$RC" 0 "the approved file verifies"
 
 ANS=""
-run_pinned approve --file "$SUB/a/first.txt"
+run_pinned review --file "$SUB/a/first.txt"
 assert_exit "$RC" 0 "re-approving identical bytes needs no answer"
 assert_contains "$OUT" "already approved" "re-approval short-circuits"
 
@@ -446,7 +446,7 @@ assert_contains "$OUT" "already approved" "re-approval short-circuits"
 # bytes stop being a no-op the moment --store changes the custody state.
 ANS='y
 '
-run_pinned approve --file "$SUB/a/first.txt" --store
+run_pinned review --file "$SUB/a/first.txt" --store
 assert_exit "$RC" 0 "adding --store to a copy-less slot runs"
 assert_missing "$OUT" "already approved" "adding custody defeats the no-op short-circuit"
 assert_contains "$OUT" "adds a stored copy" "the note names the custody delta and its direction"
@@ -461,7 +461,7 @@ assert_eq "$(count_state "$FIRST_SLOT")" 1 "the witness is an annotation: no par
 # The no-op condition is identical bytes AND identical declaration AND
 # identical custody -- all three, so this one short-circuits again.
 ANS=""
-run_pinned approve --file "$SUB/a/first.txt" --store
+run_pinned review --file "$SUB/a/first.txt" --store
 assert_exit "$RC" 0 "identical bytes with unchanged custody need no answer"
 assert_contains "$OUT" "already approved" "unchanged custody keeps the short-circuit"
 
@@ -469,7 +469,7 @@ assert_contains "$OUT" "already approved" "unchanged custody keeps the short-cir
 # confirm and again in the result.
 ANS='y
 '
-run_pinned approve --file "$SUB/a/first.txt"
+run_pinned review --file "$SUB/a/first.txt"
 assert_exit "$RC" 0 "re-approving a custody slot without --store runs"
 assert_missing "$OUT" "already approved" "dropping custody defeats the no-op short-circuit"
 assert_contains "$OUT" "drops the slot's stored copy" "the pre-confirm note says the copy is going"
@@ -480,14 +480,14 @@ assert_absent "$FIRST_SLOT/approved" "a plain re-approve drops the stored copy"
 printf 'second draft\n' > "$SUB/a/first.txt"
 ANS='y
 '
-run_pinned approve --file "$SUB/a/first.txt" --store
+run_pinned review --file "$SUB/a/first.txt" --store
 assert_exit "$RC" 0 "re-approving changed bytes with --store succeeds"
 assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(digest_of "$SUB/a/first.txt")" \
           "the witness is the newly approved bytes"
 printf 'third draft\n' > "$SUB/a/first.txt"
 ANS='y
 '
-run_pinned approve --file "$SUB/a/first.txt" --store
+run_pinned review --file "$SUB/a/first.txt" --store
 assert_exit "$RC" 0 "re-approving again with --store succeeds"
 assert_missing "$OUT" "custody change" "unchanged custody needs no custody note"
 assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(awk '{print $1}' "$FIRST_SLOT/pin.sha256")" \
@@ -499,7 +499,7 @@ printf 'tampered\n' > "$FIRST_SLOT/approved"
 chmod 600 "$FIRST_SLOT/approved"
 ANS='y
 '
-run_pinned approve --file "$SUB/a/first.txt" --store
+run_pinned review --file "$SUB/a/first.txt" --store
 assert_exit "$RC" 0 "re-approving over an incoherent witness runs"
 assert_missing "$OUT" "already approved" "a witness that does not re-hash defeats the short-circuit"
 assert_contains "$OUT" "does not re-hash to its record" "the note names the incoherence"
@@ -511,7 +511,7 @@ seed_tombstone "$SUB/a/reinstated.txt"
 REIN_SLOT="$(slot_of "$SUB/a/reinstated.txt")"
 ANS='y
 '
-run_pinned approve --file "$SUB/a/reinstated.txt"
+run_pinned review --file "$SUB/a/reinstated.txt"
 assert_exit "$RC" 0 "approving over a tombstone succeeds"
 assert_contains "$OUT" "approving reinstates this path" "ceremony warns it reinstates"
 assert_absent "$REIN_SLOT/tombstone" "tombstone is gone after reinstatement"
@@ -521,7 +521,7 @@ printf 'not this time\n' > "$SUB/a/declined.txt"
 DECL_SLOT="$(slot_of "$SUB/a/declined.txt")"
 ANS='n
 '
-run_pinned approve --file "$SUB/a/declined.txt"
+run_pinned review --file "$SUB/a/declined.txt"
 assert_exit "$RC" 0 "declining exits 0"
 assert_contains "$OUT" "declined; record unchanged" "decline is reported"
 assert_eq "$(count_state "$DECL_SLOT")" 0 "declining records nothing"
@@ -533,7 +533,7 @@ mkdir -p "$SUB/t"
 printf 'still here\n' > "$SUB/t/live.txt"
 ANS='y
 '
-run_pinned approve --file "$SUB/t/live.txt"
+run_pinned review --file "$SUB/t/live.txt"
 assert_exit "$RC" 0 "fixture: live.txt approved"
 run_pinned tombstone "$SUB/t/live.txt"
 assert_exit "$RC" 1 "tombstone refuses while the path exists"
@@ -559,7 +559,7 @@ mkdir -p "$SUB/t/wholesale"
 printf 'doomed subtree\n' > "$SUB/t/wholesale/conf.json"
 ANS='y
 '
-run_pinned approve --file "$SUB/t/wholesale/conf.json"
+run_pinned review --file "$SUB/t/wholesale/conf.json"
 assert_exit "$RC" 0 "fixture: file inside a doomed directory approved"
 rm -rf "$SUB/t/wholesale"
 ANS='y
@@ -666,7 +666,7 @@ assert_contains "$OUT" "custody:" "status reports custody on the copy-less slot 
 assert_contains "$OUT" "or re-approve with --store" "and says how to gain it"
 
 # ---------------------------------------------------------------------------
-say "S8: repo approve"
+say "S8: repo review"
 # ---------------------------------------------------------------------------
 REPO_FIX="$FIX/repofix"
 mkdir -p "$REPO_FIX"
@@ -696,13 +696,13 @@ if [ "$GIT_OK" -eq 1 ]; then
   # succeed with no pre-existing slot dir. do_approve used to walk ancestry
   # through the not-yet-created slot (`verify_ancestry "$slot/rev.git"`
   # unconditionally), read the failed stat's empty owner as "not root", and
-  # refuse every brand-new repo -- the same defect approve --file fixed
+  # refuse every brand-new repo -- the same defect review --file fixed
   # with its `[ -d "$slot" ]` branch (see S4). The slot dir is deliberately
   # NOT pre-created here: its absence is the case under test.
   ANS='
 y
 '
-  run_pinned approve "$REPO_FIX"
+  run_pinned review "$REPO_FIX"
   assert_exit "$RC" 0 "first-ever repo approval succeeds (no slot dir pre-created)"
   assert_contains "$OUT" "full tree at" "first approval shows the full tree"
   assert_contains "$OUT" "rev.git" "ceremony names the record it wrote"
@@ -723,7 +723,7 @@ y
   assert_contains "$OUT" "HEAD is approved" "status reports the pin as approved"
 
   ANS=""
-  run_pinned approve "$REPO_FIX"
+  run_pinned review "$REPO_FIX"
   assert_exit "$RC" 0 "re-approving the same HEAD needs no answer"
   assert_contains "$OUT" "already pinned" "re-approval short-circuits"
 
@@ -761,7 +761,7 @@ assert_exit "$RC" 0 "list survives a corrupt rev slot"
 assert_contains "$OUT" "CORRUPT" "list flags a corrupt rev slot instead of printing a digest"
 
 # ---------------------------------------------------------------------------
-say "S8b: batch repo approve (multiple repos, one invocation)"
+say "S8b: batch repo review (multiple repos, one invocation)"
 # ---------------------------------------------------------------------------
 if [ "$GIT_OK" -eq 1 ]; then
   bgit() { # repo git-args... -- scrubbed git against ONE named fixture repo
@@ -785,8 +785,8 @@ y
 
 y
 '
-  run_pinned approve "$REPO_A" "$REPO_B"
-  assert_exit "$RC" 0 "batch approve of two repos exits 0"
+  run_pinned review "$REPO_A" "$REPO_B"
+  assert_exit "$RC" 0 "batch review of two repos exits 0"
   assert_file "$A_SLOT/rev.git" "first repo's rev.git written"
   assert_file "$B_SLOT/rev.git" "second repo's rev.git written"
   assert_eq "$(cat "$A_SLOT/rev.git")" "$(bgit "$REPO_A" rev-parse 'HEAD^{commit}')" "first pin holds repo A's HEAD"
@@ -803,7 +803,7 @@ n
 
 y
 '
-  run_pinned approve "$REPO_A" "$REPO_B"
+  run_pinned review "$REPO_A" "$REPO_B"
   assert_exit "$RC" 0 "a mid-batch decline does not abort the batch"
   assert_eq "$(cat "$A_SLOT/rev.git")" "$A_OLD" "declined repo keeps its old pin"
   assert_eq "$(cat "$B_SLOT/rev.git")" "$(bgit "$REPO_B" rev-parse 'HEAD^{commit}')" "later repo still approved"
@@ -814,39 +814,39 @@ y
   ANS='
 y
 '
-  run_pinned approve "$REPO_A"
-  assert_exit "$RC" 0 "catch-up approve of the declined repo"
+  run_pinned review "$REPO_A"
+  assert_exit "$RC" 0 "catch-up review of the declined repo"
   ANS=""
-  run_pinned approve "$REPO_A" "$REPO_B"
+  run_pinned review "$REPO_A" "$REPO_B"
   assert_exit "$RC" 0 "an all-pinned batch exits 0"
   assert_contains "$OUT" "0 approved, 0 declined, 2 already pinned" "summary counts already-pinned repos"
 
   # SINGLE-repo contract unchanged: already-pinned exits 0 with no summary
   # line; a decline still exits 2.
   ANS=""
-  run_pinned approve "$REPO_A"
+  run_pinned review "$REPO_A"
   assert_exit "$RC" 0 "single already-pinned repo still exits 0"
-  assert_missing "$OUT" "declined," "single-repo approve prints no batch summary"
+  assert_missing "$OUT" "declined," "single-repo review prints no batch summary"
   printf 'a3\n' > "$REPO_A/f"; bgit "$REPO_A" commit -q -am a3
   ANS='
 n
 '
-  run_pinned approve "$REPO_A"
+  run_pinned review "$REPO_A"
   assert_exit "$RC" 2 "a single-repo decline still exits 2"
   assert_contains "$OUT" "aborted; pin unchanged" "single decline keeps its message"
 
   # Selector and evidence flags bind to one repo; a batch refuses them.
   ANS=""
-  run_pinned approve "$REPO_A" "$REPO_B" --tag v1
+  run_pinned review "$REPO_A" "$REPO_B" --tag v1
   assert_exit "$RC" 1 "--tag with two repos is refused"
   assert_contains "$OUT" "bind to one repo" "the refusal names the rule"
   ANS=""
-  run_pinned approve "$REPO_A" "$REPO_B" --trust
+  run_pinned review "$REPO_A" "$REPO_B" --trust
   assert_exit "$RC" 1 "--trust with two repos is refused"
 fi
 
 # ---------------------------------------------------------------------------
-say "S8c: upgrade (approve stale flake inputs, then deploy)"
+say "S8c: upgrade (review stale flake inputs, then deploy)"
 # ---------------------------------------------------------------------------
 # upgrade chains into deploy, and deploy hard-requires the per-OS rebuild
 # tool; skip the section on a machine without one (deploy itself is a
@@ -870,7 +870,7 @@ EOF
   run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
   assert_exit "$RC" 0 "upgrade --dry-run exits 0"
   assert_contains "$OUT" "Inputs in $FIX/flake.nix:" "the plan names the flake it read"
-  assert_row "$OUT" "approve:" "$REPO_A" "the stale repo is the highlighted row"
+  assert_row "$OUT" "review:" "$REPO_A" "the stale repo is the highlighted row"
   assert_row "$OUT" "at pin:" "$REPO_B" "the input at its pin is a quiet row, not an omission"
   assert_contains "$OUT" "Dry run: no ceremonies" "no ceremony in a dry run"
   assert_contains "$OUT" "Dry run -- nothing executed" "deploy stays a preview"
@@ -901,10 +901,10 @@ y
     "an all-quiet plan keeps the at-their-pins wording"
   assert_row "$OUT" "at pin:" "$REPO_A" "the approved repo is now a quiet row"
   assert_row "$OUT" "at pin:" "$REPO_B" "and so is the one that never moved"
-  assert_no_row "$OUT" "approve:" "$REPO_A" "with nothing highlighted for approval"
+  assert_no_row "$OUT" "review:" "$REPO_A" "with nothing highlighted for approval"
 
   # A tag-declared slot is never plain-approved: it is listed for manual
-  # approve --tag and the plain-approve list stays empty. The tag is a
+  # review --tag and the plain-review list stays empty. The tag is a
   # REAL one at the approved rev -- deploy's own live-tag cross-check
   # refuses a declared tag it cannot find (a distinct, correct refusal
   # this case is not about).
@@ -914,8 +914,8 @@ y
   ANS=""
   run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
   assert_exit "$RC" 0 "a tag-declared stale input does not break upgrade"
-  assert_contains "$OUT" "approve --tag by hand" "tag-declared slot routed to manual approval"
-  assert_no_row "$OUT" "approve:" "$REPO_B" "a tag-declared slot is never highlighted for a plain approve"
+  assert_contains "$OUT" "review --tag by hand" "tag-declared slot routed to manual approval"
+  assert_no_row "$OUT" "review:" "$REPO_B" "a tag-declared slot is never highlighted for a plain review"
   assert_row "$OUT" "skipped:" "$REPO_B" "it is a skipped row instead"
   rm -f "$B_SLOT/tag"
   bgit "$REPO_B" tag -d v9 >/dev/null
@@ -975,13 +975,13 @@ EOF
   ANS=""
   run_pinned upgrade --flake "$FIX/flake3.nix" --dry-run
   assert_exit "$RC" 0 "a plan holding refused repos still exits 0"
-  assert_contains "$OUT" "checkout is backward of the pin -- approve --backward by hand" \
+  assert_contains "$OUT" "checkout is backward of the pin -- review --backward by hand" \
     "a backward checkout is refused in the plan"
-  assert_contains "$OUT" "checkout diverged from the pin -- approve --diverged by hand" \
+  assert_contains "$OUT" "checkout diverged from the pin -- review --diverged by hand" \
     "a diverged checkout is refused in the plan"
-  assert_row "$OUT" "approve:" "$REPO_FW" "the forward repo is the one highlighted for approval"
-  assert_no_row "$OUT" "approve:" "$REPO_BK" "the backward one is not"
-  assert_no_row "$OUT" "approve:" "$REPO_DV" "and neither is the diverged one"
+  assert_row "$OUT" "review:" "$REPO_FW" "the forward repo is the one highlighted for approval"
+  assert_no_row "$OUT" "review:" "$REPO_BK" "the backward one is not"
+  assert_no_row "$OUT" "review:" "$REPO_DV" "and neither is the diverged one"
 
   ANS='
 y
@@ -1086,7 +1086,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   ANS='
 y
 '
-  run_pinned approve "$REPO_D"
+  run_pinned review "$REPO_D"
   assert_exit "$RC" 0 "diffstat fixture pins its base commit"
   D_PIN="$(cat "$D_SLOT/rev.git")"
 
@@ -1110,8 +1110,8 @@ y
   ANS='
 y
 '
-  run_pinned approve "$REPO_D"
-  assert_exit "$RC" 0 "approve over the diffstat range exits 0"
+  run_pinned review "$REPO_D"
+  assert_exit "$RC" 0 "review over the diffstat range exits 0"
   assert_eq "$(cat "$D_SLOT/rev.git")" "$D_HEAD" "the range was approved"
 
   # The block is everything between the listing header and the blank line
@@ -1184,7 +1184,7 @@ y
 
 y
 '
-  run_pinned approve "$REPO_E" --step
+  run_pinned review "$REPO_E" --step
   assert_exit "$RC" 0 "a fully approved walk exits 0"
   assert_eq "$(cat "$E_SLOT/rev.git")" "$E_HEAD" "three yeses walk the pin to HEAD"
   assert_contains "$OUT" "--- step 1/3 ---" "the walk numbers its steps"
@@ -1214,7 +1214,7 @@ y
 
 n
 '
-  run_pinned approve "$REPO_E" --step
+  run_pinned review "$REPO_E" --step
   assert_exit "$RC" 0 "a partial walk still exits 0 (the pin did advance)"
   assert_eq "$(cat "$E_SLOT/rev.git")" "$E_C1" "the pin rests at the last approved commit"
   assert_contains "$OUT" "approved 1 of 3 commits" "the summary counts the partial walk"
@@ -1231,7 +1231,7 @@ y
 
 n
 '
-  run_pinned approve "$REPO_E" --step
+  run_pinned review "$REPO_E" --step
   assert_exit "$RC" 0 "a two-step walk exits 0"
   assert_contains "$OUT" "approved 2 of 3 commits" "the summary counts both steps"
   assert_contains "$OUT" "remaining: 1 commit " "one leftover commit is singular"
@@ -1242,7 +1242,7 @@ n
   ANS='
 n
 '
-  run_pinned approve "$REPO_E" --step
+  run_pinned review "$REPO_E" --step
   assert_exit "$RC" 2 "a walk that approves nothing exits 2"
   assert_eq "$(cat "$E_SLOT/rev.git")" "$E_BASE" "a declined walk leaves the pin alone"
   assert_contains "$OUT" "approved 0 of 3 commits" "the summary reports an empty walk"
@@ -1257,8 +1257,8 @@ y
 
 n
 '
-  run_pinned approve "$REPO_E" --step
-  assert_exit "$RC" 0 "a stepped approve over a tag-declared slot exits 0"
+  run_pinned review "$REPO_E" --step
+  assert_exit "$RC" 0 "a stepped review over a tag-declared slot exits 0"
   assert_absent "$E_SLOT/tag" "a stepped yes clears the declared tag"
 
   # --- --tag moves the endpoint: the walk ends at the tag's commit ---------
@@ -1271,7 +1271,7 @@ y
 
 y
 '
-  run_pinned approve "$REPO_E" --step --tag v9
+  run_pinned review "$REPO_E" --step --tag v9
   assert_exit "$RC" 0 "a stepped walk to a tag exits 0"
   assert_eq "$(cat "$E_SLOT/rev.git")" "$E_C2" "the pin rests at the tag's commit, not HEAD"
   assert_eq "$(cat "$E_SLOT/tag")" "v9" "reaching the endpoint declares the name"
@@ -1285,7 +1285,7 @@ y
 
 n
 '
-  run_pinned approve "$REPO_E" --step --tag v9
+  run_pinned review "$REPO_E" --step --tag v9
   assert_exit "$RC" 0 "an early stop below the tag still exits 0"
   assert_eq "$(cat "$E_SLOT/rev.git")" "$E_C1" "the pin rests where reading stopped"
   assert_absent "$E_SLOT/tag" "an unreached name is not declared"
@@ -1295,28 +1295,28 @@ n
   # --- refusals (root-side: the authoritative half) ------------------------
   seed_state "$REPO_E" rev.git "$E_BASE"
   ANS=""
-  run_pinned approve "$REPO_E" --step --trust
+  run_pinned review "$REPO_E" --step --trust
   assert_exit "$RC" 1 "--step with --trust is refused"
   assert_contains "$OUT" "--trust skips review" "the refusal names the contradiction"
   ANS=""
-  run_pinned approve "$REPO_E" --step --signed-tag v1
+  run_pinned review "$REPO_E" --step --signed-tag v1
   assert_exit "$RC" 1 "--step with --signed-tag is refused"
   assert_contains "$OUT" "signature evidence has no per-commit reading" "the refusal names the reason"
   ANS=""
-  run_pinned approve "$REPO_E" "$REPO_A" --step
+  run_pinned review "$REPO_E" "$REPO_A" --step
   assert_exit "$RC" 1 "--step with two repos is refused"
   assert_contains "$OUT" "bind to one repo" "the refusal names the one-repo rule"
   ANS=""
-  run_pinned approve --file "$SUB/a.conf" --step
+  run_pinned review --file "$SUB/a.conf" --step
   assert_exit "$RC" 1 "--step with --file is refused"
   assert_contains "$OUT" "its own ceremony" "the refusal names the file ceremony"
 
   # upgrade's internal batch contract cannot host an interactive walk.
   RC=0
   printf '' > "$FIX/stdin"
-  APPROVE_BATCH=1 "$STUB" approve "$REPO_E" --step <"$FIX/stdin" >"$OUT" 2>&1 || RC=$?
-  assert_exit "$RC" 1 "--step inside a batch approve is refused"
-  assert_contains "$OUT" "does not run inside a batch approve" "the refusal names the batch rule"
+  APPROVE_BATCH=1 "$STUB" review "$REPO_E" --step <"$FIX/stdin" >"$OUT" 2>&1 || RC=$?
+  assert_exit "$RC" 1 "--step inside a batch review is refused"
+  assert_contains "$OUT" "does not run inside a batch review" "the refusal names the batch rule"
 
   # A first approval has no pin to step from.
   REPO_F="$FIX/stepfix-new"
@@ -1324,9 +1324,9 @@ n
   bgit "$REPO_F" init -q; printf 'f1\n' > "$REPO_F/f"; bgit "$REPO_F" add f
   bgit "$REPO_F" commit -q -m f1
   ANS=""
-  run_pinned approve "$REPO_F" --step
+  run_pinned review "$REPO_F" --step
   assert_exit "$RC" 1 "--step on a never-approved repo is refused"
-  assert_contains "$OUT" "approve without --step" "the refusal points at the plain ceremony"
+  assert_contains "$OUT" "review without --step" "the refusal points at the plain ceremony"
   assert_absent "$(slot_of "$REPO_F")/rev.git" "the refused walk recorded nothing"
 
   # The pin ahead of HEAD (reversed history) has no commits to walk. The
@@ -1338,7 +1338,7 @@ n
   bgit "$REPO_E" branch -q back "$E_C2"
   bgit "$REPO_E" checkout -q back
   ANS=""
-  run_pinned approve "$REPO_E" --step
+  run_pinned review "$REPO_E" --step
   assert_exit "$RC" 1 "a pin that is not behind HEAD refuses the walk"
   assert_contains "$OUT" "is backward of the pin" "the refusal names the class"
   assert_eq "$(cat "$E_SLOT/rev.git")" "$E_HEAD" "the refused walk left the pin alone"
@@ -1397,8 +1397,8 @@ if [ "$GIT_OK" -eq 1 ]; then
   ANS='
 y
 '
-  run_pinned approve "$REPO_G"
-  assert_exit "$RC" 0 "a forward approve is unchanged by the lattice"
+  run_pinned review "$REPO_G"
+  assert_exit "$RC" 0 "a forward review is unchanged by the lattice"
   assert_eq "$(cat "$G_SLOT/rev.git")" "$G_C2" "the forward pin moved to HEAD"
   assert_contains "$OUT" "--- commits since last approval ---" "forward keeps the ordinary listing"
   assert_missing "$OUT" "!!!" "a forward move raises no alarm"
@@ -1406,7 +1406,7 @@ y
   # A declaration on a forward candidate overrides nothing.
   seed_state "$REPO_G" rev.git "$G_BASE"
   ANS=""
-  run_pinned approve "$REPO_G" --backward
+  run_pinned review "$REPO_G" --backward
   assert_exit "$RC" 1 "--backward on a forward candidate is refused"
   assert_contains "$OUT" "nothing to override" "the refusal says there is nothing to override"
   assert_eq "$(cat "$G_SLOT/rev.git")" "$G_BASE" "the refused ceremony left the pin alone"
@@ -1415,7 +1415,7 @@ y
   # no-op, and a declaration cannot make a no-op into a ceremony.
   seed_state "$REPO_G" rev.git "$G_C2"
   ANS=""
-  run_pinned approve "$REPO_G" --backward
+  run_pinned review "$REPO_G" --backward
   assert_exit "$RC" 0 "an equal candidate still short-circuits"
   assert_contains "$OUT" "already pinned" "equal takes the already-pinned path"
 
@@ -1424,7 +1424,7 @@ y
   seed_state "$REPO_G" rev.git "$G_C2"
   ANS='y
 '
-  run_pinned approve "$REPO_G"
+  run_pinned review "$REPO_G"
   assert_exit "$RC" 1 "an undeclared backward candidate is refused"
   assert_contains "$OUT" "is backward of the pin" "the refusal names the class"
   assert_contains "$OUT" "un-approved" "the refusal says what a backward move does"
@@ -1432,7 +1432,7 @@ y
   assert_eq "$(cat "$G_SLOT/rev.git")" "$G_C2" "an undeclared backward move records nothing"
 
   ANS=""
-  run_pinned approve "$REPO_G" --diverged
+  run_pinned review "$REPO_G" --diverged
   assert_exit "$RC" 1 "a mismatched declaration is refused"
   assert_contains "$OUT" "--diverged declared, but the candidate is backward" \
     "the refusal names the class that actually holds"
@@ -1440,7 +1440,7 @@ y
   ANS='
 y
 '
-  run_pinned approve "$REPO_G" --backward
+  run_pinned review "$REPO_G" --backward
   assert_exit "$RC" 0 "a declared backward move proceeds"
   assert_eq "$(cat "$G_SLOT/rev.git")" "$G_C1" "the declared backward move recorded the pin"
   assert_contains "$OUT" "!!! BACKWARD:" "the ceremony raises the backward alarm"
@@ -1453,7 +1453,7 @@ y
   ANS='
 n
 '
-  run_pinned approve "$REPO_G" --backward
+  run_pinned review "$REPO_G" --backward
   assert_exit "$RC" 2 "a declined backward ceremony exits 2"
   assert_eq "$(cat "$G_SLOT/rev.git")" "$G_C2" "the declined ceremony left the pin alone"
 
@@ -1463,14 +1463,14 @@ n
   seed_state "$REPO_G" rev.git "$G_C2"
   ANS='y
 '
-  run_pinned approve "$REPO_G"
+  run_pinned review "$REPO_G"
   assert_exit "$RC" 1 "an undeclared diverged candidate is refused"
   assert_contains "$OUT" "has diverged from the pin" "the refusal names the class"
   assert_contains "$OUT" "--diverged" "the refusal names the flag that declares it"
   assert_eq "$(cat "$G_SLOT/rev.git")" "$G_C2" "an undeclared diverged move records nothing"
 
   ANS=""
-  run_pinned approve "$REPO_G" --backward
+  run_pinned review "$REPO_G" --backward
   assert_exit "$RC" 1 "the other mismatched declaration is refused too"
   assert_contains "$OUT" "--backward declared, but the candidate has diverged" \
     "the refusal names the class that actually holds"
@@ -1478,7 +1478,7 @@ n
   ANS='
 y
 '
-  run_pinned approve "$REPO_G" --diverged
+  run_pinned review "$REPO_G" --diverged
   assert_exit "$RC" 0 "a declared diverged move proceeds"
   assert_eq "$(cat "$G_SLOT/rev.git")" "$G_X" "the declared diverged move recorded the pin"
   assert_contains "$OUT" "!!! DIVERGED:" "the ceremony raises the diverged alarm"
@@ -1493,23 +1493,23 @@ y
   # --- the declarations bind to one repo, and to nothing else ---------------
   seed_state "$REPO_G" rev.git "$G_C2"
   ANS=""
-  run_pinned approve "$REPO_G" --backward --diverged
+  run_pinned review "$REPO_G" --backward --diverged
   assert_exit "$RC" 1 "two declarations at once are refused"
   assert_contains "$OUT" "declare different relationships" "the refusal names the contradiction"
   ANS=""
-  run_pinned approve "$REPO_G" --step --backward
+  run_pinned review "$REPO_G" --step --backward
   assert_exit "$RC" 1 "a declaration with --step is refused"
   assert_contains "$OUT" "only exist going forward" "the refusal names the walk's direction"
   ANS=""
-  run_pinned approve "$REPO_G" --trust --backward
+  run_pinned review "$REPO_G" --trust --backward
   assert_exit "$RC" 1 "a declaration with --trust is refused"
   assert_contains "$OUT" "there is no pin to move --backward from" "the refusal names the vouch"
   ANS=""
-  run_pinned approve "$REPO_G" "$REPO_A" --backward
+  run_pinned review "$REPO_G" "$REPO_A" --backward
   assert_exit "$RC" 1 "a declaration with two repos is refused"
   assert_contains "$OUT" "bind to one repo" "the refusal names the one-repo rule"
   ANS=""
-  run_pinned approve --file "$SUB/a.conf" --backward
+  run_pinned review --file "$SUB/a.conf" --backward
   assert_exit "$RC" 1 "a declaration with --file is refused"
   assert_contains "$OUT" "its own ceremony" "the refusal names the file ceremony"
 
@@ -1519,7 +1519,7 @@ y
   bgit "$REPO_I" init -q; printf 'i1\n' > "$REPO_I/f"; bgit "$REPO_I" add f
   bgit "$REPO_I" commit -q -m i1
   ANS=""
-  run_pinned approve "$REPO_I" --diverged
+  run_pinned review "$REPO_I" --diverged
   assert_exit "$RC" 1 "a declaration on a first approval is refused"
   assert_contains "$OUT" "no pin for --diverged to move from" "the refusal names the missing pin"
   assert_absent "$(slot_of "$REPO_I")/rev.git" "the refused first approval recorded nothing"
@@ -1606,7 +1606,7 @@ if [ "$GIT_OK" -eq 1 ] && [ -x "$REBUILD_TOOL" ] && [ "$SIGN_OK" -eq 1 ]; then
 
   # REPO_T, TAG-DECLARED slot: the offer covers these too, and outranks the
   # head_release_tag rule. HEAD carries no release, so without the offer this
-  # repo would be routed to a by-hand `approve --tag`.
+  # repo would be routed to a by-hand `review --tag`.
   REPO_T="$FIX/signfix-tagged"
   mkdir -p "$REPO_T"
   bgit "$REPO_T" init -q
@@ -1656,7 +1656,7 @@ EOF
     "so the by-hand tag skip no longer applies to it"
   assert_eq "$(cat "$S_SLOT/rev.git")" "$S_PIN" "the plan records nothing"
 
-  # The ceremony IS approve --signed-tag: its y/N is the offer's acceptance.
+  # The ceremony IS review --signed-tag: its y/N is the offer's acceptance.
   ANS='y
 y
 '
@@ -1721,9 +1721,9 @@ EOF
   ANS=""
   run_pinned upgrade --flake "$FIX/flake-split.nix" --dry-run
   assert_exit "$RC" 0 "a plan with disagreeing verified tags exits 0"
-  assert_contains "$OUT" "verified signed tags disagree -- approve --signed-tag by hand" \
+  assert_contains "$OUT" "verified signed tags disagree -- review --signed-tag by hand" \
     "no unique maximum is a loud skip"
-  assert_no_row "$OUT" "approve:" "$REPO_D2" "and the repo joins no batch"
+  assert_no_row "$OUT" "review:" "$REPO_D2" "and the repo joins no batch"
   ANS='y
 '
   run_pinned upgrade --flake "$FIX/flake-split.nix"
@@ -1752,7 +1752,7 @@ EOF
   run_pinned upgrade --flake "$FIX/flake-old.nix" --dry-run
   assert_exit "$RC" 0 "a plan whose only signed tag is behind the pin exits 0"
   assert_missing "$OUT" "signed release" "a signed release behind the pin is no candidate"
-  assert_row "$OUT" "approve:" "$REPO_O" "the repo takes the ordinary review route"
+  assert_row "$OUT" "review:" "$REPO_O" "the repo takes the ordinary review route"
 
   # A signed release on a SIDE branch is not a candidate either: upgrade
   # follows the checkout's own line, and a release the checkout has not
@@ -1796,8 +1796,8 @@ seed_policy_user '[{"path":["model"]},{"path":["effortLevel"]},{"path":["statusL
 printf '{\n  "model": "opus",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/nocopy.json"
 ANS='y
 '
-run_pinned approve --file "$SUB/ig/nocopy.json" --ignore-json-key model --ignore-json-key effortLevel
-assert_exit "$RC" 0 "approve with --ignore-json-key succeeds"
+run_pinned review --file "$SUB/ig/nocopy.json" --ignore-json-key model --ignore-json-key effortLevel
+assert_exit "$RC" 0 "review with --ignore-json-key succeeds"
 assert_contains "$OUT" "ignored:" "ceremony displays the proposed ignored keys"
 assert_contains "$OUT" "model, effortLevel" "ceremony names them before the confirm"
 assert_contains "$OUT" "may drift without re-approval" "ceremony states what ignoring means"
@@ -1814,8 +1814,8 @@ printf '{\n  "model": "opus",\n  "effortLevel": "high",\n  "permissions": {"deny
 COPY_SLOT="$(slot_of "$SUB/ig/copy.json")"
 ANS='y
 '
-run_pinned approve --file "$SUB/ig/copy.json" --ignore-json-key model --store
-assert_exit "$RC" 0 "approve with a declaration AND --store succeeds"
+run_pinned review --file "$SUB/ig/copy.json" --ignore-json-key model --store
+assert_exit "$RC" 0 "review with a declaration AND --store succeeds"
 assert_file "$COPY_SLOT/approved" "--store keeps the approved bytes"
 assert_contains "$OUT" "(+approved copy)" "the ceremony says the copy was written"
 assert_contains "$OUT" "kept in the slot" "the ceremony states the custody consequence"
@@ -1897,7 +1897,7 @@ assert_contains "$OUT" "duplicate object keys" "the refusal names the duplicatio
 printf 'container\n' > "$SUB/ig/lane"
 ANS='y
 '
-run_pinned approve --file "$SUB/ig/lane" --ignore-json-key model --store
+run_pinned review --file "$SUB/ig/lane" --ignore-json-key model --store
 assert_exit "$RC" 0 "pinned does not restrict WHICH paths may declare ignored keys"
 printf 'vm\n' > "$SUB/ig/lane"
 run_pinned verify "$SUB/ig/lane"
@@ -1911,7 +1911,7 @@ assert_contains "$OUT" "not exactly one JSON document" "the note says why it cou
 printf '{"model": "sonnet", "permissions": {"deny": ["Bash"]}}\n' > "$SUB/ig/bad.json"
 ANS='y
 '
-run_pinned approve --file "$SUB/ig/bad.json" --ignore-json-key model
+run_pinned review --file "$SUB/ig/bad.json" --ignore-json-key model
 assert_exit "$RC" 0 "fixture: bad.json approved with a declaration"
 seed_state "$SUB/ig/bad.json" ignored.json 'model'
 printf '{"model": "opus", "permissions": {"deny": ["Bash"]}}\n' > "$SUB/ig/bad.json"
@@ -1951,22 +1951,22 @@ assert_contains "$OUT" "re-approve" "the error names the remediation"
 
 # Re-approving the same bytes with a DIFFERENT declaration is not a no-op,
 # and clearing is loud. EVERY extra is re-stated by every ceremony, so a
-# plain approve clears the declaration and drops the stored witness together.
+# plain review clears the declaration and drops the stored witness together.
 printf '{"model": "opus", "keep": 1}\n' > "$SUB/ig/clear.json"
 CLEAR_SLOT="$(slot_of "$SUB/ig/clear.json")"
 ANS='y
 '
-run_pinned approve --file "$SUB/ig/clear.json" --ignore-json-key model --store
+run_pinned review --file "$SUB/ig/clear.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "fixture: clear.json approved with a declaration + stored copy"
 ANS='y
 '
-run_pinned approve --file "$SUB/ig/clear.json"
+run_pinned review --file "$SUB/ig/clear.json"
 assert_exit "$RC" 0 "re-approving identical bytes without a declaration still runs"
 assert_missing  "$OUT" "already approved" "a changed declaration defeats the no-op short-circuit"
 assert_contains "$OUT" "clearing the ignored keys" "the ceremony says the tolerance is being withdrawn"
 assert_contains "$OUT" "drops the slot's stored copy" "and that custody is going with it"
-assert_absent "$CLEAR_SLOT/ignored.json" "a plain approve clears the declaration"
-assert_absent "$CLEAR_SLOT/approved" "a plain approve drops the stored copy"
+assert_absent "$CLEAR_SLOT/ignored.json" "a plain review clears the declaration"
+assert_absent "$CLEAR_SLOT/approved" "a plain review drops the stored copy"
 printf '{"model": "sonnet", "keep": 1}\n' > "$SUB/ig/clear.json"
 run_pinned verify "$SUB/ig/clear.json"
 assert_exit "$RC" 11 "after clearing, the same drift is a plain mismatch again"
@@ -1976,7 +1976,7 @@ printf '{"model": "opus"}\n' > "$SUB/ig/doomed.json"
 DOOM_SLOT="$(slot_of "$SUB/ig/doomed.json")"
 ANS='y
 '
-run_pinned approve --file "$SUB/ig/doomed.json" --ignore-json-key model --store
+run_pinned review --file "$SUB/ig/doomed.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "fixture: doomed.json approved with extras"
 rm -f "$SUB/ig/doomed.json"
 ANS='y
@@ -2001,7 +2001,7 @@ assert_contains "$OUT" "live file differs" "status agrees with verify on a real 
 
 # Argument surface.
 ANS=""
-run_pinned approve --file "$SUB/ig/nocopy.json" --ignore-json-key 'permissions.deny[0]'
+run_pinned review --file "$SUB/ig/nocopy.json" --ignore-json-key 'permissions.deny[0]'
 assert_exit "$RC" 1 "an out-of-grammar --ignore-json-key is refused up front"
 assert_contains "$OUT" "outside the key grammar" "the refusal names the grammar"
 # --store COMBINES FREELY. Custody serves the tolerant comparison, but also
@@ -2010,16 +2010,16 @@ assert_contains "$OUT" "outside the key grammar" "the refusal names the grammar"
 # that declares --ignore-json-key" pairing refusal must stay gone.
 ANS='n
 '
-run_pinned approve --file "$SUB/ig/nocopy.json" --store
+run_pinned review --file "$SUB/ig/nocopy.json" --store
 assert_exit "$RC" 0 "--store on a ceremony that declares NO ignored keys is accepted"
 assert_missing "$OUT" "--store applies to a ceremony" "the retired pairing refusal does not come back"
 assert_contains "$OUT" "kept in the slot" "custody stands on its own in the display"
-# It is still the FILE ceremony's flag: a repo approve has no bytes to keep.
+# It is still the FILE ceremony's flag: a repo review has no bytes to keep.
 ANS=""
-run_pinned approve "$SUB" --store
+run_pinned review "$SUB" --store
 assert_exit "$RC" 1 "--store outside the --file ceremony is refused"
 assert_contains "$OUT" "--store applies to the --file ceremony only" "the refusal names the ceremony"
-run_pinned approve --ignore-json-key model --file "$SUB/ig/nocopy.json"
+run_pinned review --ignore-json-key model --file "$SUB/ig/nocopy.json"
 assert_exit "$RC" 1 "--ignore-json-key before any --file is refused"
 assert_contains "$OUT" "must follow the --file" "the refusal names the ordering rule"
 
@@ -2062,7 +2062,7 @@ printf '%s\n' "$JSON_IN" > "$SUB/pol/inx/s.json"
 rm -f "$POLICY_USER" "$PINNED_MACHINE_POLICY"
 ANS='y
 '
-run_pinned approve --file "$SUB/pol/in/s.json" --ignore-json-key model
+run_pinned review --file "$SUB/pol/in/s.json" --ignore-json-key model
 assert_exit "$RC" 1 "no policy at all -> the ceremony refuses the declaration"
 assert_contains "$OUT" "does not grant these keys" "the refusal names the missing grant"
 assert_contains "$OUT" "sudo pinned ignorable add model --under $SUB/pol/in" \
@@ -2117,12 +2117,12 @@ assert_contains "$OUT" "under $SUB/pol/in" "list shows each entry's scope"
 # the same boundary rule list --under uses (/pol/in is not /pol/inx).
 ANS='y
 '
-run_pinned approve --file "$SUB/pol/in/s.json" --ignore-json-key model --store
+run_pinned review --file "$SUB/pol/in/s.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "a granted key in scope approves"
 assert_contains "$OUT" "model -- user policy, under $SUB/pol/in" "provenance names the scope"
 ANS='y
 '
-run_pinned approve --file "$SUB/pol/inx/s.json" --ignore-json-key model
+run_pinned review --file "$SUB/pol/inx/s.json" --ignore-json-key model
 assert_exit "$RC" 1 "the same key one component off the scope is refused"
 assert_contains "$OUT" "does not grant these keys" "the near-miss refusal is the policy refusal"
 
@@ -2155,7 +2155,7 @@ assert_contains "$OUT" "everywhere" "the user tier's unscoped entry is shown"
 printf '%s\n' "$JSON_IN" > "$SUB/pol/in/s.json"
 ANS='y
 '
-run_pinned approve --file "$SUB/pol/in/s.json" --ignore-json-key model
+run_pinned review --file "$SUB/pol/in/s.json" --ignore-json-key model
 assert_exit "$RC" 1 "an unscoped user grant is NOT covered by a scoped machine entry"
 assert_contains "$OUT" "does not grant these keys" "the intersection refuses it"
 
@@ -2165,7 +2165,7 @@ mkdir -p "$SUB/pol/in/deeper"
 printf '%s\n' "$JSON_IN" > "$SUB/pol/in/deeper/s.json"
 ANS='y
 '
-run_pinned approve --file "$SUB/pol/in/deeper/s.json" --ignore-json-key model --store
+run_pinned review --file "$SUB/pol/in/deeper/s.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "a user scope BELOW the machine scope survives the intersection"
 assert_contains "$OUT" "under $SUB/pol/in/deeper" "provenance names the narrower scope"
 
@@ -2173,7 +2173,7 @@ assert_contains "$OUT" "under $SUB/pol/in/deeper" "provenance names the narrower
 seed_policy_machine '{"path": ["model"]}'
 ANS='y
 '
-run_pinned approve --file "$SUB/pol/in/deeper/s.json" --ignore-json-key model
+run_pinned review --file "$SUB/pol/in/deeper/s.json" --ignore-json-key model
 assert_exit "$RC" 1 "an unusable machine tier stops the ceremony"
 assert_contains "$OUT" "not a valid ignorable policy" "the refusal names the invalid tier"
 printf '{"model": "sonnet", "keep": 1}\n' > "$SUB/pol/in/deeper/s.json"
@@ -2201,7 +2201,7 @@ chmod 640 "$PINNED_ROOT/$USERNAME/signers/allowed_signers"
 printf '%s\n' "$JSON_IN" > "$SUB/pol/heal.json"
 ANS='y
 '
-run_pinned approve --file "$SUB/pol/heal.json"
+run_pinned review --file "$SUB/pol/heal.json"
 assert_exit "$RC" 0 "a root ceremony runs with a legacy signers/ dir present"
 assert_contains "$OUT" "moved allowed_signers into the policy dir" "the move is announced"
 assert_file "$PINNED_ROOT/$USERNAME/policy/allowed_signers" "allowed_signers now lives in policy/"
@@ -2217,7 +2217,7 @@ mkdir -p "$PINNED_ROOT/$USERNAME/signers"
 printf '%s\n' "$JSON_IN" > "$SUB/pol/heal2.json"
 ANS='y
 '
-run_pinned approve --file "$SUB/pol/heal2.json"
+run_pinned review --file "$SUB/pol/heal2.json"
 assert_exit "$RC" 0 "a root ceremony runs with an empty legacy signers/ dir"
 assert_missing "$OUT" "moved allowed_signers" "there was nothing left to move"
 assert_contains "$OUT" "note: removed the now-empty legacy dir" \
@@ -2235,7 +2235,7 @@ mkdir -p "$SUB/s"
 printf '{"measured": true}\n' > "$SUB/s/measured.json"
 ANS='y
 '
-run_pinned approve --file "$SUB/s/measured.json"
+run_pinned review --file "$SUB/s/measured.json"
 assert_exit "$RC" 0 "fixture: measured.json approved"
 ANS=""
 run_pinned slot "$SUB/s/measured.json"
@@ -2276,7 +2276,7 @@ printf '{"served": true}\n' > "$SUB/c/served.json"
 CAT_SLOT="$(slot_of "$SUB/c/served.json")"
 ANS='y
 '
-run_pinned approve --file "$SUB/c/served.json" --store
+run_pinned review --file "$SUB/c/served.json" --store
 assert_exit "$RC" 0 "fixture: served.json approved with custody"
 ANS=""
 run_pinned_split cat "$SUB/c/served.json"
@@ -2304,7 +2304,7 @@ printf '{"served": true}\n' > "$SUB/c/served.json"
 printf 'no custody here\n' > "$SUB/c/bare.txt"
 ANS='y
 '
-run_pinned approve --file "$SUB/c/bare.txt"
+run_pinned review --file "$SUB/c/bare.txt"
 assert_exit "$RC" 0 "fixture: bare.txt approved without --store"
 ANS=""
 run_pinned_split cat "$SUB/c/bare.txt"
@@ -2332,7 +2332,7 @@ printf 'here for now\n' > "$SUB/c/vanish.txt"
 VANISH_SLOT="$(slot_of "$SUB/c/vanish.txt")"
 ANS='y
 '
-run_pinned approve --file "$SUB/c/vanish.txt" --store
+run_pinned review --file "$SUB/c/vanish.txt" --store
 assert_exit "$RC" 0 "fixture: vanish.txt approved with custody"
 assert_file "$VANISH_SLOT/approved" "the witness is in the slot"
 rm -f "$SUB/c/vanish.txt"
@@ -2361,7 +2361,7 @@ assert_contains "$ERRF" "re-approve" "the error names the remediation"
 # file -- something chmod fixes, not something to re-approve.
 ANS='y
 '
-run_pinned approve --file "$SUB/c/served.json" --store
+run_pinned review --file "$SUB/c/served.json" --store
 assert_exit "$RC" 0 "fixture: served.json re-approved to reset the slot"
 ANS=""
 chmod 660 "$CAT_SLOT/approved"
@@ -2408,14 +2408,14 @@ if [ "$GIT_OK" -eq 1 ]; then
   ANS=""
   run_pinned show "$REPO_R"
   assert_exit "$RC" 1 "show of an unpinned repo refuses"
-  assert_contains "$OUT" "no pin for $REPO_R; show re-displays a pin (approve it first)" \
+  assert_contains "$OUT" "no pin for $REPO_R; show re-displays a pin (review it first)" \
     "the refusal names the missing pin and the remedy"
   assert_absent "$R_SLOT" "a refused show creates no slot dir"
 
   ANS='
 y
 '
-  run_pinned approve "$REPO_R"
+  run_pinned review "$REPO_R"
   assert_exit "$RC" 0 "fixture: the repo is pinned at its base commit"
   R_PIN="$(cat "$R_SLOT/rev.git")"
   R_SNAP="$(slot_snapshot "$R_SLOT")"
@@ -2532,7 +2532,7 @@ printf 'moving bytes\n' > "$SUB/mv/from.txt"
 MV_DIG="$(digest_of "$SUB/mv/from.txt")"
 ANS='y
 '
-run_pinned approve --file "$SUB/mv/from.txt" --store
+run_pinned review --file "$SUB/mv/from.txt" --store
 assert_exit "$RC" 0 "fixture: the file record exists"
 MV_OLD_SLOT="$(slot_of "$SUB/mv/from.txt")"
 mkdir -p "$SUB/mv/deeper"
@@ -2574,7 +2574,7 @@ rm -f "$SUB/mv/from.txt"
 printf 'declined move\n' > "$SUB/mv/dfrom.txt"
 ANS='y
 '
-run_pinned approve --file "$SUB/mv/dfrom.txt"
+run_pinned review --file "$SUB/mv/dfrom.txt"
 assert_exit "$RC" 0 "fixture: the declined-move record exists"
 DECL_OLD="$(slot_of "$SUB/mv/dfrom.txt")"
 DECL_NEW="$(slot_of "$SUB/mv/dto.txt")"
@@ -2600,7 +2600,7 @@ assert_contains "$OUT" "name the same path" "the refusal says why"
 printf 'still live\n' > "$SUB/mv/live.txt"
 ANS='y
 '
-run_pinned approve --file "$SUB/mv/live.txt"
+run_pinned review --file "$SUB/mv/live.txt"
 assert_exit "$RC" 0 "fixture: a record whose path is still live"
 printf 'copy at the new path\n' > "$SUB/mv/live-copy.txt"
 ANS=""
@@ -2622,10 +2622,10 @@ printf 'occupant\n' > "$SUB/mv/occupied.txt"
 printf 'mover\n' > "$SUB/mv/mover.txt"
 ANS='y
 '
-run_pinned approve --file "$SUB/mv/occupied.txt"
+run_pinned review --file "$SUB/mv/occupied.txt"
 ANS='y
 '
-run_pinned approve --file "$SUB/mv/mover.txt"
+run_pinned review --file "$SUB/mv/mover.txt"
 assert_exit "$RC" 0 "fixture: two records, both live"
 MOVER_SLOT="$(slot_of "$SUB/mv/mover.txt")"
 rm -f "$SUB/mv/mover.txt"
@@ -2652,7 +2652,7 @@ assert_contains "$OUT" "per-slot signer data" "the refusal names the signer data
 printf 'original bytes\n' > "$SUB/mv/drifter.txt"
 ANS='y
 '
-run_pinned approve --file "$SUB/mv/drifter.txt"
+run_pinned review --file "$SUB/mv/drifter.txt"
 assert_exit "$RC" 0 "fixture: the drift record exists"
 DRIFT_SLOT="$(slot_of "$SUB/mv/drifter.txt")"
 rm -f "$SUB/mv/drifter.txt"
@@ -2675,7 +2675,7 @@ if command -v jq >/dev/null 2>&1; then
   TOL_DIG="$(digest_of "$SUB/mv/tol.json")"
   ANS='y
 '
-  run_pinned approve --file "$SUB/mv/tol.json" --ignore-json-key model --store
+  run_pinned review --file "$SUB/mv/tol.json" --ignore-json-key model --store
   assert_exit "$RC" 0 "fixture: a record that declares an ignored key, with custody"
   rm -f "$SUB/mv/tol.json"
   printf '{\n  "model": "sonnet",\n  "keep": 1\n}\n' > "$SUB/mv/tol-moved.json"
@@ -2718,7 +2718,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   ANS='
 y
 '
-  run_pinned approve "$MVR_OLD" --tag v1
+  run_pinned review "$MVR_OLD" --tag v1
   assert_exit "$RC" 0 "fixture: the repo record exists, with a declared tag"
   MVR_OLD_SLOT="$(slot_of "$MVR_OLD")"
   MVR_NEW_SLOT="$(slot_of "$MVR_NEW")"

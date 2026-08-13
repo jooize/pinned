@@ -20,7 +20,7 @@ closed without re-deciding trust.
 Actions marked
 .B (sudo)
 run as root.
-.BR approve ,
+.BR review ,
 .BR add ,
 .BR tombstone ,
 .BR mv ,
@@ -42,7 +42,7 @@ forms, like every reading verb, run unprivileged.
 .SH COMMANDS
 .SS Repository approval
 .TP
-.B approve \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP] [\fB\-\-step\fP] [\fB\-\-backward\fP|\fB\-\-diverged\fP]
+.B review \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP] [\fB\-\-step\fP] [\fB\-\-backward\fP|\fB\-\-diverged\fP]
 (sudo) Review the diff since the last pin (the full tree on a first
 approval), approve, write the pin.
 .I repo
@@ -142,7 +142,7 @@ rev-only, and the summary says so.
 The pin advances at every yes, so each checkpoint is a coherent,
 deployable record: stopping midway rests the pin at the last commit
 actually read, and resuming later is an ordinary
-.B approve
+.B review
 over whatever remains.
 A decline stops the walk rather than skipping the commit \(em trust is
 a tree state, so approving commit N would silently carry N\-1's
@@ -168,7 +168,7 @@ takes one repo and refuses every combination it cannot mean:
 .BR \-\-signed\-tag ,
 .BR \-\-backward ,
 .BR \-\-diverged ,
-several repos, a batch approve, and a first approval (which reviews
+several repos, a batch review, and a first approval (which reviews
 the full tree \(em there is nothing to step from).
 A backward or diverged endpoint is refused by the lattice before the walk
 begins: the commits a walk replays only exist going forward, and the
@@ -199,7 +199,7 @@ exists to catch \(em and a deliberate, declared downgrade to a signed
 release is the legitimate manual override it exists to allow.
 .RE
 .TP
-.B approve \fIrepo\fP \fB\-\-signed\-tag\fP \fItag\fP [\fB\-\-signed\-tag\fP \fItag\fP ...] [\fB\-\-tag\fP \fItag\fP]
+.B review \fIrepo\fP \fB\-\-signed\-tag\fP \fItag\fP [\fB\-\-signed\-tag\fP \fItag\fP ...] [\fB\-\-tag\fP \fItag\fP]
 (sudo) Verify each signed tag against root-owned allowed signers (the
 slot's own
 .IR signers/allowed_signers ,
@@ -211,7 +211,7 @@ may add an unsigned name (a clean release name) that must name the
 same commit.
 .SS File approval
 .TP
-.B approve \-\-file \fIpath\fP [\fB\-\-baseline\fP \fIcopy\fP] [\fB\-\-ignore\-json\-key\fP \fIkey\fP ...] [\fB\-\-file\fP \fIpath\fP ...] [\fB\-\-algo\fP \fIname\fP] [\fB\-\-store\fP]
+.B review \-\-file \fIpath\fP [\fB\-\-baseline\fP \fIcopy\fP] [\fB\-\-ignore\-json\-key\fP \fIkey\fP ...] [\fB\-\-file\fP \fIpath\fP ...] [\fB\-\-algo\fP \fIname\fP] [\fB\-\-store\fP]
 (sudo) File-pin ceremony: each file is frozen, displayed root-side,
 confirmed, and its hash recorded.
 Multiple
@@ -319,7 +319,7 @@ record.
 Bring your own witness for the ignored-key comparison \(em a copy that
 must re-hash to the record before it is used; for a slot that keeps
 none of its own (see
-.BR "approve \-\-store" ).
+.BR "review \-\-store" ).
 .TP
 .B cat \fIpath\fP
 The approved bytes on stdout, from root custody \(em no sudo, writes
@@ -356,7 +356,7 @@ Principals, key types, fingerprints.
 .TP
 .B ignorable add \fIkey\fP [\-\-under \fIdir\fP]
 (sudo) Grant a dotted JSON key that
-.B approve \-\-file
+.B review \-\-file
 may then declare ignored.
 .B \-\-under
 scopes the grant to that directory's subtree; omitted means
@@ -379,7 +379,7 @@ File: record vs live state.
 .TP
 .B show \fIfile\fP|\fIrepo\fP [\-\-algo \fIname\fP] [\-\-length \fIbits\fP]
 Trusted re-display that records nothing \(em the rehearsal to
-.BR approve 's
+.BR review 's
 ceremony, and never a substitute for it.
 No sudo either way: it writes nothing, and root ownership of the
 installed binary is what keeps the display path itself unswappable.
@@ -481,10 +481,10 @@ full\-tree review both need real history.
 .PP
 .B 2. The pin.
 The first\-approval ceremony, run by
-.B approve
+.B review
 itself \(em add is not a second review path.
 .B \-\-signed\-tag
-rides through to it unchanged, with approve's own semantics (repeatable,
+rides through to it unchanged, with review's own semantics (repeatable,
 every named tag must verify and name the same commit), so a repository
 whose release is signed by an installed signer key can be added without
 reading the tree.
@@ -556,26 +556,26 @@ Sync every git+file input of the system flake to its approved rev and
 rebuild; always shows the root commands first (never self-elevates).
 Inputs whose git HEAD has moved past the pin are reported unapproved,
 and one pasteable
-.B pinned approve
+.B pinned review
 line naming all of them closes the report \(em a single authentication
 covers the whole batch, but approval stays a separate ceremony, never
 a deploy flag.
 .TP
 .B upgrade [\-\-dry\-run] [\-\-yes] [\-\-flake \fIpath\fP]
 (sudo)
-.B approve
+.B review
 +
 .BR deploy ,
 chained: every git+file input whose checkout moved past its pin gets
-the same review ceremony
-.B approve
+the same ceremony
+.B review
 runs \(em upgrade removes typing, never scrutiny \(em then deploy
 syncs the flake to the approved revs and rebuilds, all behind one
 authentication.
 An unprivileged plan precedes the sudo prompt.
 The plan lists every git+file input of the flake, one aligned row each in
 flake order, and highlights only the rows a ceremony will cover
-.RB ( approve: ).
+.RB ( review: ).
 The rest are present but quiet, each saying why it is not actionable: at
 its pin, refused, skipped for by-hand work, without a
 .BR rev= ,
@@ -586,9 +586,9 @@ A slot that declares a release tag is never plain-approved (that would
 clear the declaration and strand the input's ref=).
 When its HEAD carries exactly one release tag, upgrade approves that
 commit under that name \(em the release-at-HEAD rule, the same commit a
-plain approve would review; otherwise (no tag at HEAD, several, or an
+plain review would cover; otherwise (no tag at HEAD, several, or an
 out-of-grammar name) the repo is listed for a manual
-.B approve \-\-tag
+.B review \-\-tag
 instead.
 There is deliberately no latest-tag search: version sort is a
 convention, and the tag namespace is repo content \(em content must
@@ -599,7 +599,7 @@ key that verifies it, is offered the signature gate instead: the plan
 marks it
 .RB \(dq "signed release " \fIt\fP " \(em signature-gated" \(dq
 and the ceremony is
-.B approve \-\-signed\-tag
+.B review \-\-signed\-tag
 \(em its
 .RB \(dq [y/N] \(dq
 is the offer's acceptance, and declining skips that repo like any other.
@@ -618,7 +618,7 @@ key cannot enter a candidate, so no attacker-writable name ever chooses
 what the ceremony covers.
 Verified tags on lines that do not contain one another have no maximum
 and are listed for a manual
-.BR "approve \-\-signed\-tag" .
+.BR "review \-\-signed\-tag" .
 When the offered release is not HEAD, the plan says how far HEAD stands
 past it \(em the release is what gets pinned.
 .IP
@@ -626,8 +626,8 @@ The ancestry lattice is upgrade's admission rule: only a forward checkout
 joins an automatic ceremony.
 A checkout sitting behind its pin, or off the pinned line entirely, is
 listed as refused with the declaration flag that would approve it by hand
-.RB ( "approve \-\-backward" ,
-.BR "approve \-\-diverged" ).
+.RB ( "review \-\-backward" ,
+.BR "review \-\-diverged" ).
 A backward checkout was invisible before the lattice \(em the commit-count
 staleness test answered "nothing to do" for it.
 With
@@ -661,7 +661,7 @@ l l.
 0	served
 10	no record
 13	tombstoned
-16	no stored copy (approve \-\-file \-\-store adds one)
+16	no stored copy (review \-\-file \-\-store adds one)
 20	the live file is missing
 30	slot invariant violation
 1	error
@@ -718,7 +718,7 @@ ceremony per repo, one authentication, then rebuild:
 The same, selectively:
 .PP
 .nf
-    pinned approve ~/Projects/some\-repo ~/Projects/other\-repo
+    pinned review ~/Projects/some\-repo ~/Projects/other\-repo
     pinned deploy
 .fi
 .PP
@@ -733,7 +733,7 @@ Pin a config file, keeping a served witness and tolerating one key:
 .PP
 .nf
     sudo pinned ignorable add statusLine.command
-    pinned approve \-\-file ~/.claude/settings.json \e
+    pinned review \-\-file ~/.claude/settings.json \e
         \-\-ignore\-json\-key statusLine.command \-\-store
 .fi
 .PP
