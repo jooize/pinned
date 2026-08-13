@@ -101,7 +101,7 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
     pinned ignorable list             machine tier, user tier, and the
                                       effective intersection, with scopes
     pinned status <repo|file>         record vs live state
-    pinned review <file|repo> [--algo <name>] [--length <bits>]
+    pinned show <file|repo> [--algo <name>] [--length <bits>]
                                       trusted re-display, no record: a
                                       file is one read, shown and hashed;
                                       a repo is the tree at its pin, from
@@ -169,12 +169,12 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
 approve, add, setup, tombstone, mv, upgrade, signer add/remove and
 ignorable add/remove self-elevate via sudo (re-exec of the installed
 root-owned binary).
-sign, review and cat
-run as you: sign needs your SSH agent, review and cat write nothing. The
-verb triple: `review` rehearses (no record), `approve` records, `verify`
+sign, show and cat
+run as you: sign needs your SSH agent, show and cat write nothing. The
+verb triple: `show` rehearses (no record), `approve` records, `verify`
 answers -- humans review, machines verify, records happen only in
-approve. The triple covers both kinds: `review <file>` rehearses a hash
-gate, and `review <repo>` re-displays the tree a pin already names,
+approve. The triple covers both kinds: `show <file>` rehearses a hash
+gate, and `show <repo>` re-displays the tree a pin already names,
 through the same hardened git path the ceremony used. `cat` is
 custody's reader, and reads nothing else.
 
@@ -518,14 +518,14 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   one constant shows an empty diff for a commit that changed everything
   -- and it executes during rendering, which for a tool that elevates
   before diffing means as root.
-- `pinned review <file>` extends the same idea past git, for content
+- `pinned show <file>` extends the same idea past git, for content
   that is gated by hash rather than by rev (e.g. a hook wired into a
   hash-checked settings file). The security-relevant act is the read:
   one read into memory, those bytes displayed, those bytes hashed --
   never two reads with a swap in between. It prints the digest plus a
   ready-to-paste fail-closed wrapper, so the consumer hashes exactly the
-  way `review` did. Runs unprivileged (it writes nothing); it lives in a
-  root-owned binary because a user-writable review script could show
+  way `show` did. Runs unprivileged (it writes nothing); it lives in a
+  root-owned binary because a user-writable display script could show
   innocent bytes and hash malicious ones -- and unlike a falsified
   display, which fails closed at the next hash check, a falsified
   ceremony fails open. The digest equals what `shasum -a <algo> <file>`
@@ -538,7 +538,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   refused: this hash is the gate. There is deliberately no flag naming a
   hasher path -- whatever computes the digest decides whether the gate
   passes, so it must resolve inside the trusted PATH.
-- `pinned review <repo>` closes the same gap on the repo side: after a
+- `pinned show <repo>` closes the same gap on the repo side: after a
   pin exists, a file pin can be re-read through custody (`cat` serves
   the stored witness), but a repo's content could only be re-read
   through ambient git -- exactly the falsifiable display the hardening

@@ -267,7 +267,7 @@ usage: pinned <action> [args]
   signer add|remove|list ...     (sudo) allowed-signers ceremonies
   ignorable add|remove|list ...  (sudo) ignorable-JSON-key grants
   status <repo|file>             record vs live state
-  review <file|repo> [options]   trusted re-display; files get hash + wrapper
+  show <file|repo> [options]     trusted re-display; files get hash + wrapper
   list [--under <dir>]           live pins in your tier
   slot <path>                    print the slot directory for a path
   add <repo|url> [options]       (sudo) clone if needed, approve, declare as a flake input
@@ -443,7 +443,7 @@ ceremony_banner() {
 # the originals on purpose, so a future diff between the two copies stays
 # readable. Two deliberate deviations, both about byte fidelity in a display
 # that a trust decision is made from:
-#   * stdin instead of a file argument, so the `review` verb can colour the
+#   * stdin instead of a file argument, so the `show` verb can colour the
 #     ONE buffer it read rather than taking a second look at the file;
 #   * LC_ALL=C, so awk indexes bytes and an invalid multibyte sequence
 #     survives the round trip unchanged.
@@ -4787,15 +4787,15 @@ do_list() {
   [ "$found" -eq 1 ] || echo "(no pins)"
 }
 
-# ---- review ----------------------------------------------------------------
+# ---- show ------------------------------------------------------------------
 
-# Trusted review of a file OUTSIDE any repo, for hash-gated consumers (e.g. a
+# Trusted display of a file OUTSIDE any repo, for hash-gated consumers (e.g. a
 # hook wired in a content-gated settings file: the wrapper reads once, hashes
-# what it read, and executes only on match). Review is the REHEARSAL: it
+# what it read, and executes only on match). Show is the REHEARSAL: it
 # records nothing -- `approve --file` is the ceremony that does, and
 # `verify --emit` is the programmatic read. Humans review, machines verify,
 # records happen only in approve. A DIRECTORY argument takes the repo branch
-# below (do_review_repo) instead; the file ceremony here is untouched by it.
+# below (do_show_repo) instead; the file ceremony here is untouched by it.
 #
 # The security-relevant act is the READ, not the hash. Hashing is trivial;
 # what earns trust is that the bytes shown to you and the bytes hashed are the
@@ -4803,12 +4803,12 @@ do_list() {
 # them. So: one read into memory, display those bytes, hash those bytes.
 #
 # Runs unprivileged (nothing to elevate -- it writes nothing). Root ownership
-# of this binary is what protects the ceremony itself: a user-writable review
+# of this binary is what protects the ceremony itself: a user-writable display
 # script could show you innocent bytes and hash malicious ones, and unlike a
 # falsified display that lie would SURVIVE (you would paste a hash that
 # genuinely matches the malicious file). A lying display fails closed; a lying
 # ceremony fails open. That asymmetry is why this lives here.
-do_review() {
+do_show() {
   # $algo carries a default, so given-ness needs its own marker; $length has
   # none yet at this point (its default is applied further down), so emptiness
   # is its marker. Both are read by the repo branch, which refuses them.
@@ -4823,7 +4823,7 @@ do_review() {
         length="$2"; shift 2 ;;
       --) shift; break ;;
       -*) echo "unknown option: $1" >&2; usage ;;
-      *)  [ -z "$file" ] || { echo "review takes one file or repo" >&2; usage; }
+      *)  [ -z "$file" ] || { echo "show takes one file or repo" >&2; usage; }
           file="$1"; shift ;;
     esac
   done
@@ -4835,8 +4835,8 @@ do_review() {
   # not a usable git work tree is resolve_repo's refusal, not this dispatch's.
   if [ -d "$file" ]; then
     [ "$algo_given" -eq 0 ] && [ -z "$length" ] \
-      || { echo "--algo/--length apply to the file review" >&2; exit 1; }
-    do_review_repo "$file"
+      || { echo "--algo/--length apply to the file display" >&2; exit 1; }
+    do_show_repo "$file"
     return
   fi
 
@@ -4998,26 +4998,26 @@ do_review() {
   cat <<EOF
 export PATH=$PATH; c=\$(cat $file; printf x); c=\${c%x}; h=\$(printf '%s' "\$c" | $hash_cmd); [ "\${h%% *}" = "$hash" ] && exec bash -c "\$c" || { echo 'hook hash mismatch -- refusing' >&2; exit 2; }
 EOF
-  log_action review "$file" "$hash"
+  log_action show "$file" "$hash"
 }
 
-# The repo half of review: re-display what the pin NAMES, through the same
+# The repo half of show: re-display what the pin NAMES, through the same
 # hardened path the approve ceremony used. Once a repo is pinned, the only
 # trusted re-read was for FILE pins (`cat` serves the stored witness); a repo's
 # content could only be re-read through ambient git, whose display is
 # falsifiable by repo-local diff drivers and textconv filters -- the whole
-# reason sgit exists. It RECORDS NOTHING: review rehearses, approve records.
+# reason sgit exists. It RECORDS NOTHING: show rehearses, approve records.
 #
 # Unprivileged is correct here. Content-addressing carries the trust (the rev
 # names the bytes, and the pin file it comes from is root-owned), and the
 # root-owned installed binary means the display path itself cannot be swapped
 # by a user-space attacker. There is nothing to write, so nothing to elevate.
-do_review_repo() {
+do_show_repo() {
   resolve_repo "$1"
   local hash head_hash tag diff_out ahead
   hash="$(read_rev "$default_slot")" || exit 1
   [ -n "$hash" ] || {
-    echo "no pin for $repo; review re-displays a pin (approve it first)" >&2
+    echo "no pin for $repo; show re-displays a pin (approve it first)" >&2
     exit 1
   }
   # Availability up front: a rev the object store no longer holds (rewritten
@@ -5069,9 +5069,9 @@ do_review_repo() {
   diff_out="$(sgit_diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
   printf '%s\n' "$diff_out" | page || true
 
-  # Syslog is audit history, not a record: the file review logs the same way,
+  # Syslog is audit history, not a record: the file half logs the same way,
   # and neither writes a slot.
-  log_action review "$repo" "$hash"
+  log_action show "$repo" "$hash"
 }
 
 # ---- slot ------------------------------------------------------------------
@@ -6252,7 +6252,7 @@ case "$action" in
   status)    do_status "$@" ;;
   list)      do_list "$@" ;;
   slot)      do_slot "$@" ;;
-  review)    do_review "$@" ;;
+  show)      do_show "$@" ;;
   deploy)    do_deploy "$@" ;;
   upgrade)   do_upgrade "$@" ;;
   *)         usage ;;
