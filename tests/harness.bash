@@ -156,7 +156,7 @@ need '-o root -g "\$TREE_GRP" '                             4 'slot-tree install
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
-need '</dev/tty'                                            16 'ceremony tty reads'
+need '</dev/tty'                                            18 'ceremony tty reads'
 need '^# ---- setup ---'                                    1 'library cut marker'
 
 sed -e "s#^PINNED_ROOT=/var/db/pinned\$#PINNED_ROOT='$PINNED_ROOT'#" \
@@ -417,7 +417,8 @@ mkdir -p "$SUB/a"
 printf 'first ever\n' > "$SUB/a/first.txt"
 FIRST_SLOT="$(slot_of "$SUB/a/first.txt")"
 assert_absent "$FIRST_SLOT" "precondition: no slot dir before the first approval"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/a/first.txt"
 assert_exit "$RC" 0 "first-ever approval of an unpinned path succeeds (regression)"
@@ -444,12 +445,16 @@ assert_contains "$OUT" "already approved" "re-approval short-circuits"
 
 # ADDING custody is a disclosure decision, so the human confirms it: identical
 # bytes stop being a no-op the moment --store changes the custody state.
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/a/first.txt" --store
 assert_exit "$RC" 0 "adding --store to a copy-less slot runs"
 assert_missing "$OUT" "already approved" "adding custody defeats the no-op short-circuit"
 assert_contains "$OUT" "adds a stored copy" "the note names the custody delta and its direction"
+assert_contains "$OUT" "A copy of these bytes is kept beside" \
+                "a changing disposition gets the full explanation"
+assert_missing "$OUT" "in every lane" "which no longer talks about lanes"
 assert_contains "$OUT" "(+approved copy)" "the success line names the copy it wrote"
 assert_file "$FIRST_SLOT/approved" "--store writes the witness"
 assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(digest_of "$SUB/a/first.txt")" \
@@ -467,7 +472,8 @@ assert_contains "$OUT" "already approved" "unchanged custody keeps the short-cir
 
 # Dropping it is equally a decision, and equally loud -- stated before the
 # confirm and again in the result.
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/a/first.txt"
 assert_exit "$RC" 0 "re-approving a custody slot without --store runs"
@@ -478,18 +484,26 @@ assert_absent "$FIRST_SLOT/approved" "a plain re-approve drops the stored copy"
 
 # What custody holds is always what the LAST ceremony displayed.
 printf 'second draft\n' > "$SUB/a/first.txt"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/a/first.txt" --store
 assert_exit "$RC" 0 "re-approving changed bytes with --store succeeds"
 assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(digest_of "$SUB/a/first.txt")" \
           "the witness is the newly approved bytes"
 printf 'third draft\n' > "$SUB/a/first.txt"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/a/first.txt" --store
 assert_exit "$RC" 0 "re-approving again with --store succeeds"
 assert_missing "$OUT" "custody change" "unchanged custody needs no custody note"
+# STATING custody is one line; EXPLAINING it is a paragraph spent only where
+# the ceremony is deciding custody rather than restating it. Here the slot
+# already held a copy and --store keeps it: the one-liner, nothing more.
+assert_contains "$OUT" "custody:    kept in the slot" "custody is restated on one line"
+assert_missing "$OUT" "A copy of these bytes is kept beside" \
+               "an unchanged disposition spends no paragraph on it"
 assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(awk '{print $1}' "$FIRST_SLOT/pin.sha256")" \
           "the refreshed witness re-hashes to the new pin"
 
@@ -497,7 +511,8 @@ assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(awk '{print $1}' "$FIRST_SLOT
 # is what verify tells you to run -- so it must not short-circuit away.
 printf 'tampered\n' > "$FIRST_SLOT/approved"
 chmod 600 "$FIRST_SLOT/approved"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/a/first.txt" --store
 assert_exit "$RC" 0 "re-approving over an incoherent witness runs"
@@ -509,7 +524,8 @@ assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(awk '{print $1}' "$FIRST_SLOT
 printf 'reinstate me\n' > "$SUB/a/reinstated.txt"
 seed_tombstone "$SUB/a/reinstated.txt"
 REIN_SLOT="$(slot_of "$SUB/a/reinstated.txt")"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/a/reinstated.txt"
 assert_exit "$RC" 0 "approving over a tombstone succeeds"
@@ -519,19 +535,61 @@ assert_eq "$(count_state "$REIN_SLOT")" 1 "reinstated slot holds exactly one sta
 
 printf 'not this time\n' > "$SUB/a/declined.txt"
 DECL_SLOT="$(slot_of "$SUB/a/declined.txt")"
-ANS='n
+ANS='
+n
 '
 run_pinned review --file "$SUB/a/declined.txt"
 assert_exit "$RC" 0 "declining exits 0"
 assert_contains "$OUT" "declined; record unchanged" "decline is reported"
 assert_eq "$(count_state "$DECL_SLOT")" 0 "declining records nothing"
 
+# --- the gates before each pager --------------------------------------------
+# Nothing full-screen arrives unannounced: each file's pager sits behind a
+# gate naming WHAT opens and how big it is (which is why every ceremony above
+# feeds a blank line before its y/N), and a batch says which item you are on.
+mkdir -p "$SUB/a/gate"
+printf 'g1\ng2\ng3\n' > "$SUB/a/gate/one.txt"
+printf 'g1\ng2\ng3\n' > "$SUB/a/gate/two.txt"
+ANS='
+y
+
+y
+'
+run_pinned review --file "$SUB/a/gate/one.txt" --file "$SUB/a/gate/two.txt"
+assert_exit "$RC" 0 "a two-file ceremony records both"
+assert_contains "$OUT" "[1/2]" "the batch counter names the item under ceremony"
+assert_contains "$OUT" "[2/2]" "and moves on with the batch"
+assert_contains "$OUT" "full content 3 lines; Enter opens it" \
+                "a first approval's gate names the size of what it opens"
+
+printf 'lonely\n' > "$SUB/a/gate/solo.txt"
+ANS='
+y
+'
+run_pinned review --file "$SUB/a/gate/solo.txt"
+assert_exit "$RC" 0 "a single-file ceremony records"
+assert_contains "$OUT" "full content 1 line; Enter opens it" "the singular gate reads as one"
+assert_missing "$OUT" "[1/1]" "one --file is not a batch: no counter"
+
+# A VERIFIED baseline turns the pager into a diff, and the gate states the
+# diff's magnitude instead of the whole file's length.
+cp "$SUB/a/gate/solo.txt" "$FIX/solo-baseline.txt"
+printf 'lonely\nno more\n' > "$SUB/a/gate/solo.txt"
+ANS='
+y
+'
+run_pinned review --file "$SUB/a/gate/solo.txt" --baseline "$FIX/solo-baseline.txt"
+assert_exit "$RC" 0 "a baseline-diff ceremony records"
+assert_contains "$OUT" "+1 -0; Enter opens the diff" "the gate states the diff's magnitude"
+assert_contains "$OUT" "diff vs the approved baseline" "and the pager is that diff"
+
 # ---------------------------------------------------------------------------
 say "S5: tombstone"
 # ---------------------------------------------------------------------------
 mkdir -p "$SUB/t"
 printf 'still here\n' > "$SUB/t/live.txt"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/t/live.txt"
 assert_exit "$RC" 0 "fixture: live.txt approved"
@@ -557,7 +615,8 @@ assert_exit "$RC" 13 "the file reappearing turns the verdict into 13"
 
 mkdir -p "$SUB/t/wholesale"
 printf 'doomed subtree\n' > "$SUB/t/wholesale/conf.json"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/t/wholesale/conf.json"
 assert_exit "$RC" 0 "fixture: file inside a doomed directory approved"
@@ -706,6 +765,10 @@ y
   assert_exit "$RC" 0 "first-ever repo approval succeeds (no slot dir pre-created)"
   assert_contains "$OUT" "full tree at" "first approval shows the full tree"
   assert_contains "$OUT" "rev.git" "ceremony names the record it wrote"
+  # LABEL OWNERSHIP: a source prefix names whose fact a row states, so the
+  # revision under ceremony -- which is nobody's record yet -- is the
+  # candidate, not a bare "commit".
+  assert_contains "$OUT" "git HEAD:" "an untagged ceremony states whose fact the revision is"
   assert_file "$REPO_SLOT/rev.git" "rev.git written"
   assert_eq "$(cat "$REPO_SLOT/rev.git")" "$HEAD_HASH" "rev.git holds the approved commit"
   assert_eq "$(count_state "$REPO_SLOT")" 1 "repo slot holds exactly one state file"
@@ -1794,7 +1857,8 @@ seed_policy_user '[{"path":["model"]},{"path":["effortLevel"]},{"path":["statusL
 # declares ignored keys and keeps no witness of its own, so the comparison it
 # enables needs one from the caller.
 printf '{\n  "model": "opus",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/nocopy.json"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/ig/nocopy.json" --ignore-json-key model --ignore-json-key effortLevel
 assert_exit "$RC" 0 "review with --ignore-json-key succeeds"
@@ -1812,7 +1876,8 @@ assert_absent "$(slot_file_of "$SUB/ig/nocopy.json" approved)" \
 # --store is what keeps the bytes, and it keeps exactly the approved ones.
 printf '{\n  "model": "opus",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/copy.json"
 COPY_SLOT="$(slot_of "$SUB/ig/copy.json")"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/ig/copy.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "review with a declaration AND --store succeeds"
@@ -1895,7 +1960,8 @@ assert_contains "$OUT" "duplicate object keys" "the refusal names the duplicatio
 
 # A non-JSON file simply never parses, so it always falls back to strict.
 printf 'container\n' > "$SUB/ig/lane"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/ig/lane" --ignore-json-key model --store
 assert_exit "$RC" 0 "pinned does not restrict WHICH paths may declare ignored keys"
@@ -1909,7 +1975,8 @@ assert_contains "$OUT" "not exactly one JSON document" "the note says why it cou
 # from before the JSON format lands right here: it is not JSON, so it is
 # refused rather than guessed at.)
 printf '{"model": "sonnet", "permissions": {"deny": ["Bash"]}}\n' > "$SUB/ig/bad.json"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/ig/bad.json" --ignore-json-key model
 assert_exit "$RC" 0 "fixture: bad.json approved with a declaration"
@@ -1954,11 +2021,13 @@ assert_contains "$OUT" "re-approve" "the error names the remediation"
 # plain review clears the declaration and drops the stored witness together.
 printf '{"model": "opus", "keep": 1}\n' > "$SUB/ig/clear.json"
 CLEAR_SLOT="$(slot_of "$SUB/ig/clear.json")"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/ig/clear.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "fixture: clear.json approved with a declaration + stored copy"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/ig/clear.json"
 assert_exit "$RC" 0 "re-approving identical bytes without a declaration still runs"
@@ -1974,7 +2043,8 @@ assert_exit "$RC" 11 "after clearing, the same drift is a plain mismatch again"
 # Tombstoning retires the extras with the record.
 printf '{"model": "opus"}\n' > "$SUB/ig/doomed.json"
 DOOM_SLOT="$(slot_of "$SUB/ig/doomed.json")"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/ig/doomed.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "fixture: doomed.json approved with extras"
@@ -2008,7 +2078,8 @@ assert_contains "$OUT" "outside the key grammar" "the refusal names the grammar"
 # archives what was approved and feeds pinned cat, so it means something on a
 # ceremony that declares nothing -- the old "--store applies to a ceremony
 # that declares --ignore-json-key" pairing refusal must stay gone.
-ANS='n
+ANS='
+n
 '
 run_pinned review --file "$SUB/ig/nocopy.json" --store
 assert_exit "$RC" 0 "--store on a ceremony that declares NO ignored keys is accepted"
@@ -2060,7 +2131,8 @@ printf '%s\n' "$JSON_IN" > "$SUB/pol/inx/s.json"
 # which command grants it. This is also the first-deploy state, so a refusal
 # here must never read as breakage.
 rm -f "$POLICY_USER" "$PINNED_MACHINE_POLICY"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/pol/in/s.json" --ignore-json-key model
 assert_exit "$RC" 1 "no policy at all -> the ceremony refuses the declaration"
@@ -2115,12 +2187,14 @@ assert_contains "$OUT" "under $SUB/pol/in" "list shows each entry's scope"
 
 # In scope the ceremony proceeds; one component further along it refuses --
 # the same boundary rule list --under uses (/pol/in is not /pol/inx).
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/pol/in/s.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "a granted key in scope approves"
 assert_contains "$OUT" "model -- user policy, under $SUB/pol/in" "provenance names the scope"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/pol/inx/s.json" --ignore-json-key model
 assert_exit "$RC" 1 "the same key one component off the scope is refused"
@@ -2153,7 +2227,8 @@ run_pinned ignorable list
 assert_exit "$RC" 0 "list exits 0 with both tiers"
 assert_contains "$OUT" "everywhere" "the user tier's unscoped entry is shown"
 printf '%s\n' "$JSON_IN" > "$SUB/pol/in/s.json"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/pol/in/s.json" --ignore-json-key model
 assert_exit "$RC" 1 "an unscoped user grant is NOT covered by a scoped machine entry"
@@ -2163,7 +2238,8 @@ assert_contains "$OUT" "does not grant these keys" "the intersection refuses it"
 seed_policy_user "[{\"path\":[\"model\"],\"under\":\"$SUB/pol/in/deeper\"}]"
 mkdir -p "$SUB/pol/in/deeper"
 printf '%s\n' "$JSON_IN" > "$SUB/pol/in/deeper/s.json"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/pol/in/deeper/s.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "a user scope BELOW the machine scope survives the intersection"
@@ -2171,7 +2247,8 @@ assert_contains "$OUT" "under $SUB/pol/in/deeper" "provenance names the narrower
 
 # An unusable tier grants nothing -- on either rung, at both ends.
 seed_policy_machine '{"path": ["model"]}'
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/pol/in/deeper/s.json" --ignore-json-key model
 assert_exit "$RC" 1 "an unusable machine tier stops the ceremony"
@@ -2199,7 +2276,8 @@ mkdir -p "$PINNED_ROOT/$USERNAME/signers"
 printf 'harness ssh-ed25519 AAAAfake\n' > "$PINNED_ROOT/$USERNAME/signers/allowed_signers"
 chmod 640 "$PINNED_ROOT/$USERNAME/signers/allowed_signers"
 printf '%s\n' "$JSON_IN" > "$SUB/pol/heal.json"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/pol/heal.json"
 assert_exit "$RC" 0 "a root ceremony runs with a legacy signers/ dir present"
@@ -2215,7 +2293,8 @@ assert_missing "$OUT" "note: removed the now-empty legacy dir" \
 # then a note of its own, never a continuation indented under nothing.
 mkdir -p "$PINNED_ROOT/$USERNAME/signers"
 printf '%s\n' "$JSON_IN" > "$SUB/pol/heal2.json"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/pol/heal2.json"
 assert_exit "$RC" 0 "a root ceremony runs with an empty legacy signers/ dir"
@@ -2233,7 +2312,8 @@ say "S11: slot (the name resolver)"
 # the encoding must never be reimplemented outside pinned.
 mkdir -p "$SUB/s"
 printf '{"measured": true}\n' > "$SUB/s/measured.json"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/s/measured.json"
 assert_exit "$RC" 0 "fixture: measured.json approved"
@@ -2274,7 +2354,8 @@ say "S12: cat (custody's verified reader)"
 mkdir -p "$SUB/c"
 printf '{"served": true}\n' > "$SUB/c/served.json"
 CAT_SLOT="$(slot_of "$SUB/c/served.json")"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/c/served.json" --store
 assert_exit "$RC" 0 "fixture: served.json approved with custody"
@@ -2302,7 +2383,8 @@ printf '{"served": true}\n' > "$SUB/c/served.json"
 # 16: a valid record with no witness at all. New code, tens class, because
 # the ceremony is what fixes it.
 printf 'no custody here\n' > "$SUB/c/bare.txt"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/c/bare.txt"
 assert_exit "$RC" 0 "fixture: bare.txt approved without --store"
@@ -2330,7 +2412,8 @@ assert_contains "$ERRF" "no approved content to serve" "13 says why there is not
 # content to consumers that never notice it went.
 printf 'here for now\n' > "$SUB/c/vanish.txt"
 VANISH_SLOT="$(slot_of "$SUB/c/vanish.txt")"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/c/vanish.txt" --store
 assert_exit "$RC" 0 "fixture: vanish.txt approved with custody"
@@ -2359,7 +2442,8 @@ assert_contains "$ERRF" "re-approve" "the error names the remediation"
 # gate, a record it cannot trust is a structural failure of the tool); cat
 # answers 30, because for a READER it is the same class as a wrong-mode live
 # file -- something chmod fixes, not something to re-approve.
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/c/served.json" --store
 assert_exit "$RC" 0 "fixture: served.json re-approved to reset the slot"
@@ -2530,7 +2614,8 @@ mkdir -p "$SUB/mv"
 # --- file happy path: the check line is re-named, the digest is not --------
 printf 'moving bytes\n' > "$SUB/mv/from.txt"
 MV_DIG="$(digest_of "$SUB/mv/from.txt")"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/mv/from.txt" --store
 assert_exit "$RC" 0 "fixture: the file record exists"
@@ -2572,7 +2657,8 @@ rm -f "$SUB/mv/from.txt"
 
 # --- decline changes nothing ----------------------------------------------
 printf 'declined move\n' > "$SUB/mv/dfrom.txt"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/mv/dfrom.txt"
 assert_exit "$RC" 0 "fixture: the declined-move record exists"
@@ -2598,7 +2684,8 @@ assert_exit "$RC" 1 "old and new naming one path refuses"
 assert_contains "$OUT" "name the same path" "the refusal says why"
 
 printf 'still live\n' > "$SUB/mv/live.txt"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/mv/live.txt"
 assert_exit "$RC" 0 "fixture: a record whose path is still live"
@@ -2620,10 +2707,12 @@ assert_contains "$OUT" "does not travel" "a tombstone is the old path's own hist
 # An occupied new slot: records do not merge, in either direction.
 printf 'occupant\n' > "$SUB/mv/occupied.txt"
 printf 'mover\n' > "$SUB/mv/mover.txt"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/mv/occupied.txt"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/mv/mover.txt"
 assert_exit "$RC" 0 "fixture: two records, both live"
@@ -2650,7 +2739,8 @@ assert_contains "$OUT" "per-slot signer data" "the refusal names the signer data
 
 # Content that is not what the record names, at the new path.
 printf 'original bytes\n' > "$SUB/mv/drifter.txt"
-ANS='y
+ANS='
+y
 '
 run_pinned review --file "$SUB/mv/drifter.txt"
 assert_exit "$RC" 0 "fixture: the drift record exists"
@@ -2673,7 +2763,8 @@ if command -v jq >/dev/null 2>&1; then
   seed_policy_user '[{"path":["model"]}]'
   printf '{\n  "model": "opus",\n  "keep": 1\n}\n' > "$SUB/mv/tol.json"
   TOL_DIG="$(digest_of "$SUB/mv/tol.json")"
-  ANS='y
+  ANS='
+y
 '
   run_pinned review --file "$SUB/mv/tol.json" --ignore-json-key model --store
   assert_exit "$RC" 0 "fixture: a record that declares an ignored key, with custody"
@@ -2720,6 +2811,11 @@ y
 '
   run_pinned review "$MVR_OLD" --tag v1
   assert_exit "$RC" 0 "fixture: the repo record exists, with a declared tag"
+  # LABEL OWNERSHIP: `git HEAD:` is the live checkout's fact and `pinned:` is
+  # the record's; a tag-selected revision is neither -- it is the candidate
+  # under ceremony, and says so.
+  assert_contains "$OUT" "candidate:" "a tag-selected revision is labelled candidate"
+  assert_missing "$OUT" "commit:" "and no longer wears the ownerless commit label"
   MVR_OLD_SLOT="$(slot_of "$MVR_OLD")"
   MVR_NEW_SLOT="$(slot_of "$MVR_NEW")"
   # A per-slot signers override, the one annotation that lives in a subdir.
@@ -3082,6 +3178,25 @@ y
 else
   say "S15: SKIPPED (no git fixture)"
 fi
+
+# ---------------------------------------------------------------------------
+say "S16: the frozen syslog vocabulary"
+# ---------------------------------------------------------------------------
+# The audit log is append-only, so its action tags are FROZEN NOUNS, not UI
+# copy: a tag renamed to follow a verb splits the history into eras that no
+# single query spans. The log already carries one such scar (the display verb
+# logged review before 2026-08-13 and show after), which is why the ceremony
+# tags stayed approve/approve-file through the approve->review rename -- see
+# the comment above log_action in the script. This reads the set straight
+# from the source's call sites: a new or renamed tag fails HERE, and the fix
+# for a legitimate addition is editing the list below, a diff that says out
+# loud that the log's vocabulary is changing.
+LOG_TAGS="$(grep -v '^[[:space:]]*#' "$SRC" \
+  | grep -o 'log_action "\{0,1\}[A-Za-z][A-Za-z0-9$_-]*' \
+  | sed 's/^log_action "\{0,1\}//' | LC_ALL=C sort -u | tr '\n' ' ')"
+assert_eq "$LOG_TAGS" \
+  'add approve approve-file ignorable-$sub mv setup show sign signer-add signer-remove tombstone ' \
+  "the syslog action tags are exactly the frozen set (see log_action's comment)"
 
 # ---------------------------------------------------------------------------
 say ""

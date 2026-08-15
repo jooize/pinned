@@ -381,6 +381,12 @@ verify_ancestry() {
   done
 }
 
+# FROZEN VOCABULARY. The action tags below are an append-only audit trail's
+# nouns, not UI copy: renaming one when a verb is renamed splits the history
+# into eras that no single query spans. The log already carries one such
+# scar (the display verb logged action=review before 2026-08-13 and
+# action=show after), which is why the ceremony tags stayed approve and
+# approve-file through the approve->review rename. The harness pins the set.
 log_action() {
   # visible via: log show --predicate 'eventMessage CONTAINS "pinned:"' --last 1d
   logger -t pinned "user=${inv:-$(id -un)} action=$1 repo=${2:-} hash=${3:-} result=${4:-ok}"
@@ -438,11 +444,12 @@ ceremony_banner() {
 
 # ---- review-display highlighters -------------------------------------------
 #
-# Both are ports of the orientation preview's renderers in the hardening
-# repo's nix/claude-shim.bash (color_diff, highlight_json) -- kept close to
-# the originals on purpose, so a future diff between the two copies stays
-# readable. Two deliberate deviations, both about byte fidelity in a display
-# that a trust decision is made from:
+# Both began as ports of the orientation renderers in the hardening repo's
+# nix/claude-shim.bash. Only highlight_json still has a counterpart there
+# (the shim's preview became a drift index and dropped its diff colourer),
+# so this pair is now the authoritative one -- the family resemblance is
+# history, not a contract. Two deliberate deviations from the originals,
+# both about byte fidelity in a display that a trust decision is made from:
 #   * stdin instead of a file argument, so the `show` verb can colour the
 #     ONE buffer it read rather than taking a second look at the file;
 #   * LC_ALL=C, so awk indexes bytes and an invalid multibyte sequence
@@ -2653,7 +2660,7 @@ case "$action" in
               "$C_DIM" "$repo" "$C_OFF"
             if [ -n "$preview_tag" ]; then
               printf '%stag:%s        %s\n' "$C_B" "$C_OFF" "$preview_tag"
-              printf '%scommit:%s     %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_head" "$C_OFF" \
+              printf '%scandidate:%s  %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_head" "$C_OFF" \
                 "$C_DIM" "$(sgit log -1 --format=%s "$preview_head")" "$C_OFF"
             else
               printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_head" "$C_OFF" \
@@ -2819,13 +2826,24 @@ case "$action" in
       # contract. The ownership/digest details that used to follow said
       # nothing the checks just above had not already enforced -- the
       # command line and the contract are the parts a reader acts on.
+      #
+      # THE CONTRACT LINE BELONGS TO WHOEVER ORIENTED. It says "the preview
+      # above", so it is printed by the process that printed that preview:
+      # pinned, for the repo verbs, whose preview is a few lines up. A
+      # `review --file` has no preview of its own -- the launcher that
+      # measured the files printed the index and owns the sentence there --
+      # so pinned saying it too would either double the launcher's line
+      # around "Will run as root:", or point at nothing at all on a direct
+      # invocation.
       if { [ "$action" = "review" ] || [ "$action" = "upgrade" ] || [ "$action" = "add" ]; } \
         && [ "$elev" = "$INSTALL_TARGET" ]; then
         cmd_disp="$(elevation_cmd_disp "$elev" "$action" "$@")"
         printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
         printf '  %s\n\n' "$cmd_disp"
-        printf '%sThe preview above was orientation only; the root side re-derives it --\n' "$C_DIM"
-        printf 'nothing is pinned until you confirm there.%s\n\n' "$C_OFF"
+        if [ "${file_mode:-0}" -eq 0 ]; then
+          printf '%sThe preview above was orientation only. The sudo ceremony re-derives\n' "$C_DIM"
+          printf 'everything it displays, and nothing is pinned until you confirm there.%s\n\n' "$C_OFF"
+        fi
       fi
       exec sudo -- "$elev" "$action" "$@"
     fi
@@ -3189,13 +3207,13 @@ do_approve() {
       printf '%srepo:%s       %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_B$C_MAG" "${repo##*/}" "$C_OFF" \
         "$C_DIM" "$repo" "$C_OFF"
       for t in "${tag_args[@]}"; do
-        printf '%stag:%s     %s  %s✓ signature verified against %s%s\n' "$C_DIM" "$C_OFF" "$t" "$C_GRN" "$signers" "$C_OFF"
+        printf '%stag:%s        %s  %s✓ signature verified against %s%s\n' "$C_DIM" "$C_OFF" "$t" "$C_GRN" "$signers" "$C_OFF"
       done
       [ -n "$sel_tag" ] \
-        && printf '%stag:%s     %s  %s(unsigned; names the verified commit)%s\n' "$C_DIM" "$C_OFF" "$sel_tag" "$C_DIM" "$C_OFF"
+        && printf '%stag:%s        %s  %s(unsigned; names the verified commit)%s\n' "$C_DIM" "$C_OFF" "$sel_tag" "$C_DIM" "$C_OFF"
       [ "${#tag_args[@]}" -gt 1 ] \
         && printf '%s%d/%d tags agree on the commit below%s\n' "$C_GRN" "${#tag_args[@]}" "${#tag_args[@]}" "$C_OFF"
-      printf '%scommit:%s  %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
+      printf '%scandidate:%s  %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
         "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
       if [ -n "$old_hash" ]; then
         printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
@@ -3236,7 +3254,7 @@ do_approve() {
         "$C_DIM" "$repo" "$C_OFF"
       if [ -n "$sel_tag" ]; then
         printf '%stag:%s        %s\n' "$C_DIM" "$C_OFF" "$sel_tag"
-        printf '%scommit:%s     %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
+        printf '%scandidate:%s  %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
           "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
       else
         printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
@@ -3519,6 +3537,7 @@ do_approve_files() {
   local i=0 n="${#files[@]}" f base path slot line new_digest old_digest old_label
   local base_ok recorded=0 declined=0 failed=0 answer state_note nl
   local ign ign_json old_ign old_bad had_copy copy_bad cur_copy ign_note cust_note decl_changed
+  local cust_changed shape gate_shape n_lines
   local gk gscope
   local -a hdr_opt=()
 
@@ -3689,7 +3708,13 @@ do_approve_files() {
       continue
     fi
 
-    printf '%sfile:%s       %s\n' "$C_B" "$C_OFF" "$path"
+    # WHICH item of the batch this is, before its identity block: a ceremony
+    # that asks several questions in a row has to say where in the row you
+    # are. A single --file is not a batch (same rule as the summary tail),
+    # and the counter counts INVOCATION position, so a skipped or
+    # short-circuited file simply leaves a gap -- honest about what it is.
+    [ "$n" -le 1 ] || printf '%s[%s/%s]%s\n' "$C_DIM" "$i" "$n" "$C_OFF"
+    printf '%sfile:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_B$C_MAG" "$path" "$C_OFF"
     [ -n "$state_note" ] && printf '%snote:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_YEL" "$state_note" "$C_OFF"
     [ -n "$ign_note" ] && printf '%snote:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_YEL" "$ign_note" "$C_OFF"
     [ -n "$cust_note" ] && printf '%snote:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_YEL" "$cust_note" "$C_OFF"
@@ -3724,20 +3749,36 @@ EOF
     # CUSTODY, stated in both directions and always -- not only when it is
     # changing. What the slot will hold after this y is part of what is being
     # approved, and "no copy is kept" is as much a decision as keeping one.
+    # But STATING it is one line; EXPLAINING it is a paragraph, and a
+    # paragraph re-read at every launch stops being read at all. The
+    # explanation is therefore spent where it buys something: when this
+    # approval is choosing custody for the first time (no prior record), when
+    # it flips the stored-copy state, or when the note above already says the
+    # stored copy is being repaired -- exactly the cases the ceremony treats
+    # as a custody DECISION rather than a restatement.
+    cust_changed=0
+    if [ -z "$old_digest" ] || [ "$had_copy" -ne "$store" ] || [ -n "$cust_note" ]; then
+      cust_changed=1
+    fi
     if [ "$store" -eq 1 ]; then
-      printf '%scustody:%s    %skept in the slot%s  %s(--store)%s\n' \
-        "$C_B" "$C_OFF" "$C_CYN" "$C_OFF" "$C_DIM" "$C_OFF"
-      printf '            %sA copy of these bytes is kept beside the record as the%s\n' "$C_DIM" "$C_OFF"
-      printf '            %switness: what the ignored-key comparison reads, and what%s\n' "$C_DIM" "$C_OFF"
-      printf '            %spinned cat serves. It is readable by anything that mounts%s\n' "$C_DIM" "$C_OFF"
-      printf '            %sthe slot, here and in every lane the slot reaches.%s\n' "$C_DIM" "$C_OFF"
+      printf '%scustody:%s    kept in the slot  %s(--store · pinned cat serves these bytes)%s\n' \
+        "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
+      if [ "$cust_changed" -eq 1 ]; then
+        printf '            %sA copy of these bytes is kept beside the record as the%s\n' "$C_DIM" "$C_OFF"
+        printf '            %switness: what the ignored-key comparison reads, and what%s\n' "$C_DIM" "$C_OFF"
+        printf '            %spinned cat serves. It is readable by anything that mounts%s\n' "$C_DIM" "$C_OFF"
+        printf '            %sthe slot.%s\n' "$C_DIM" "$C_OFF"
+      fi
     else
-      printf '%scustody:%s    %snone%s\n' "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
-      printf '            %sNo copy is kept at rest: the slot records the digest and%s\n' "$C_DIM" "$C_OFF"
-      printf '            %sdiscloses nothing more, so pinned cat has nothing to serve.%s\n' "$C_DIM" "$C_OFF"
-      printf '            %sA consumer that wants the ignored-key comparison brings its%s\n' "$C_DIM" "$C_OFF"
-      printf '            %sown witness (verify --baseline). Any copy this slot holds%s\n' "$C_DIM" "$C_OFF"
-      printf '            %stoday is dropped by this approval.%s\n' "$C_DIM" "$C_OFF"
+      printf '%scustody:%s    none  %s(no copy at rest · pinned cat has nothing to serve)%s\n' \
+        "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
+      if [ "$cust_changed" -eq 1 ]; then
+        printf '            %sNo copy is kept at rest: the slot records the digest and%s\n' "$C_DIM" "$C_OFF"
+        printf '            %sdiscloses nothing more, so pinned cat has nothing to serve.%s\n' "$C_DIM" "$C_OFF"
+        printf '            %sA consumer that wants the ignored-key comparison brings its%s\n' "$C_DIM" "$C_OFF"
+        printf '            %sown witness (verify --baseline). Any copy this slot holds%s\n' "$C_DIM" "$C_OFF"
+        printf '            %stoday is dropped by this approval.%s\n' "$C_DIM" "$C_OFF"
+      fi
     fi
     echo
 
@@ -3750,27 +3791,53 @@ EOF
       if freeze_file "$base" 2>/dev/null \
         && [ "$(hash_file "$old_label" "$FROZEN_COPY")" = "$old_digest" ]; then
         base_ok=1
-        printf '%s--- diff vs the approved baseline (exactly the bytes being approved) ---%s\n' "$C_B" "$C_OFF"
         # -U1: unified context lines are UNCHANGED content by definition, and
         # diff prints every changed line at any -U level, so trimming context
-        # shortens the read without ever hiding an edit.
-        printf '%scontext trimmed to 1 line; every changed line is always shown; @@ section labels are orientation, not authority.%s\n' "$C_DIM" "$C_OFF"
+        # shortens the read without ever hiding an edit. Produced BEFORE the
+        # gate below announces it, so a diff that cannot be made fails while
+        # nothing has been promised.
         line="$(diff -U1 ${hdr_opt[@]+"${hdr_opt[@]}"} "$FROZEN_COPY" "$fro" || true)"
-        printf '%s%s%s\n' "$C_DIM" "$(printf '%s\n' "$line" | diff_shape)" "$C_OFF"
-        printf '%s\n' "$line" | color_diff | page || true
+        shape="$(printf '%s\n' "$line" | diff_shape)"
+        # The gate says the magnitude, so the shape's own "+A/-D lines" tail
+        # is re-cut to the gate's spelling rather than counted a second time.
+        gate_shape="${shape#*, }"; gate_shape="${gate_shape% lines}"
+        gate_shape="${gate_shape/\// }"
       fi
     fi
-    if [ "$base_ok" -eq 0 ]; then
+    # THE GATE BEFORE THE PAGER, as the repo ceremony has it: nothing
+    # full-screen arrives unannounced, and what arrives is named with its
+    # size first. Enter is the only answer -- this is orientation, not a
+    # decision. Off-tty the read fails and set -e aborts the ceremony: the
+    # same fail-closed contract as the confirm below.
+    if [ "$base_ok" -eq 1 ]; then
+      printf '%snext: review %s%s%s %s%s%s; Enter opens the diff%s ' \
+        "$C_B" "$C_B$C_MAG" "${path##*/}" "$C_OFF$C_B" \
+        "$C_CYN" "$gate_shape" "$C_OFF$C_B" "$C_OFF"
+      read -r answer </dev/tty
+      printf '%s--- diff vs the approved baseline (exactly the bytes being approved) ---%s\n' "$C_B" "$C_OFF"
+      printf '%scontext trimmed to 1 line; every changed line is always shown; @@ section labels are orientation, not authority.%s\n' "$C_DIM" "$C_OFF"
+      printf '%s%s%s\n' "$C_DIM" "$shape" "$C_OFF"
+      printf '%s\n' "$line" | color_diff | page || true
+    else
       if [ -n "$base" ] && [ -n "$old_digest" ]; then
         printf '%snote: baseline does not re-hash to the approved record; showing the full file%s\n' "$C_YEL" "$C_OFF"
       fi
+      # Counted with wc, not awk: the frozen buffer can hold any bytes at
+      # all, and a line count must not be the thing that refuses a binary.
+      # A file whose last line has no terminator still counts as a line.
+      nl=''
+      [ "$(tail -c1 -- "$fro" | wc -l)" -eq 1 ] && nl=1
+      n_lines="$(LC_ALL=C wc -l <"$fro" | tr -d ' ')"
+      [ -n "$nl" ] || [ ! -s "$fro" ] || n_lines=$((n_lines + 1))
+      printf '%snext: review %s%s%s full content %s%s line%s%s; Enter opens it%s ' \
+        "$C_B" "$C_B$C_MAG" "${path##*/}" "$C_OFF$C_B" \
+        "$C_CYN" "$n_lines" "$(plural_s "$n_lines")" "$C_OFF$C_B" "$C_OFF"
+      read -r answer </dev/tty
       printf '%s--- %s (exactly the bytes being approved) ---%s\n' "$C_B" "$path" "$C_OFF"
       # Syntax colour only when the frozen copy is JSON that awk can carry
       # through unchanged; the digest above came from the file, not from
       # this stream, and highlight_json only inserts SGR codes between the
       # bytes it is given.
-      nl=''
-      [ "$(tail -c1 -- "$fro" | wc -l)" -eq 1 ] && nl=1
       if highlight_json_ok "$nl" <"$fro"; then
         highlight_json <"$fro" | page || true
       else
@@ -3779,7 +3846,7 @@ EOF
     fi
     echo
 
-    printf '%sapprove %s%s%s? [y/N]%s ' "$C_B" "$C_CYN" "$path" "$C_OFF$C_B" "$C_OFF"
+    printf '%sapprove %s%s%s? [y/N]%s ' "$C_B" "$C_B$C_MAG" "$path" "$C_OFF$C_B" "$C_OFF"
     read -r answer </dev/tty
     case "$answer" in
       y|Y|yes)
