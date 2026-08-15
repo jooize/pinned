@@ -39,7 +39,9 @@
 #   - no real sudo, so the self-elevation preview, the sudoers digest pin,
 #     `setup` and `deploy` are untested here -- including the preview's
 #     mirrored copies of review --step's refusals (S8e covers the root-side
-#     originals, which are the authoritative half)
+#     originals, which are the authoritative half). The one piece of setup
+#     that is covered is its interpreter guard (S17), reached through the
+#     PROBE as a function plus a source-level check of where do_setup calls it
 #   - signed-tag approval / `signer` / `sign` need an SSH agent and keys
 #   - the group-read tier (0750 root:_<user>-pinned) cannot be built without
 #     root: the stub always takes ensure_tree's no-group 0700 branch
@@ -158,8 +160,19 @@ need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
 need '</dev/tty'                                            18 'ceremony tty reads'
 need '^# ---- setup ---'                                    1 'library cut marker'
+need '^#!/bin/bash$'                                        1 'pinned shebang'
 
-sed -e "s#^PINNED_ROOT=/var/db/pinned\$#PINNED_ROOT='$PINNED_ROOT'#" \
+# ...one of them being line 1. The script pins /bin/bash because sudo hands
+# root the caller's PATH (see the comment above its PATH export), but a
+# FIXTURE copy must run wherever the harness runs -- NixOS has no /bin/bash.
+# So the stub is pointed at whichever bash is executing this file, which also
+# makes the compatibility floor a deliberate choice rather than an accident:
+#     bash tests/harness.bash        the bash on your PATH
+#     /bin/bash tests/harness.bash   the 3.2 floor the script is written to
+HARNESS_BASH="${BASH:-bash}"
+
+sed -e "1s#^\#!/bin/bash\$#\#!$HARNESS_BASH#" \
+    -e "s#^PINNED_ROOT=/var/db/pinned\$#PINNED_ROOT='$PINNED_ROOT'#" \
     -e "s#^PINNED_CLONES=/var/db/pinned-clones\$#PINNED_CLONES='$PINNED_CLONES'#" \
     -e "s#^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json\$#PINNED_MACHINE_POLICY='$PINNED_MACHINE_POLICY'#" \
     -e 's/if \[ "\$EUID" -ne 0 \]; then/if false; then/' \
@@ -197,12 +210,15 @@ fi
 if grep -q '</dev/tty' "$STUB"; then say "STUB SED FAILED: /dev/tty survives"; exit 2; fi
 if [ "$(grep -c 'if false; then' "$STUB")" != 2 ]; then say "STUB SED FAILED: elevation gates"; exit 2; fi
 if grep -q '^  logger -t pinned ' "$STUB"; then say "STUB SED FAILED: logger survives"; exit 2; fi
+if [ "$(head -n1 "$STUB")" != "#!$HARNESS_BASH" ]; then
+  say "STUB SED FAILED: the stub shebang still reads $(head -n1 "$STUB")"; exit 2
+fi
 
 # The pure-function library: everything above the first action.
 sed '/^# ---- setup ---/,$d' "$STUB" > "$LIB"
 
 cat > "$PROBE" <<EOF
-#!/usr/bin/env bash
+#!$HARNESS_BASH
 # Call one internal pinned function by name. Args are captured BEFORE the
 # source so the library's own positional-parameter handling cannot touch them.
 set -euo pipefail
@@ -3197,6 +3213,108 @@ LOG_TAGS="$(grep -v '^[[:space:]]*#' "$SRC" \
 assert_eq "$LOG_TAGS" \
   'add approve approve-file ignorable-$sub mv setup show sign signer-add signer-remove tombstone ' \
   "the syslog action tags are exactly the frozen set (see log_action's comment)"
+
+# ---------------------------------------------------------------------------
+say "S17: setup's interpreter guard"
+# ---------------------------------------------------------------------------
+# setup writes a sudoers Digest_Spec over the INSTALLED script's bytes -- and
+# sudo hands the root process the caller's PATH, so an `env` shebang on that
+# installed copy would let the invoker's environment choose which bash runs
+# as root, with the digest none the wiser. The script's own line 1 names
+# /bin/bash, so a verbatim install is already safe; verify_interpreter_pin is
+# the belt-and-braces check for an install that predates the pinning or was
+# hand-edited, and it refuses at provisioning time. It is driven through the
+# PROBE here (setup itself needs real root, see the coverage gaps at the
+# top), so these cases exercise the guard's own logic; the last assertion
+# pins its position in do_setup, which is the half the probe cannot reach.
+INTERP="$FIX/interp"
+mkdir -p "$INTERP"
+
+# A stand-in for a pinned interpreter. The stub widens the owner allowlist to
+# the harness user, so a 755 fixture file is what verify_root_owned_path calls
+# root-owned here; the MODE half of the check stays real (see the 777 case).
+GOOD_BASH="$INTERP/bin-bash"
+: > "$GOOD_BASH"; chmod 755 "$GOOD_BASH"
+LOOSE_BASH="$INTERP/loose-bash"
+: > "$LOOSE_BASH"; chmod 777 "$LOOSE_BASH"
+
+write_shebang() { # name first-line -> path of a fixture "install"
+  printf '%s\ntrue\n' "$2" > "$INTERP/$1"
+  printf '%s\n' "$INTERP/$1"
+}
+
+run_probe verify_interpreter_pin "$(write_shebang env.sh '#!/usr/bin/env bash')"
+assert_exit "$RC" 1 "env shebang: refused"
+assert_contains "$ERRF" "runs under an env shebang: #!/usr/bin/env bash" \
+  "env shebang: says what it found"
+assert_contains "$ERRF" "The sudoers digest pins this script's bytes, not its interpreter, and" \
+  "env shebang: says why the digest does not cover it"
+assert_contains "$ERRF" "Reinstall from a current checkout -- its first line already names an" \
+  "env shebang: says how to fix it"
+
+# Any path ending in /env is the same PATH-search delegator, wherever it sits.
+run_probe verify_interpreter_pin "$(write_shebang env2.sh '#!/run/current-system/sw/bin/env bash')"
+assert_exit "$RC" 1 "env under another prefix: refused"
+assert_contains "$ERRF" "runs under an env shebang" "env under another prefix: same refusal"
+
+run_probe verify_interpreter_pin "$(write_shebang rel.sh '#!bash')"
+assert_exit "$RC" 1 "relative interpreter: refused"
+assert_contains "$ERRF" "names a relative interpreter: #!bash" \
+  "relative interpreter: says what it found"
+
+run_probe verify_interpreter_pin "$(write_shebang none.sh 'no shebang at all')"
+assert_exit "$RC" 1 "no shebang: refused"
+assert_contains "$ERRF" "has no shebang" "no shebang: says what it found"
+
+printf '' > "$INTERP/empty.sh"
+run_probe verify_interpreter_pin "$INTERP/empty.sh"
+assert_exit "$RC" 1 "empty file: refused"
+assert_contains "$ERRF" "has no shebang" "empty file: refused as shebang-less"
+
+run_probe verify_interpreter_pin "$INTERP/no-such-file.sh"
+assert_exit "$RC" 1 "missing install target: refused"
+assert_contains "$ERRF" "is not a regular file" "missing install target: says what it found"
+
+# The interpreter must survive the ownership walk too: a world-writable one
+# is swappable, so pinning its path buys nothing.
+run_probe verify_interpreter_pin "$(write_shebang loose.sh "#!$LOOSE_BASH")"
+assert_exit "$RC" 1 "world-writable interpreter: refused"
+assert_contains "$ERRF" "has mode 777" "world-writable interpreter: the mode check fired"
+assert_contains "$ERRF" "names an interpreter that is not root-owned" \
+  "world-writable interpreter: the guard says why it matters"
+
+run_probe verify_interpreter_pin "$(write_shebang gone.sh '#!/nonexistent/bin/bash')"
+assert_exit "$RC" 1 "absolute but absent interpreter: refused"
+assert_contains "$ERRF" "names an interpreter that is not root-owned" \
+  "absent interpreter: fails closed like any unverifiable path"
+
+# The passing shape: absolute, root-owned, no env in sight.
+run_probe verify_interpreter_pin "$(write_shebang good.sh "#!$GOOD_BASH")"
+assert_exit "$RC" 0 "absolute root-owned interpreter: passes the guard"
+assert_eq "$(wc -c <"$ERRF" | tr -d ' ')" "0" "passing install says nothing"
+
+# Shebang parsing is not a substring match: leading blanks and an interpreter
+# argument must not change which path is judged.
+run_probe verify_interpreter_pin "$(write_shebang good2.sh "#!  $(printf '\t')$GOOD_BASH -e")"
+assert_exit "$RC" 0 "leading blanks and an interpreter argument: still passes"
+
+# ...and a path that merely CONTAINS env is not an env shebang.
+ENVDIR="$INTERP/envs"
+mkdir -p "$ENVDIR"
+: > "$ENVDIR/bash"; chmod 755 "$ENVDIR/bash"
+run_probe verify_interpreter_pin "$(write_shebang good3.sh "#!$ENVDIR/bash")"
+assert_exit "$RC" 0 "an interpreter under a dir named envs: passes (not an env shebang)"
+
+# The call site: the guard must run BEFORE setup computes the digest it would
+# pin. A probe cannot reach do_setup (real root), so its position is asserted
+# in the source -- moving the guard after the digest would be a silent regression.
+GUARD_LINE="$(grep -n '^  verify_interpreter_pin "\$target" || exit 1$' "$SRC" | cut -d: -f1)"
+DIGEST_LINE="$(grep -n '^  digest="\$(shasum ' "$SRC" | cut -d: -f1)"
+if [ -n "$GUARD_LINE" ] && [ -n "$DIGEST_LINE" ] && [ "$GUARD_LINE" -lt "$DIGEST_LINE" ]; then
+  ok "setup runs the interpreter guard before it computes the sudoers digest"
+else
+  fail "setup runs the interpreter guard before it computes the sudoers digest (guard='$GUARD_LINE' digest='$DIGEST_LINE')"
+fi
 
 # ---------------------------------------------------------------------------
 say ""

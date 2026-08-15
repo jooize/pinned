@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # pinned -- review-and-pin a git rev behind a human gate.
 #
 #   pinned review <repo> [--tag <t>] [--trust] [--backward|--diverged]
@@ -164,6 +164,18 @@
 # what must NEVER be added: ~/.nix-profile, ~/.local/bin, /opt/homebrew/bin and
 # friends are user-writable, which is exactly why an inherited PATH cannot be
 # trusted even from a session you trust.
+#
+# The shebang on line 1 is the same rule applied one step earlier, and it is
+# why it names an interpreter absolutely instead of going through env: this
+# script self-elevates by re-exec'ing itself under sudo, sudo passes the
+# caller's PATH through to the root process (probed live 2026-08-06), and env
+# would resolve root's interpreter from that PATH before a single line here
+# runs -- the PATH pin below cannot defend a decision already made above it.
+# /bin/bash is root-owned on stock macOS (SIP-sealed; version 3.2, which is
+# this script's compatibility floor) and on stock Linux. A packaging that
+# owns a root-owned prefix rewrites line 1 the same way it rewrites this
+# one: the nix module points it at the store bash, because NixOS has no
+# /bin/bash -- run a checkout there as `bash ./pinned`.
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
 set -euo pipefail
@@ -379,6 +391,68 @@ verify_ancestry() {
     verify_root_owned_path "$p" || return 1
     p="$(dirname "$p")"
   done
+}
+
+# The interpreter of the installed script must be PINNED in its shebang, not
+# resolved at exec time. sudo passes the caller's PATH through to the root
+# process (probed live 2026-08-06: `sudo printenv PATH` returned the
+# invoker's complete PATH), and a `/usr/bin/env bash` shebang resolves bash
+# from that PATH before a single line of this script runs -- so a user-writable
+# prefix ahead of the system dirs (/opt/homebrew/bin on an ARM Mac, say)
+# supplies the interpreter that then executes as root. The sudoers
+# Digest_Spec pins THIS FILE's bytes and says nothing about the interpreter,
+# so the digest does not notice.
+#
+# Line 1 of this file already names /bin/bash, so a verbatim install passes
+# this check without anyone doing anything -- the guard is belt and braces
+# for the installs that did not come from a verbatim copy: one made before
+# the shebang was pinned, or one whose first line was hand-edited.
+#
+# A provisioning-time guard is all this can be, and it is enough to be worth
+# writing: it cannot defend against an interpreter that has ALREADY been
+# substituted (that interpreter runs our code and owes us nothing), it
+# catches an install carrying an unpinned interpreter while the machine is
+# still honest -- before the sudoers grant makes the gap reachable.
+verify_interpreter_pin() { # <installed-script>
+  local f="$1" line interp why=""
+  if [ ! -f "$f" ]; then
+    echo "ERROR: $f is not a regular file; cannot read its interpreter" >&2
+    return 1
+  fi
+  IFS= read -r line <"$f" || line=""
+  # First token after the #!, with tabs and leading blanks out of the way.
+  interp=""
+  case "$line" in
+    '#!'*)
+      interp="${line#\#!}"
+      interp="${interp//"$TAB"/ }"
+      while [ "${interp# }" != "$interp" ]; do interp="${interp# }"; done
+      interp="${interp%% *}" ;;
+  esac
+  if [ -z "$interp" ]; then
+    why="$f has no shebang, so its interpreter is whatever executes it"
+  else
+    case "$interp" in
+      */env|env)
+        why="$f runs under an env shebang: $line" ;;
+      /*)
+        verify_root_owned_path "$interp" \
+          || why="$f names an interpreter that is not root-owned: $interp" ;;
+      *)
+        why="$f names a relative interpreter: $line" ;;
+    esac
+  fi
+  [ -n "$why" ] || return 0
+  echo "REFUSE: $why" >&2
+  echo "        The sudoers digest pins this script's bytes, not its interpreter, and" >&2
+  echo "        sudo passes the caller's PATH through to the root process. An" >&2
+  echo "        unpinned interpreter therefore lets the invoker choose which bash" >&2
+  echo "        runs as root, and the digest cannot see it." >&2
+  echo "        Reinstall from a current checkout -- its first line already names an" >&2
+  echo "        absolute interpreter -- or edit this install's first line to a" >&2
+  echo "        root-owned absolute path, then rerun setup. See README," >&2
+  echo "        \"Bootstrap without executing unverified code\"." >&2
+  return 1
 }
 
 # FROZEN VOCABULARY. The action tags below are an append-only audit trail's
@@ -1982,6 +2056,11 @@ do_setup() {
   else
     echo "binary already at $target"
   fi
+  # The bytes at $target are final now, so this is the file the digest below
+  # will pin -- and the one whose shebang decides which interpreter sudo
+  # hands root. Checked here, before the grant exists: refusing costs the
+  # human a reinstall, granting would cost them the interpreter.
+  verify_interpreter_pin "$target" || exit 1
 
   # 2. Pin tree for the invoking user
   ensure_tree "$inv"

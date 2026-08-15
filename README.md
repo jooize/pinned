@@ -696,6 +696,19 @@ user-space can no longer touch, then run only what you read:
     sudo chmod 755 /usr/local/sbin/pinned
     sudo /usr/local/sbin/pinned setup        # or: review <repo> --trust
 
+The copy is verbatim, and one of the things you read on the first line
+is why: the shebang names `/bin/bash` absolutely rather than going
+through `env`. pinned self-elevates by re-exec'ing itself under sudo,
+sudo passes the caller's PATH straight through to the root process, and
+`env` would resolve that root interpreter from the caller's PATH -- so a
+user-writable prefix ahead of the system dirs (`/opt/homebrew/bin` on an
+ARM Mac) would supply the bash that runs as root, and the sudoers digest
+could not object: it pins the script's bytes, not its interpreter.
+`/bin/bash` is root-owned on stock macOS (SIP-sealed) and stock Linux,
+so naming it leaves nothing to resolve. `setup` re-checks this on the
+file it is about to digest-pin and refuses if the first line ever names
+`env`, a relative path, or an interpreter that is not root-owned.
+
 The staging keeps two invariants visible in the filesystem: the final
 name only ever holds bytes a human has read, and the execute bit only
 ever exists under the final name -- staged bytes cannot be exec'd at
@@ -715,6 +728,14 @@ have read.
 
 The direct route (running the checkout as root via setup or the
 pre-install fallback) still works and warns loudly; prefer this one.
+
+On a machine with no `/bin/bash` (NixOS is the one that matters here) a
+checkout cannot exec itself; run it as `bash ./pinned <verb>`, and as
+`sudo bash ./pinned setup`. Nothing is lost: the interpreter is
+still named explicitly by the caller rather than resolved from a
+user-writable PATH, and the declarative install below is the intended
+route there anyway, since the module rewrites the first line to the
+store bash at build time.
 
 ## Declarative install (nix-darwin / NixOS)
 
@@ -741,7 +762,10 @@ for that:
    The module installs the script into the system profile and writes
    /etc/sudoers.d/pinned with an eval-time sha256 of the exact bytes
    it installs -- digest and binary derive from one source in one
-   build, so they can never disagree. It also declares the two groups
+   build, so they can never disagree. It rewrites the shebang to the
+   store bash at build time, which is the same interpreter pinning the
+   manual route does by hand, done by the packaging that knows its own
+   root-owned prefix. It also declares the two groups
    the script consumes but never creates: `_<user>-pinned`, which makes
    that user's record tier readable, and `_pinned-clones`, the
    operators of the shared clone tree `pinned add <url>` fetches into.

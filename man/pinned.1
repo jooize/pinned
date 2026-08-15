@@ -637,6 +637,21 @@ no ceremony runs and deploy only previews.
 .B setup [\-\-yes]
 (sudo) Provision the sudoers digest pin; self-install.
 Shows the full plan and confirms before any authentication.
+Refuses to write the sudoers entry unless the installed copy names an
+absolute, root-owned interpreter on its first line: the digest pins the
+script's bytes, not its interpreter, and
+.BR sudo (8)
+passes the caller's
+.B PATH
+through, so a
+.I #!/usr/bin/env bash
+shebang would let the invoker choose which shell runs as root.
+The shipped script already names
+.IR /bin/bash ,
+so a verbatim install passes; the check is there for an install made
+before the shebang was pinned, or one whose first line was hand-edited.
+The nix module rewrites that line to the store bash at build time, which
+satisfies the same rule.
 .SH EXIT STATUS
 Ceremonies exit 0 on success, 1 on usage or internal error, and 2 when
 the human declines.
