@@ -379,9 +379,9 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
     remediation (`sudo pinned ignorable add <key> --under <dir>`). The
     semantics are uniform: pinned cannot tell a human's argv from a calling
     tool's, so "a human typed it" is never a reason to allow it. The
-    ceremony display then states each declared key's grant provenance
-    (`model -- user policy, under /Users/x/.config`), so the ladder is
-    audited on screen while the y/N is asked.
+    ceremony display then states the declared keys' grant provenance on one
+    line (`granted by user policy, under /Users/x/.config: model`), so the
+    ladder is audited on screen while the y/N is asked.
   - `verify` re-checks at use time: every key recorded in `ignored.json` must
     still be within the effective policy for that path, or the tolerance is
     refused and the answer is a plain 11 (with a note naming the key that
@@ -585,9 +585,9 @@ Custody is therefore opt-in. A stored witness serves the tolerant
 comparison, archives exactly what was approved, and feeds the display of
 what changed -- but it also turns a slot that discloses one digest into
 one that discloses the file's whole content. Disclosure is bounded (the
-host tier is 0750 root:`_<user>-pinned`, and a lane receives a
-launch-time payload of only the slot dirs it is measured against, whose
-files it already reads through its own mounts), but bounded is not
+host tier is 0750 root:`_<user>-pinned`, and a consumer that mounts a
+slot is given only the slot dirs it is measured against, whose files it
+already reads through those same mounts), but bounded is not
 nothing, so it stays a per-slot human decision at the ceremony. Being
 per-slot, it is also per-slot reportable: `pinned list` annotates every
 file row with the answer -- a stored copy, or the note that there is

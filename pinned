@@ -3617,7 +3617,7 @@ do_approve_files() {
   local base_ok recorded=0 declined=0 failed=0 answer state_note nl
   local ign ign_json old_ign old_bad had_copy copy_bad cur_copy ign_note cust_note decl_changed
   local cust_changed shape gate_shape n_lines
-  local gk gscope
+  local gk gscope gwhere gr_keys gr_pairs gr_scope gr_mixed gr_mach
   local -a hdr_opt=()
 
   # The ignorable policy, read ONCE for the whole ceremony: every --file in
@@ -3809,21 +3809,45 @@ do_approve_files() {
     if [ -n "$ign" ]; then
       printf '%signored:%s    %s%s%s  %s(these keys may drift without re-approval)%s\n' \
         "$C_B" "$C_OFF" "$C_CYN" "$(ign_display "$ign_json")" "$C_OFF" "$C_YEL" "$C_OFF"
-      # Per-key GRANT PROVENANCE: the display audits the ladder, so the
+      # GRANT PROVENANCE, one line: the display audits the ladder, so the
       # rung that permits each key -- and how far that permission reaches
-      # -- is on screen while the question is asked. Every key here is
-      # granted (an ungranted one never reaches this display).
+      # -- is on screen while the question is asked. A batch asks this
+      # question once per file, so the provenance is collapsed rather than
+      # laddered: one line per key would be a wall re-read at every
+      # confirm. Keys sharing a scope state it once; a mixed set names the
+      # reach per key. Every key here is granted (an ungranted one never
+      # reaches this display).
+      gr_keys=""; gr_pairs=""; gr_scope=""; gr_mixed=0
       while IFS="$TAB" read -r gk gscope; do
         [ -n "$gk" ] || continue
         case "$gscope" in
-          '*') printf '            %s%s -- user policy, everywhere%s\n' "$C_DIM" "$gk" "$C_OFF" ;;
-          *)   printf '            %s%s -- user policy, under %s%s\n' "$C_DIM" "$gk" "$gscope" "$C_OFF" ;;
+          '*') gwhere="everywhere" ;;
+          *)   gwhere="under $gscope" ;;
         esac
+        if [ -n "$gr_keys" ]; then
+          gr_keys="$gr_keys, "
+          gr_pairs="$gr_pairs, "
+          [ "$gr_scope" = "$gwhere" ] || gr_mixed=1
+        else
+          gr_scope="$gwhere"
+        fi
+        gr_keys="$gr_keys$gk"
+        gr_pairs="$gr_pairs$gk ($gwhere)"
       done <<EOF
 $(policy_grants "$POL_EFF" "$ign_json" "$path")
 EOF
+      # The machine tier is folded into the same line: it constrains the
+      # whole set, so it is one clause, not a line of its own.
+      gr_mach=""
       [ -z "$POL_MACHINE" ] \
-        || printf '            %s(and within the machine policy at %s)%s\n' "$C_DIM" "$PINNED_MACHINE_POLICY" "$C_OFF"
+        || gr_mach="; within the machine policy at $PINNED_MACHINE_POLICY"
+      if [ -n "$gr_keys" ] && [ "$gr_mixed" -eq 0 ]; then
+        printf '            %sgranted by user policy, %s: %s%s%s\n' \
+          "$C_DIM" "$gr_scope" "$gr_keys" "$gr_mach" "$C_OFF"
+      elif [ -n "$gr_keys" ]; then
+        printf '            %sgranted by user policy: %s%s%s\n' \
+          "$C_DIM" "$gr_pairs" "$gr_mach" "$C_OFF"
+      fi
     fi
     # CUSTODY, stated in both directions and always -- not only when it is
     # changing. What the slot will hold after this y is part of what is being

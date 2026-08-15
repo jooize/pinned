@@ -171,6 +171,27 @@ need '^#!/bin/bash$'                                        1 'pinned shebang'
 #     /bin/bash tests/harness.bash   the 3.2 floor the script is written to
 HARNESS_BASH="${BASH:-bash}"
 
+# ---------------------------------------------------------------------------
+say "S0: the bash 3.2 parse floor"
+# ---------------------------------------------------------------------------
+# Choosing the harness interpreter proves nothing on its own: run under a 5.x
+# on PATH, every section below passes while the script the shebang names
+# refuses to start. `bash -n` parses the SOURCE under that interpreter without
+# running a line of it, which is exactly what catches a 4.x-ism (an
+# associative array, [[ -v ]], mapfile) landing in a script whose floor is
+# macOS's sealed /bin/bash. Where there is no /bin/bash the floor cannot be
+# measured, so the check says so rather than passing quietly.
+if [ -x /bin/bash ]; then
+  if /bin/bash -n "$SRC" 2>"$ERRF"; then
+    ok "the script parses under /bin/bash (the 3.2 floor)"
+  else
+    fail "the script parses under /bin/bash (the 3.2 floor)"
+    sed 's/^/      /' "$ERRF"
+  fi
+else
+  say "S0: SKIPPED (no /bin/bash -- the 3.2 floor is unmeasurable here)"
+fi
+
 sed -e "1s#^\#!/bin/bash\$#\#!$HARNESS_BASH#" \
     -e "s#^PINNED_ROOT=/var/db/pinned\$#PINNED_ROOT='$PINNED_ROOT'#" \
     -e "s#^PINNED_CLONES=/var/db/pinned-clones\$#PINNED_CLONES='$PINNED_CLONES'#" \
@@ -1881,7 +1902,8 @@ assert_exit "$RC" 0 "review with --ignore-json-key succeeds"
 assert_contains "$OUT" "ignored:" "ceremony displays the proposed ignored keys"
 assert_contains "$OUT" "model, effortLevel" "ceremony names them before the confirm"
 assert_contains "$OUT" "may drift without re-approval" "ceremony states what ignoring means"
-assert_contains "$OUT" "model -- user policy, everywhere" "ceremony shows each key's grant provenance"
+assert_contains "$OUT" "granted by user policy, everywhere: model, effortLevel" \
+                "ceremony shows the keys' grant provenance on one line"
 assert_contains "$OUT" "No copy is kept at rest" "ceremony states the custody consequence"
 assert_file "$(slot_file_of "$SUB/ig/nocopy.json" ignored.json)" "ignored.json recorded"
 assert_eq "$(cat "$(slot_file_of "$SUB/ig/nocopy.json" ignored.json)")" '[["model"],["effortLevel"]]' \
@@ -2208,7 +2230,21 @@ y
 '
 run_pinned review --file "$SUB/pol/in/s.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "a granted key in scope approves"
-assert_contains "$OUT" "model -- user policy, under $SUB/pol/in" "provenance names the scope"
+assert_contains "$OUT" "granted by user policy, under $SUB/pol/in: model" "provenance names the scope"
+
+# MIXED SCOPES: keys whose grants reach differently cannot share one clause,
+# so the collapsed line names the reach per key instead.
+seed_policy_user "[{\"path\":[\"model\"],\"under\":\"$SUB/pol/in\"},{\"path\":[\"effortLevel\"]}]"
+printf '{"model": "opus", "effortLevel": "high", "keep": 1}\n' > "$SUB/pol/in/m.json"
+ANS='
+y
+'
+run_pinned review --file "$SUB/pol/in/m.json" --ignore-json-key model --ignore-json-key effortLevel
+assert_exit "$RC" 0 "two granted keys at different scopes approve"
+assert_contains "$OUT" "granted by user policy: model (under $SUB/pol/in), effortLevel (everywhere)" \
+                "mixed scopes name each key's reach"
+seed_policy_user "[{\"path\":[\"model\"],\"under\":\"$SUB/pol/in\"}]"
+
 ANS='
 y
 '
@@ -2260,6 +2296,8 @@ y
 run_pinned review --file "$SUB/pol/in/deeper/s.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "a user scope BELOW the machine scope survives the intersection"
 assert_contains "$OUT" "under $SUB/pol/in/deeper" "provenance names the narrower scope"
+assert_contains "$OUT" "within the machine policy at $PINNED_MACHINE_POLICY" \
+                "the machine tier is folded into the same provenance line"
 
 # An unusable tier grants nothing -- on either rung, at both ends.
 seed_policy_machine '{"path": ["model"]}'
