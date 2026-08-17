@@ -572,7 +572,15 @@ the same ceremony
 runs \(em upgrade removes typing, never scrutiny \(em then deploy
 syncs the flake to the approved revs and rebuilds, all behind one
 authentication.
-An unprivileged plan precedes the sudo prompt.
+An unprivileged plan precedes the sudo prompt, and decides whether there
+is one: with nothing to approve, upgrade exits there \(em before any
+authentication \(em pointing at
+.BR "pinned deploy" ,
+which is what rebuilds from the pins already recorded.
+With work to do, a gate naming the round is the last line before
+.BR sudo (8);
+.B \-\-yes
+skips it, and off a tty upgrade refuses rather than elevate unanswered.
 The plan lists every git+file input of the flake, one aligned row each in
 flake order, and highlights only the rows a ceremony will cover
 .RB ( review: ).

@@ -147,16 +147,24 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       review every stale flake input
                                       (the same per-repo ceremonies),
                                       then deploy -- one authentication
-                                      for the whole round; the plan lists
-                                      every input, one row each, and
-                                      highlights only the ones a ceremony
-                                      will cover -- the rest stay visible
-                                      but quiet (at pin, no rev=, no slot,
-                                      no checkout); a stale repo with a
-                                      newer signed release an installed
-                                      key verifies is offered the
-                                      signature gate instead of a
-                                      review; a tag-declared slot
+                                      for the whole round; the plan runs
+                                      unprivileged and decides whether
+                                      there is an authentication at all:
+                                      with nothing to approve upgrade
+                                      exits there, pointing at `pinned
+                                      deploy`, and with work to do a gate
+                                      naming the round is the last line
+                                      before sudo (--yes skips it); the
+                                      plan lists every input, one row
+                                      each, and highlights only the ones
+                                      a ceremony will cover -- the rest
+                                      stay visible but quiet (at pin, no
+                                      rev=, no slot, no checkout); a
+                                      stale repo with a newer signed
+                                      release an installed key verifies
+                                      is offered the signature gate
+                                      instead of a review; a
+                                      tag-declared slot
                                       otherwise joins only when HEAD
                                       carries exactly one release tag
                                       (approved under that name), else it

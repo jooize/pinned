@@ -2109,6 +2109,20 @@ if [ -f "$INSTALL_TARGET" ]; then
   verify_ancestry "$INSTALL_TARGET" || exit 1
 fi
 
+# The program token of a "Will run as root:" command line. The dirname is
+# provenance and stays plain cyan; the basename is the ACT and goes bold
+# inside that cyan (C_B does not cancel a color, so the two compose). A bare
+# name carries no provenance and is bold whole. Scoped to the program token:
+# argument paths stay whole-token cyan like every other path this tool
+# prints. One helper because three call sites render such a line, and three
+# spellings of one rule drift.
+prog_disp() { # <program-path-or-name>
+  case "$1" in
+    */*) printf '%s%s/%s%s%s' "$C_CYN" "${1%/*}" "$C_B" "${1##*/}" "$C_OFF" ;;
+    *)   printf '%s%s%s%s' "$C_CYN" "$C_B" "$1" "$C_OFF" ;;
+  esac
+}
+
 # The exact argv sudo is about to run, colored by role the same way deploy
 # renders its commands: sudo bold, command name cyan, verb and flags plain,
 # file paths cyan (identifiers and paths are cyan everywhere; yellow stays
@@ -2119,7 +2133,7 @@ fi
 elevation_cmd_disp() { # elev action args...
   local elev="$1" act="$2" a a_disp out
   shift 2
-  out="${C_B}sudo${C_OFF} -- ${C_CYN}${elev}${C_OFF} $act"
+  out="${C_B}sudo${C_OFF} -- $(prog_disp "$elev") $act"
   for a in "$@"; do
     case "$a" in
       *[!A-Za-z0-9_/.:=-]*) a_disp="'$a'" ;;
@@ -2396,10 +2410,15 @@ upgrade_route() {
 # scan + upgrade_route pair, so the plan and the router cannot drift.
 #
 # $1 = scan lines, $2 = tier user, $3 = the flake file the scan read.
+#
+# Sets plan_reviews in the CALLER's scope (the upgrade_route / inspect_slot
+# convention): how many rows the plan labelled `review:`, i.e. how many
+# ceremonies a root side would run. Callers that only render ignore it.
 print_upgrade_plan() {
   local p tag st tu="${2:-$(id -un)}" flake="${3:-}" upg_route upg_info
   local r_p r_lbl r_lc r_pc r_det r_ex
   local n i w=0 act=0 quiet=0 lbl lc pc det ex pad t t1 tj lag
+  plan_reviews=0
   if [ -z "$1" ]; then
     printf '%snothing to approve -- every pinned input is at its approved rev%s\n' "$C_DIM" "$C_OFF"
     return 0
@@ -2419,7 +2438,7 @@ print_upgrade_plan() {
             # the palette's own emphasis on an identifier (cyan everywhere;
             # yellow stays attention text), so they read before anything
             # quiet on the page does.
-            lbl="review:" lc="$C_B" pc="$C_CYN$C_B"; act=1 ;;
+            lbl="review:" lc="$C_B" pc="$C_CYN$C_B"; act=$((act + 1)) ;;
         esac
         case "$upg_route" in
           signed)
@@ -2492,6 +2511,7 @@ EOF
   done <<EOF
 $1
 EOF
+  plan_reviews="$act"
   n="${#r_p[@]}"
   [ "$n" -gt 0 ] || return 0
   if [ -n "$flake" ]; then
@@ -2596,7 +2616,21 @@ case "$action" in
           exit 1
         }
         print_upgrade_plan "$(scan_flake_inputs "$upg_flake")" "$(tier_user)" "$upg_flake"
-        printf '%sThen: deploy (sync flake revs to the pins + rebuild)%s\n\n' "$C_DIM" "$C_OFF"
+        upg_reviews="$plan_reviews"
+        # Nothing to approve means nothing needs root: stop here rather than
+        # authenticate for a round with no ceremony in it, and name the verb
+        # that rebuilds. ONLY an affirmative zero skips the elevation -- this
+        # plan is untrusted orientation, and letting it decline to escalate
+        # is the safe direction (letting it skip a ceremony would not be).
+        # The same under --yes and --dry-run: a rebuild is deploy's job.
+        if [ "$upg_reviews" -eq 0 ]; then
+          printf '\n%sTo rebuild anyway:%s\n' "$C_B" "$C_OFF"
+          printf '  pinned deploy\n'
+          exit 0
+        fi
+        # The plan owns the separator on the path that continues; what
+        # follows it belongs to the elevation, not to the table.
+        printf '\n'
       fi
       # setup: show the plan and confirm BEFORE sudo, so reading what it
       # will do never costs an authentication.
@@ -2914,14 +2948,38 @@ case "$action" in
       # so pinned saying it too would either double the launcher's line
       # around "Will run as root:", or point at nothing at all on a direct
       # invocation.
+      #
+      # upgrade is the exception to the command display: reaching this line
+      # means its plan found work, and the gate below is both the statement
+      # of what happens next and the place to stop -- a command line nobody
+      # typed would only sit between the two.
       if { [ "$action" = "review" ] || [ "$action" = "upgrade" ] || [ "$action" = "add" ]; } \
         && [ "$elev" = "$INSTALL_TARGET" ]; then
-        cmd_disp="$(elevation_cmd_disp "$elev" "$action" "$@")"
-        printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
-        printf '  %s\n\n' "$cmd_disp"
+        if [ "$action" != "upgrade" ]; then
+          cmd_disp="$(elevation_cmd_disp "$elev" "$action" "$@")"
+          printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
+          printf '  %s\n\n' "$cmd_disp"
+        fi
         if [ "${file_mode:-0}" -eq 0 ]; then
           printf '%sThe preview above was orientation only. The sudo ceremony re-derives\n' "$C_DIM"
           printf 'everything it displays, and nothing is pinned until you confirm there.%s\n\n' "$C_OFF"
+        fi
+        # The last line before sudo: what the authentication buys, counted,
+        # and a pause to leave. No question mark -- y/N is the root side's
+        # register, and this gate takes no decision away from it.
+        if [ "$action" = "upgrade" ]; then
+          upg_yes=0
+          for a in "$@"; do [ "$a" = "--yes" ] && upg_yes=1; done
+          if [ "$upg_yes" -eq 0 ]; then
+            if [ ! -t 0 ]; then
+              printf '%serror: no tty for confirmation -- pass --yes to proceed non-interactively%s\n' \
+                "$C_RED" "$C_OFF" >&2
+              exit 2
+            fi
+            printf '%snext: review %s repo%s + rebuild as root (sudo); Enter continues%s %s· Ctrl-C stops%s ' \
+              "$C_B" "$upg_reviews" "$(plural_s "$upg_reviews")" "$C_OFF" "$C_DIM" "$C_OFF"
+            read -r answer </dev/tty
+          fi
         fi
       fi
       exec sudo -- "$elev" "$action" "$@"
@@ -5888,25 +5946,30 @@ EOF
 
   if [ "$updates" -eq 0 ]; then
     if [ "$unpinned" -gt 0 ]; then
-      printf '%sPinned inputs all at their approved revs%s %s(%s without a pin slot)%s\n' \
+      printf '%spinned inputs all at their approved revs%s %s(%s without a pin slot)%s\n' \
         "$C_GRN" "$C_OFF" "$C_YEL" "$unpinned" "$C_OFF"
     else
-      printf '%sAll inputs at their approved revs%s\n' "$C_GRN" "$C_OFF"
+      printf '%sall inputs at their approved revs%s\n' "$C_GRN" "$C_OFF"
     fi
-    # Rebuild unconditionally, and say why: the flake being in sync says
-    # NOTHING about what the running system was built from (live-fired
-    # 2026-07-28: an in-sync early exit left a stale system in place).
-    printf '%sRebuilding anyway -- the flake says nothing about what the running system\nwas built from; if it is already current, this is a fast no-op.%s\n\n' \
-      "$C_DIM" "$C_OFF"
+    printf '\n'
   fi
 
   # Display structurally: what is shown is the exact shell spelling of the
   # argv that runs (expressions hold no quotes -- hex revs, fixed template
   # -- so single-quoting them is their pasteable form). Parts are colored
-  # by role so the command reads at a glance: sudo bold, command name
-  # cyan, expressions plain, file paths cyan (identifiers and paths are
-  # cyan everywhere; yellow stays reserved for attention text).
+  # by role so the command reads at a glance: sudo bold, the program token
+  # through prog_disp, expressions plain, file paths cyan (identifiers and
+  # paths are cyan everywhere; yellow stays reserved for attention text).
   local PIN_CMD=() REBUILD_CMD=() expr_disp="" e
+  # Whether sudo belongs on these lines is ONE decision, taken here and used
+  # by both the display and the exec: under `pinned upgrade` the whole verb
+  # already runs self-elevated, where sudo would be an admitted no-op, and a
+  # displayed command that is not the argv that runs is the one thing this
+  # display must never be. Unprivileged standalone deploy keeps it.
+  local SUDO_ARGV sudo_disp
+  SUDO_ARGV=(sudo)
+  sudo_disp="${C_B}sudo${C_OFF} "
+  if [ "$EUID" -eq 0 ]; then SUDO_ARGV=(); sudo_disp=""; fi
   REBUILD_CMD=("$REBUILD" switch --flake "$(dirname "$FLAKE")")
   printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
   if [ "$updates" -gt 0 ]; then
@@ -5915,15 +5978,24 @@ EOF
       if [ "$e" = "-e" ]; then expr_disp="${expr_disp}-e "; else expr_disp="${expr_disp}'${e}' "; fi
     done
     if [ "${#SED_I[@]}" -eq 3 ]; then
-      printf "  %ssudo%s %ssed%s -i '' %s%s%s%s\n" \
-        "$C_B" "$C_OFF" "$C_CYN" "$C_OFF" "$expr_disp" "$C_CYN" "$FLAKE" "$C_OFF"
+      printf "  %s%s -i '' %s%s%s%s\n" \
+        "$sudo_disp" "$(prog_disp "${SED_I[0]}")" "$expr_disp" "$C_CYN" "$FLAKE" "$C_OFF"
     else
-      printf '  %ssudo%s %ssed%s -i %s%s%s%s\n' \
-        "$C_B" "$C_OFF" "$C_CYN" "$C_OFF" "$expr_disp" "$C_CYN" "$FLAKE" "$C_OFF"
+      printf '  %s%s -i %s%s%s%s\n' \
+        "$sudo_disp" "$(prog_disp "${SED_I[0]}")" "$expr_disp" "$C_CYN" "$FLAKE" "$C_OFF"
     fi
   fi
-  printf '  %ssudo%s %s%s%s switch --flake %s%s%s\n' \
-    "$C_B" "$C_OFF" "$C_CYN" "$REBUILD" "$C_OFF" "$C_CYN" "$(dirname "$FLAKE")" "$C_OFF"
+  printf '  %s%s switch --flake %s%s%s\n' \
+    "$sudo_disp" "$(prog_disp "$REBUILD")" "$C_CYN" "$(dirname "$FLAKE")" "$C_OFF"
+  # The rebuild runs whether or not a rev moved, and the confirm below cannot
+  # assume the table above was read -- so the reason rides on the command
+  # itself. The flake being in sync says NOTHING about what the running
+  # system was built from (live-fired 2026-07-28: an in-sync early exit left
+  # a stale system in place).
+  if [ "$updates" -eq 0 ]; then
+    printf '  %s(converges the running system to the flake -- changes nothing if already current)%s\n' \
+      "$C_DIM" "$C_OFF"
+  fi
   printf '\n'
 
   if [ "$DRY" -eq 1 ]; then
@@ -5937,7 +6009,7 @@ EOF
         "$C_RED" "$C_OFF" >&2
       exit 2
     fi
-    printf '%sproceed? [y/N]%s ' "$C_B" "$C_OFF"
+    printf '%srebuild? [y/N]%s ' "$C_B" "$C_OFF"
     IFS= read -r answer
     case "$answer" in
       y|Y|yes|YES) ;;
@@ -5946,10 +6018,10 @@ EOF
   fi
 
   if [ "$updates" -gt 0 ]; then
-    sudo "${PIN_CMD[@]}"
+    ${SUDO_ARGV[@]+"${SUDO_ARGV[@]}"} "${PIN_CMD[@]}"
     printf '%s✓ flake revs updated (%s input%s)%s\n' "$C_GRN" "$updates" "$(plural_s "$updates")" "$C_OFF"
   fi
-  sudo "${REBUILD_CMD[@]}"
+  ${SUDO_ARGV[@]+"${SUDO_ARGV[@]}"} "${REBUILD_CMD[@]}"
   printf '%s✓ rebuild complete%s\n' "$C_GRN" "$C_OFF"
 }
 

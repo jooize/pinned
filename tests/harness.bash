@@ -23,6 +23,8 @@
 #      gated review consumes one extra line -- blank -- before its y/N)
 #   6. log_action's `logger -t pinned` -> no-op, so fixture ceremonies never
 #      land in the machine's real approval history
+# A SECOND stub (the preview one, S8h) keeps the elevation gate live and
+# replaces sudo itself; its four extra seams are documented where it is built.
 # Every anchor is counted in the source BEFORE the sed (see need()), so a
 # drifting script aborts the harness loudly instead of silently testing a
 # no-op stub. INSTALL_TARGET is an honest environment override the script
@@ -36,12 +38,15 @@
 # is sourced, then one function is called by name.
 #
 # KNOWN COVERAGE GAPS (deliberate):
-#   - no real sudo, so the self-elevation preview, the sudoers digest pin,
-#     `setup` and `deploy` are untested here -- including the preview's
-#     mirrored copies of review --step's refusals (S8e covers the root-side
-#     originals, which are the authoritative half). The one piece of setup
-#     that is covered is its interpreter guard (S17), reached through the
-#     PROBE as a function plus a source-level check of where do_setup calls it
+#   - no real sudo, so the sudoers digest pin and `setup` are untested here,
+#     as is any deploy that actually rebuilds. The one piece of setup that is
+#     covered is its interpreter guard (S17), reached through the PROBE as a
+#     function plus a source-level check of where do_setup calls it
+#   - the self-elevation preview is covered for `upgrade` only (S8h, via the
+#     preview stub): the no-op exit, the Enter-gate and their refusals. The
+#     review/add previews -- including the preview's mirrored copies of
+#     review --step's refusals -- stay untested (S8e covers the root-side
+#     originals, which are the authoritative half)
 #   - signed-tag approval / `signer` / `sign` need an SSH agent and keys
 #   - the group-read tier (0750 root:_<user>-pinned) cannot be built without
 #     root: the stub always takes ensure_tree's no-group 0700 branch
@@ -116,6 +121,10 @@ USERNAME="$(id -un)"
 ANS=""
 RC=0
 POUT=""
+# The preview stub's two env seams (see run_preview); empty = a tty,
+# unprivileged.
+NOTTY=""
+TESTROOT=""
 
 # Fixture paths for the two constants the sed below bakes into the stub. They
 # are plain shell variables here -- the harness uses them to build and inspect
@@ -158,9 +167,15 @@ need '-o root -g "\$TREE_GRP" '                             4 'slot-tree install
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
-need '</dev/tty'                                            18 'ceremony tty reads'
+need '</dev/tty'                                            19 'ceremony tty reads'
 need '^# ---- setup ---'                                    1 'library cut marker'
 need '^#!/bin/bash$'                                        1 'pinned shebang'
+# The preview stub's own anchors (see its construction below).
+need 'exec sudo -- "\$elev" "\$action" "\$@"'               2 'self-elevation exec sites'
+need 'verify_ancestry "\$elev" || exit 1'                   2 'elevation-target ancestry walks'
+need '^  verify_ancestry "\$INSTALL_TARGET" || exit 1$'     1 'install-target ancestry walk'
+need 'if \[ ! -t 0 \]; then'                                2 'no-tty refusals'
+need '^  if \[ "\$EUID" -eq 0 \]; then SUDO_ARGV=(); sudo_disp=""; fi$' 1 "deploy's sudo drop"
 
 # ...one of them being line 1. The script pins /bin/bash because sudo hands
 # root the caller's PATH (see the comment above its PATH export), but a
@@ -192,25 +207,31 @@ else
   say "S0: SKIPPED (no /bin/bash -- the 3.2 floor is unmeasurable here)"
 fi
 
-sed -e "1s#^\#!/bin/bash\$#\#!$HARNESS_BASH#" \
-    -e "s#^PINNED_ROOT=/var/db/pinned\$#PINNED_ROOT='$PINNED_ROOT'#" \
-    -e "s#^PINNED_CLONES=/var/db/pinned-clones\$#PINNED_CLONES='$PINNED_CLONES'#" \
-    -e "s#^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json\$#PINNED_MACHINE_POLICY='$PINNED_MACHINE_POLICY'#" \
+# The seams both stubs share. Held in an array because a SECOND stub (the
+# preview one built further down) needs exactly these and a different
+# elevation seam -- two copies of this list would drift.
+STUB_SED=(
+    -e "1s#^\#!/bin/bash\$#\#!$HARNESS_BASH#"
+    -e "s#^PINNED_ROOT=/var/db/pinned\$#PINNED_ROOT='$PINNED_ROOT'#"
+    -e "s#^PINNED_CLONES=/var/db/pinned-clones\$#PINNED_CLONES='$PINNED_CLONES'#"
+    -e "s#^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json\$#PINNED_MACHINE_POLICY='$PINNED_MACHINE_POLICY'#"
+    -e 's/^  \[ "\$EUID" -eq 0 \] ||.*/  :/'
+    -e 's/^  inv="\${SUDO_USER:-}"$/  inv="$(id -un)"/'
+    -e 's/^  \[ -n "\$inv" \] ||.*/  :/'
+    -e "s/^    root:\\*) ;;\$/    root:*|${USERNAME}:*) ;;/"
+    -e 's/^  install -d -m 755 -o root -g wheel "\$PINNED_ROOT"$/  install -d -m 755 "$PINNED_ROOT"/'
+    -e 's/^  install -d -m 755 -o root -g wheel "\$PINNED_CLONES"$/  install -d -m 755 "$PINNED_CLONES"/'
+    -e 's/^\( *\)install -d -m 2775 -o root -g "\$PINNED_CLONES_GROUP" /\1install -d -m 2775 /'
+    -e 's/^\( *\)install -d -m 755 -o "\$inv" /\1install -d -m 755 /'
+    -e 's/^  sudo -u "\$inv" env -i /  env -i /'
+    -e 's/-o root -g "\$TREE_GRP" //g'
+    -e 's/^\( *\)chown -R "root:\$TREE_GRP".*/\1:/'
+    -e 's/^\( *\)chown "root:\$TREE_GRP".*/\1:/'
+    -e 's/^  logger -t pinned .*/  :/'
+    -e 's#</dev/tty##g'
+)
+sed "${STUB_SED[@]}" \
     -e 's/if \[ "\$EUID" -ne 0 \]; then/if false; then/' \
-    -e 's/^  \[ "\$EUID" -eq 0 \] ||.*/  :/' \
-    -e 's/^  inv="\${SUDO_USER:-}"$/  inv="$(id -un)"/' \
-    -e 's/^  \[ -n "\$inv" \] ||.*/  :/' \
-    -e "s/^    root:\\*) ;;\$/    root:*|${USERNAME}:*) ;;/" \
-    -e 's/^  install -d -m 755 -o root -g wheel "\$PINNED_ROOT"$/  install -d -m 755 "$PINNED_ROOT"/' \
-    -e 's/^  install -d -m 755 -o root -g wheel "\$PINNED_CLONES"$/  install -d -m 755 "$PINNED_CLONES"/' \
-    -e 's/^\( *\)install -d -m 2775 -o root -g "\$PINNED_CLONES_GROUP" /\1install -d -m 2775 /' \
-    -e 's/^\( *\)install -d -m 755 -o "\$inv" /\1install -d -m 755 /' \
-    -e 's/^  sudo -u "\$inv" env -i /  env -i /' \
-    -e 's/-o root -g "\$TREE_GRP" //g' \
-    -e 's/^\( *\)chown -R "root:\$TREE_GRP".*/\1:/' \
-    -e 's/^\( *\)chown "root:\$TREE_GRP".*/\1:/' \
-    -e 's/^  logger -t pinned .*/  :/' \
-    -e 's#</dev/tty##g' \
     "$SRC" > "$STUB"
 chmod 755 "$STUB"
 
@@ -233,6 +254,49 @@ if [ "$(grep -c 'if false; then' "$STUB")" != 2 ]; then say "STUB SED FAILED: el
 if grep -q '^  logger -t pinned ' "$STUB"; then say "STUB SED FAILED: logger survives"; exit 2; fi
 if [ "$(head -n1 "$STUB")" != "#!$HARNESS_BASH" ]; then
   say "STUB SED FAILED: the stub shebang still reads $(head -n1 "$STUB")"; exit 2
+fi
+
+# --- the preview stub -------------------------------------------------------
+# The main stub's `if false` elevation seam means the ceremony body runs and
+# the PRE-SUDO half never does. This second copy covers that half for
+# upgrade: the elevation gate stays LIVE (this process is not root, so the
+# gate is taken for real) and only sudo itself is replaced -- `exec sudo ...`
+# becomes `exit 97`, a status nothing else in the script produces, so
+# "reached the elevation" is an assertion and no root command can run.
+#
+# Seams beyond the shared list:
+#   7. exec sudo -> exit 97, at both call sites
+#   8. verify_ancestry on the elevation target -> no-op. INSTALL_TARGET is
+#      this stub, under $TMPDIR, whose ancestry is nobody's root-owned tree;
+#      the owner/mode check on the target ITSELF stays live (allowlist seam)
+#   9. the two no-tty refusals -> $PINNED_TEST_NOTTY, so both branches of a
+#      gate are drivable from one stub
+#  10. deploy's EUID==0 sudo drop -> $PINNED_TEST_ROOT: the only way to see
+#      the root-context command display from an unprivileged harness
+PREVIEW="$FIX/pinned-preview"
+sed "${STUB_SED[@]}" \
+    -e 's/exec sudo -- "\$elev" "\$action" "\$@"/exit 97/' \
+    -e 's/verify_ancestry "\$elev" || exit 1/:/' \
+    -e 's/^  verify_ancestry "\$INSTALL_TARGET" || exit 1$/  :/' \
+    -e 's/if \[ ! -t 0 \]; then/if [ -n "${PINNED_TEST_NOTTY:-}" ]; then/' \
+    -e 's/^  if \[ "\$EUID" -eq 0 \]; then SUDO_ARGV=(); sudo_disp=""; fi$/  if [ -n "${PINNED_TEST_ROOT:-}" ]; then SUDO_ARGV=(); sudo_disp=""; fi/' \
+    "$SRC" > "$PREVIEW"
+chmod 755 "$PREVIEW"
+
+if grep -q 'exec sudo -- ' "$PREVIEW"; then
+  say "PREVIEW SED FAILED: an exec sudo survives"; exit 2
+fi
+if [ "$(grep -c '^ *exit 97$' "$PREVIEW")" != 2 ]; then
+  say "PREVIEW SED FAILED: sudo markers"; exit 2
+fi
+if grep -q 'if false; then' "$PREVIEW"; then
+  say "PREVIEW SED FAILED: the elevation gate was stubbed out"; exit 2
+fi
+if [ "$(grep -c 'PINNED_TEST_NOTTY' "$PREVIEW")" != 2 ]; then
+  say "PREVIEW SED FAILED: no-tty seams"; exit 2
+fi
+if ! grep -q 'PINNED_TEST_ROOT' "$PREVIEW"; then
+  say "PREVIEW SED FAILED: root seam"; exit 2
 fi
 
 # The pure-function library: everything above the first action.
@@ -266,6 +330,15 @@ run_pinned_split() { # verb args... -- like run_pinned, but stderr stays in \$ER
   printf '%s' "$ANS" > "$FIX/stdin"
   RC=0
   "$STUB" "$@" <"$FIX/stdin" >"$OUT" 2>"$ERRF" || RC=$?
+}
+run_preview() { # verb args... -- run_pinned against the PREVIEW stub
+  # INSTALL_TARGET is this very stub, so `elev == INSTALL_TARGET` holds and
+  # the pre-sudo display block is reached. $NOTTY / $TESTROOT drive the two
+  # env seams; both default to empty, i.e. "a tty, unprivileged".
+  printf '%s' "$ANS" > "$FIX/stdin"
+  RC=0
+  INSTALL_TARGET="$PREVIEW" PINNED_TEST_NOTTY="$NOTTY" PINNED_TEST_ROOT="$TESTROOT" \
+    "$PREVIEW" "$@" <"$FIX/stdin" >"$OUT" 2>&1 || RC=$?
 }
 run_probe() { # fn args... -- stdout in \$POUT, stderr in \$ERRF
   RC=0
@@ -1871,6 +1944,155 @@ EOF
   rm -f "$USER_SIGNERS"
 else
   say "S8g: SKIPPED (no git fixture, no rebuild tool, or no ssh signing)"
+fi
+
+# ---------------------------------------------------------------------------
+say "S8h: the pre-sudo upgrade preview, and deploy's confirm"
+# ---------------------------------------------------------------------------
+# The only section driven by the PREVIEW stub, where the elevation gate is
+# live: these are the lines a human meets BEFORE authenticating. `exit 97`
+# stands in for the sudo that would follow, so "would have elevated" and
+# "exited first" are two different exit codes.
+if [ "$GIT_OK" -eq 1 ]; then
+  PV_PIN="$FIX/pv-pin"; PV_S1="$FIX/pv-stale1"; PV_S2="$FIX/pv-stale2"
+  PV_NS="$FIX/pv-noslot"
+  mkdir -p "$PV_PIN" "$PV_S1" "$PV_S2" "$PV_NS"
+  for ur in "$PV_PIN" "$PV_S1" "$PV_S2" "$PV_NS"; do
+    bgit "$ur" init -q
+    printf 'p1\n' > "$ur/f"; bgit "$ur" add f; bgit "$ur" commit -q -m p1
+  done
+  PV_PIN_REV="$(bgit "$PV_PIN" rev-parse 'HEAD^{commit}')"
+  PV_S1_REV="$(bgit "$PV_S1" rev-parse 'HEAD^{commit}')"
+  PV_S2_REV="$(bgit "$PV_S2" rev-parse 'HEAD^{commit}')"
+  PV_NS_REV="$(bgit "$PV_NS" rev-parse 'HEAD^{commit}')"
+  printf 'p2\n' > "$PV_S1/f"; bgit "$PV_S1" commit -q -am p2
+  printf 'p2\n' > "$PV_S2/f"; bgit "$PV_S2" commit -q -am p2
+  seed_state "$PV_PIN" rev.git "$PV_PIN_REV"
+  seed_state "$PV_S1" rev.git "$PV_S1_REV"
+  seed_state "$PV_S2" rev.git "$PV_S2_REV"
+  cat > "$FIX/flake-pv-quiet.nix" <<EOF
+{
+  inputs.pv-pin.url = "git+file://$PV_PIN?rev=$PV_PIN_REV";
+}
+EOF
+  cat > "$FIX/flake-pv-one.nix" <<EOF
+{
+  inputs.pv-pin.url = "git+file://$PV_PIN?rev=$PV_PIN_REV";
+  inputs.pv-stale1.url = "git+file://$PV_S1?rev=$PV_S1_REV";
+}
+EOF
+  cat > "$FIX/flake-pv-two.nix" <<EOF
+{
+  inputs.pv-stale1.url = "git+file://$PV_S1?rev=$PV_S1_REV";
+  inputs.pv-stale2.url = "git+file://$PV_S2?rev=$PV_S2_REV";
+}
+EOF
+  cat > "$FIX/flake-pv-unpinned.nix" <<EOF
+{
+  inputs.pv-pin.url = "git+file://$PV_PIN?rev=$PV_PIN_REV";
+  inputs.pv-noslot.url = "git+file://$PV_NS?rev=$PV_NS_REV";
+}
+EOF
+
+  # Nothing actionable: the round is over before it costs an authentication,
+  # and the hint names the verb that still rebuilds.
+  ANS=""
+  run_preview upgrade --flake "$FIX/flake-pv-quiet.nix"
+  assert_exit "$RC" 0 "an empty round exits 0 without reaching sudo"
+  assert_contains "$OUT" "nothing to approve" "the plan says so"
+  assert_contains "$OUT" "To rebuild anyway:" "and the hint follows it"
+  assert_contains "$OUT" "pinned deploy" "naming the verb that rebuilds"
+  assert_missing "$OUT" "Then: deploy" "the old chained-plan line is gone"
+  assert_missing "$OUT" "Will run as root:" "no elevation is displayed"
+  assert_missing "$OUT" "Enter continues" "and no gate is offered"
+
+  # --yes and --dry-run buy nothing here: an empty round needs no root either
+  # way, so both take the same exit.
+  ANS=""
+  run_preview upgrade --flake "$FIX/flake-pv-quiet.nix" --yes
+  assert_exit "$RC" 0 "--yes does not authenticate an empty round"
+  assert_contains "$OUT" "To rebuild anyway:" "the hint prints under --yes too"
+  ANS=""
+  run_preview upgrade --flake "$FIX/flake-pv-quiet.nix" --dry-run
+  assert_exit "$RC" 0 "--dry-run exits before sudo as well"
+  assert_contains "$OUT" "To rebuild anyway:" "with the same hint"
+
+  # One stale input: the gate counts the round, the disclaimer stays, and an
+  # Enter reaches the elevation.
+  ANS='
+'
+  run_preview upgrade --flake "$FIX/flake-pv-one.nix"
+  assert_exit "$RC" 97 "an answered gate reaches the elevation"
+  assert_contains "$OUT" "next: review 1 repo + rebuild as root (sudo); Enter continues" \
+    "the gate counts the round in the singular"
+  assert_contains "$OUT" "Ctrl-C stops" "and names the way out"
+  assert_contains "$OUT" "The preview above was orientation only." \
+    "the orientation disclaimer stays"
+  assert_missing "$OUT" "Will run as root:" "upgrade displays no command line pre-sudo"
+  assert_missing "$OUT" "To rebuild anyway:" "and no no-op hint on the stale path"
+
+  # Two of them: plural_s, and the count is the plan's own review rows.
+  ANS='
+'
+  run_preview upgrade --flake "$FIX/flake-pv-two.nix"
+  assert_exit "$RC" 97 "the two-repo round reaches the elevation"
+  assert_contains "$OUT" "next: review 2 repos + rebuild as root (sudo)" \
+    "the gate counts both repos"
+
+  # --yes answers the gate at the command line.
+  ANS=""
+  run_preview upgrade --flake "$FIX/flake-pv-one.nix" --yes
+  assert_exit "$RC" 97 "--yes elevates without a gate"
+  assert_missing "$OUT" "Enter continues" "no gate is printed under --yes"
+
+  # Off-tty the gate cannot be answered: refuse rather than elevate unasked.
+  NOTTY=1
+  ANS=""
+  run_preview upgrade --flake "$FIX/flake-pv-one.nix"
+  assert_exit "$RC" 2 "off-tty without --yes refuses"
+  assert_contains "$OUT" "no tty for confirmation -- pass --yes to proceed non-interactively" \
+    "the refusal names the flag that proceeds"
+  ANS=""
+  run_preview upgrade --flake "$FIX/flake-pv-one.nix" --yes
+  assert_exit "$RC" 97 "off-tty WITH --yes still elevates"
+  NOTTY=""
+
+  if [ -x "$REBUILD_TOOL" ]; then
+    # deploy's own gate, reachable here because the preview stub seams its
+    # no-tty refusal: the confirm asks for the act it performs.
+    ANS='n
+'
+    run_preview deploy --flake "$FIX/flake-pv-quiet.nix"
+    assert_exit "$RC" 2 "declining deploy's confirm exits 2"
+    assert_contains "$OUT" "rebuild? [y/N]" "the confirm names what a yes does"
+    assert_missing "$OUT" "proceed? [y/N]" "the old wording is gone"
+    assert_contains "$OUT" "all inputs at their approved revs" "the verdict is a label, not a sentence"
+    assert_contains "$OUT" "(converges the running system to the flake -- changes nothing if already current)" \
+      "the unconditional rebuild carries its reason on the command"
+    assert_missing "$OUT" "Rebuilding anyway" "the paragraph that used to carry it is gone"
+    assert_contains "$OUT" "sudo $REBUILD_TOOL switch --flake" \
+      "an unprivileged deploy rebuilds under sudo"
+
+    ANS=""
+    run_preview deploy --flake "$FIX/flake-pv-unpinned.nix" --dry-run
+    assert_exit "$RC" 0 "a dry run with an unpinned input exits 0"
+    assert_contains "$OUT" "pinned inputs all at their approved revs" \
+      "the mixed verdict is lowercase too"
+
+    # The root context (what `pinned upgrade` reaches): sudo is an admitted
+    # no-op there, so it leaves the displayed command and the argv together.
+    TESTROOT=1
+    ANS='n
+'
+    run_preview deploy --flake "$FIX/flake-pv-quiet.nix"
+    assert_exit "$RC" 2 "the root-context deploy still confirms"
+    assert_contains "$OUT" "Will run as root:" "the label stays in the root context"
+    assert_contains "$OUT" "$REBUILD_TOOL switch --flake" "the rebuild command is unchanged"
+    assert_missing "$OUT" "sudo $REBUILD_TOOL" "but sudo is dropped from the displayed line"
+    TESTROOT=""
+  fi
+else
+  say "S8h: SKIPPED (no git fixture)"
 fi
 
 # ---------------------------------------------------------------------------
