@@ -180,6 +180,10 @@ export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
 set -euo pipefail
 
+# The release this file IS. Bumped in the release commit the tag points at,
+# so a checkout between releases reports the release it descends from.
+PINNED_VERSION="0.5.0"
+
 # Where this script installs itself. Override-friendly (handy for testing);
 # a packaging that owns its own prefix rewrites this line at build time.
 : "${INSTALL_TARGET:=/usr/local/sbin/pinned}"
@@ -286,6 +290,7 @@ usage: pinned <action> [args]
   deploy [--dry-run] [--yes]     sync system flake inputs to approved revs, rebuild
   upgrade [--dry-run] [--yes]    (sudo) review every stale flake input, then deploy
   setup [--yes]                  (sudo) provision sudoers digest pin; self-install
+  --version                      print the release version
 
 full options, exit codes, and the contract: man pinned
 approval history: log show --predicate 'eventMessage CONTAINS "pinned:"'
@@ -296,6 +301,13 @@ EOF
 [ $# -ge 1 ] || usage
 action="$1"
 shift
+
+# A flag, not a verb: it answers about THIS file and reads no state, so it
+# is served before anything below can refuse for an unrelated reason.
+if [ "$action" = "--version" ]; then
+  printf 'pinned %s\n' "$PINNED_VERSION"
+  exit 0
+fi
 
 # ---- shared verification (locked-family pattern) ---------------------------
 # Defined before the self-elevation block below, which is the first caller.

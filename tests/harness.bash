@@ -3577,6 +3577,27 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+say "S18: --version"
+# ---------------------------------------------------------------------------
+# The version answers about the file itself, so it must not depend on any
+# state the verbs below it read -- it is served at the dispatch, and the
+# string is the release the tag names.
+SRC_VERSION="$(sed -n 's/^PINNED_VERSION="\(.*\)"$/\1/p' "$SRC" | head -n1)"
+case "$SRC_VERSION" in
+  [0-9]*.[0-9]*.[0-9]*) ok "the declared version is a semver triple ($SRC_VERSION)" ;;
+  *) fail "the declared version is a semver triple (got '$SRC_VERSION')" ;;
+esac
+ANS=""
+run_pinned --version
+assert_exit "$RC" 0 "--version exits 0"
+assert_eq "$(cat "$OUT")" "pinned $SRC_VERSION" "--version prints the constant the script declares"
+
+ANS=""
+run_pinned
+assert_exit "$RC" 1 "no argv is usage"
+assert_contains "$OUT" "--version" "usage lists the flag"
+
+# ---------------------------------------------------------------------------
 say ""
 if [ "$FAIL" -eq 0 ]; then
   rm -rf "$FIX"

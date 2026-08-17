@@ -5,6 +5,8 @@ pinned \- review-and-pin trust gate for git repositories and files
 .B pinned
 .I action
 .RI [ args ]
+.br
+.B pinned \-\-version
 .SH DESCRIPTION
 .B pinned
 keeps root-owned approval records behind a human gate.
@@ -429,6 +431,13 @@ inside it.
 Print the slot directory for any path \(em repo or file, existing or
 not; a name resolver for consumer symlinks and lane payloads, never an
 existence answer.
+.TP
+.B \-\-version
+Print the release version as
+.RI \(dq pinned "\ " X.Y.Z \(dq
+and exit 0.
+The version is bumped in the release commit its tag points at, so a
+checkout between releases reports the release it descends from.
 .SS Adding a repository
 .TP
 .B add \fIrepo\fP|\fIurl\fP [\fB\-\-input\fP \fIname\fP] [\fB\-\-signed\-tag\fP \fItag\fP] [\fB\-\-flake\fP \fIpath\fP]

@@ -174,6 +174,8 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       ones are listed as refused with the
                                       flag that would declare them
 
+    pinned --version                  print the release version
+
 review, add, setup, tombstone, mv, upgrade, signer add/remove and
 ignorable add/remove self-elevate via sudo (re-exec of the installed
 root-owned binary).
