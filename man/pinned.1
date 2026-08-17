@@ -418,14 +418,22 @@ belong to the file form and are refused here.
 .RE
 .TP
 .B list [\-\-under \fIdir\fP]
-Live pins in your tier: kind, digest, decoded path.
+Live pins in your tier: decoded path, declared kind and full digest,
+the ignored\-key declaration if the slot has one, and custody state
+\(em a stored approved copy, or the note that there is none.
 .B \-\-under
 restricts to paths below that directory.
-Every file row is followed by indented continuation lines carrying its
-ignored-key declaration, if it has one, and its custody state \(em a
-stored approved copy, or the note that there is none. The row itself
-stays the parseable triple, so nothing an annotation says can land
-inside it.
+.IP
+Each pin is one block: the path alone on its first line, every fact
+about it an indented \(dqlabel: value\(dq field under it, and a blank
+line between entries.
+That shape is also the grammar for anything parsing this listing: a
+flush\-left line is a decoded absolute path and is the
+.I whole
+line, so a path holding spaces, tabs or glob metacharacters needs no
+un\-quoting; every other non\-blank line begins with two spaces.
+Digests are never abbreviated \(em the listing is meant to be read and
+copied from, not re\-run.
 .TP
 .B slot \fIpath\fP
 Print the slot directory for any path \(em repo or file, existing or

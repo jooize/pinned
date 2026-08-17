@@ -782,8 +782,23 @@ assert_exit "$RC" 0 "list exits 0"
 assert_contains "$OUT" "$SUB/l/sub/plain.txt" "list decodes a plain path"
 assert_contains "$OUT" "$SUB/l/Application Support/x.json" "list decodes a path with spaces"
 assert_contains "$OUT" "$SUB/l/bracket[1].conf" "list decodes a path with glob metacharacters"
-assert_contains "$OUT" "sha256" "list names the declared kind"
+assert_contains "$OUT" "sha256:" "list names the declared kind, as the digest's label"
 assert_missing  "$OUT" "$SUB/l/never-again.txt" "list omits tombstoned slots"
+# THE GRAMMAR: a flush-left line is a decoded absolute path (the whole line --
+# no un-quoting, whatever the path holds), every other non-blank line is an
+# indented `label: value` about the path above it, and blank lines separate
+# entries. Asserted structurally, so a stray unindented annotation fails here
+# rather than in whatever reads this listing.
+GRAMMAR_BAD="$(awk '
+    /^[[:space:]]*$/ { next }
+    /^[^ ]/          { next }
+    /^  [a-z0-9]+: /    { next }
+                     { print }' "$OUT")"
+if [ -z "$GRAMMAR_BAD" ] && grep -qE '^[^ ]' "$OUT" && grep -qE '^  [a-z0-9]+: ' "$OUT"; then
+  ok "the grammar holds: flush-left paths, two-space label fields, nothing else"
+else
+  fail "list emitted a line that is neither a flush-left path nor an indented field: $GRAMMAR_BAD"
+fi
 
 run_pinned list --under "$SUB/l/sub"
 assert_exit "$RC" 0 "list --under exits 0"
@@ -791,11 +806,11 @@ assert_contains "$OUT" "$SUB/l/sub/plain.txt" "--under keeps paths below the dir
 assert_missing  "$OUT" "$SUB/l/subx/nearmiss.txt" "--under matches at a component boundary (/l/sub is not /l/subx)"
 assert_missing  "$OUT" "$SUB/l/bracket[1].conf" "--under filters out unrelated pins"
 
-# CUSTODY is annotated on every file row, held or not: a consumer that asks
+# CUSTODY is stated on every file entry, held or not: a consumer that asks
 # list must never have to stat the slot to learn whether the bytes are there.
 # One fixture directory per case, so --under scopes the output to exactly one
-# row and its continuation lines (a global grep could not tell which row an
-# annotation belongs to).
+# entry and its fields (a global grep could not tell which entry a field
+# belongs to).
 mkdir -p "$SUB/l/held" "$SUB/l/unheld"
 printf 'in custody\n' > "$SUB/l/held/kept.txt"
 printf 'not in custody\n' > "$SUB/l/unheld/loose.txt"
@@ -806,20 +821,20 @@ chmod 640 "$(slot_file_of "$SUB/l/held/kept.txt" approved)"
 
 run_pinned list --under "$SUB/l/held"
 assert_exit "$RC" 0 "list exits 0 for a byte-exact slot that holds a copy"
-assert_contains "$OUT" "$SUB/l/held/kept.txt" "the row is still the parseable contract"
-assert_contains "$OUT" "(+approved copy)" "a copy is annotated without any ignored declaration"
-assert_missing  "$OUT" "no approved copy" "and the slot is not reported copy-less"
+assert_contains "$OUT" "$SUB/l/held/kept.txt" "the path stands alone on the entry's first line"
+assert_contains "$OUT" "custody:  kept in the slot" "a held copy is stated without any ignored declaration"
+assert_missing  "$OUT" "custody:  none" "and the slot is not reported copy-less"
 assert_eq "$(grep -c -v '^ ' "$OUT" || true)" 1 \
-          "the custody annotation rides a continuation line, never the row"
+          "the path is the entry's only flush-left line; every fact is indented under it"
 
 run_pinned list --under "$SUB/l/unheld"
 assert_exit "$RC" 0 "list exits 0 for a slot with no copy"
-assert_contains "$OUT" "$SUB/l/unheld/loose.txt" "the row is still the parseable contract"
-assert_contains "$OUT" "no approved copy -- re-approve with --store to keep one" \
+assert_contains "$OUT" "$SUB/l/unheld/loose.txt" "the path stands alone on the entry's first line"
+assert_contains "$OUT" "custody:  none  (re-approve with --store to keep one)" \
                 "a copy-less slot says so, and says how to fix it"
-assert_missing  "$OUT" "(+approved copy)" "and does not claim custody it does not have"
+assert_missing  "$OUT" "kept in the slot" "and does not claim custody it does not have"
 assert_eq "$(grep -c -v '^ ' "$OUT" || true)" 1 \
-          "the no-copy annotation rides a continuation line too"
+          "the copy-less entry keeps the same one-path-one-block shape"
 
 # status follows the same custody-on-every-record rule (the block sits
 # outside the ignore branch): a byte-exact, declaration-free slot reports
@@ -2162,18 +2177,19 @@ else
   fail "shasum -c cross-check broke on an ignore-declaring slot"
 fi
 
-# REGRESSION: a slot that declares ignored keys AND holds a copy keeps the two
-# facts on ONE continuation line -- two lines would read as two slots. Its
-# copy-less sibling in the same directory takes the other branch, so one
+# REGRESSION: a slot that declares ignored keys AND holds a copy states both,
+# each as its own field under the same path -- the entry's indentation is what
+# binds them, so neither fact has to ride the other's line to be readable.
+# Its copy-less sibling in the same directory takes the other branch, so one
 # --under run covers both.
 run_pinned list --under "$SUB/ig"
 assert_exit "$RC" 0 "list exits 0 over the ignore-declaring fixtures"
-assert_contains "$OUT" "ignored: model (+approved copy)" \
-                "declaration and custody share one continuation line"
-assert_contains "$OUT" "no approved copy" \
+assert_contains "$OUT" "ignored:  model" "the declaration is its own field"
+assert_contains "$OUT" "custody:  kept in the slot" "custody is its own field beside it"
+assert_contains "$OUT" "custody:  none" \
                 "a declaring slot without a copy still says custody is missing"
-assert_eq "$(grep -c '^ *(+approved copy)$' "$OUT" || true)" 0 \
-          "the combined line is not doubled by a standalone custody line"
+assert_eq "$(grep -c '^  custody:' "$OUT" || true)" "$(grep -cE '^[^ ]' "$OUT" || true)" \
+          "every entry states custody exactly once, declaration or not"
 
 # Exit 5 via the slot's own copy, naming the key that actually moved.
 printf '{\n  "model": "sonnet",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/copy.json"
@@ -2319,7 +2335,7 @@ assert_absent "$DOOM_SLOT/approved" "tombstone drops the approved copy"
 # Surfaces: list annotates, status reports the declaration and the ~ state.
 run_pinned list
 assert_exit "$RC" 0 "list exits 0 with ignore-declaring slots present"
-assert_contains "$OUT" "ignored: model" "list annotates a slot that declares ignored keys"
+assert_contains "$OUT" "ignored:  model" "list annotates a slot that declares ignored keys"
 assert_contains "$OUT" "$SUB/ig/nocopy.json" "list still prints the parseable row"
 ANS=""
 run_pinned status "$SUB/ig/nocopy.json"

@@ -4922,9 +4922,46 @@ do_sign() {
 
 # ---- list ------------------------------------------------------------------
 
+# One listing entry is a BLOCK, not a row. The path stands alone on the first
+# line (bold magenta -- the subject, exactly as every ceremony header names
+# it), and each fact about it is an indented `label: value` field beneath it,
+# with one blank line between entries. That answers by indentation the
+# question the old flat listing left to counting -- which lines belong to
+# which pin -- and it puts the path, the part a reader actually searches for,
+# at a fixed column instead of behind a 64-character digest.
+#
+# The field gutter is the ceremony's: values start at column 12, so `list`,
+# `status` and the review header all line up. Padding is applied to the BARE
+# label, outside the colour, because %-9s counts escape bytes.
+#
+# GRAMMAR, for anything parsing this: a flush-left line is a decoded absolute
+# path, and it is the WHOLE line -- so a path holding spaces, tabs or glob
+# metacharacters needs no un-quoting, which the old `<kind> <digest>  <path>`
+# triple could only manage by hunting for its two-space gap. Every other
+# non-blank line starts with two spaces and reads `<label>: <value>` about the
+# path above it. Blank lines separate entries.
+list_subject() { # found-so-far (0 = this is the first entry)  path
+  [ "$1" -eq 0 ] || printf '\n'
+  printf '%s%s%s\n' "$C_B$C_MAG" "$2" "$C_OFF"
+}
+
+# The kind (sha256 / git) is the LABEL of the digest field, not a column of
+# its own: it says what the value is, which is what a label is for, and it
+# spares every entry a column sized for the longest kind anyone ever adds.
+list_field() { # label  value-colour  value  parenthetical ("" for none)
+  local lbl="$1:"
+  if [ -n "$4" ]; then
+    printf '  %s%-9s%s %s%s%s  %s(%s)%s\n' \
+      "$C_B" "$lbl" "$C_OFF" "$2" "$3" "$C_OFF" "$C_DIM" "$4" "$C_OFF"
+  else
+    printf '  %s%-9s%s %s%s%s\n' "$C_B" "$lbl" "$C_OFF" "$2" "$3" "$C_OFF"
+  fi
+}
+
 do_list() {
-  # Every live (non-tombstoned) pin in the invoking user's tier, one per
-  # line: declared kind (git / sha256 / ...), digest, decoded path.
+  # Every live (non-tombstoned) pin in the invoking user's tier, one block
+  # each: the decoded path, then its declared kind + digest, its ignored-key
+  # declaration if it has one, and its custody state.
   # Unprivileged -- reading needs membership in the tier's group. Slot
   # names never leave this function: consumers get decoded paths.
   inv="$(tier_user)"  # not id -un: correct tier under sudo (root has none)
@@ -4957,7 +4994,7 @@ do_list() {
     echo "ERROR: cannot read $sroot -- are you in group $(pin_group "$inv")?" >&2
     exit 1
   }
-  local d path line digest found=0 copy annotated
+  local d path line digest found=0 copy
   for d in "$sroot"/*/; do
     d="${d%/}"
     [ -e "$d" ] || continue
@@ -4969,56 +5006,49 @@ do_list() {
       esac
     fi
     if ! inspect_slot "$d" 2>/dev/null; then
-      printf '%sMALFORMED%s  %s\n' "$C_RED$C_B" "$C_OFF" "$path"
+      list_subject "$found" "$path"
+      list_field state "$C_RED$C_B" MALFORMED "slot unreadable"
       found=1; continue
     fi
+    case "$slot_state" in none|tombstone) continue ;; esac
+    list_subject "$found" "$path"
     case "$slot_state" in
-      none|tombstone) continue ;;
       rev)
         if digest="$(read_rev "$d" 2>/dev/null)" && [ -n "$digest" ]; then
-          printf '%-11s %s%s%s  %s\n' "$slot_kind" "$C_CYN" "$digest" "$C_OFF" "$path"
+          list_field "$slot_kind" "$C_CYN" "$digest" ""
         else
-          printf '%sCORRUPT%s  %s\n' "$C_RED$C_B" "$C_OFF" "$path"
+          list_field state "$C_RED$C_B" CORRUPT "no readable revision"
         fi ;;
       pin)
         IFS= read -r line <"$slot_file" || line=""
         digest="${line%%  *}"
         case "$digest" in
-          *[!0-9a-f]*|'') printf '%sCORRUPT%s  %s\n' "$C_RED$C_B" "$C_OFF" "$path" ;;
+          *[!0-9a-f]*|'') list_field state "$C_RED$C_B" CORRUPT "no readable digest" ;;
           *)
-            printf '%-11s %s%s%s  %s\n' "$slot_kind" "$C_CYN" "$digest" "$C_OFF" "$path"
-            # Extras ride an INDENTED continuation line, never the row
-            # itself: the row is a parsed contract (`<kind> <digest>  <abs
-            # path>`, and a decoded path may contain spaces), so a marker
-            # inside it would have to be teased back out by every consumer.
-            # A line that cannot match the row shape is skipped by all of
-            # them and read by humans.
-            #
-            # Custody is annotated on EVERY well-formed file row, present or
+            list_field "$slot_kind" "$C_CYN" "$digest" ""
+            # Full digest, never an abbreviation: the one thing a reader
+            # copies out of this listing is the digest they are about to
+            # paste into a verify or compare against a `show`, and a
+            # listing that has to be re-run to be usable is not a listing.
+            if slot_declares_ignore "$d"; then
+              if read_ignored_paths "$d" 2>/dev/null; then
+                list_field ignored "$C_CYN" "$(ign_display "$IGN_PATHS")" ""
+              else
+                list_field ignored "$C_YEL" "unusable declaration" ""
+              fi
+            fi
+            # Custody is stated on EVERY well-formed file entry, present or
             # absent: a consumer reading through the slot (pinned cat, a
             # baseline-free verify) is served by one and refused by the
             # other, and a silence that means "byte-exact, no copy" is a
-            # silence somebody has to stat the slot to resolve.
+            # silence somebody has to stat the slot to resolve. It gets its
+            # own field rather than riding the ignored line, so neither fact
+            # depends on the other being there.
             if [ -e "$d/approved" ]; then copy=1; else copy=0; fi
-            annotated=0
-            if slot_declares_ignore "$d"; then
-              if read_ignored_paths "$d" 2>/dev/null; then
-                # Copy plus declaration: one combined line, so the two
-                # facts about the same slot do not read as two slots.
-                printf '%s            ignored: %s%s%s\n' "$C_DIM" "$(ign_display "$IGN_PATHS")" \
-                  "$([ "$copy" -eq 1 ] && printf ' (+approved copy)')" "$C_OFF"
-                if [ "$copy" -eq 1 ]; then annotated=1; fi
-              else
-                printf '%s            ignored: unusable declaration%s\n' "$C_YEL" "$C_OFF"
-              fi
-            fi
-            if [ "$annotated" -eq 0 ]; then
-              if [ "$copy" -eq 1 ]; then
-                printf '%s            (+approved copy)%s\n' "$C_DIM" "$C_OFF"
-              else
-                printf '%s            no approved copy -- re-approve with --store to keep one%s\n' \
-                  "$C_YEL" "$C_OFF"
-              fi
+            if [ "$copy" -eq 1 ]; then
+              list_field custody "" "kept in the slot" "pinned cat serves these bytes"
+            else
+              list_field custody "" none "re-approve with --store to keep one"
             fi ;;
         esac ;;
     esac
