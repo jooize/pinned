@@ -575,6 +575,71 @@ diff_shape() {
     END { printf "%d hunks, +%d/-%d lines\n", h+0, a+0, d+0 }'
 }
 
+# Structural key summary for the baseline diff -- WHICH keys changed, the one
+# review aid a plain byte diff cannot render (permissions.allow vs
+# permissions.deny, a hook added vs a hook rewritten: invisible in a unified
+# diff whose context is just neighbouring array entries). Ported from the
+# drift index in the hardening repo's nix/claude-shim.bash (drift_keys):
+# flatten both sides to sorted "path = value" leaves via jq's tostream, diff
+# the flattenings, keep the KEY of every changed leaf. An array collapses to
+# its own name (permissions.allow[] -> permissions.allow) so one added entry
+# reads as one key with a count, not a cascade of leaves; a key changed on
+# both sides is "changed" and carries no count. Sorted-input side effect: a
+# pure reordering shows no key here -- the byte diff below still shows it.
+#
+# A SUMMARY, NOT A PER-HUNK CLAIM: computed once from whole-document
+# flattenings of the two frozen buffers and printed once above the diff,
+# attached to no hunk -- so a hostile file that games diff's hunking (or
+# plants misleading -F section labels) cannot make this line misattribute
+# one hunk's change to another. Like those labels it is orientation, not
+# authority: every changed line still prints, and the recorded digest comes
+# from the frozen bytes, not from anything summarized here.
+#
+# rc 1 (no jq, either side not JSON, no temp file) means "no structural
+# view": the ceremony prints no keys line and the byte diff stands alone.
+# jq stays OPTIONAL here -- require_jq is a hard gate only where
+# --ignore-json-key declares a tolerance.
+flatten_json_paths() {
+  jq -r 'tostream | select(length==2) |
+         ((.[0] | map(if type=="number" then "[]" else tostring end) | join("."))
+          | gsub("\\.\\[\\]"; "[]"))
+         + " = " + (.[1] | tojson)' "$1" 2>/dev/null | sort
+}
+json_keys_changed() { # <old> <new> -> "<state>\t<count>\t<key>" rows
+  local old="$1" new="$2" os ns
+  command -v jq >/dev/null 2>&1 || return 1
+  jq -e . "$old" >/dev/null 2>&1 || return 1
+  jq -e . "$new" >/dev/null 2>&1 || return 1
+  os="$(mktemp 2>/dev/null)" || return 1
+  ns="$(mktemp 2>/dev/null)" || { rm -f "$os"; return 1; }
+  if ! flatten_json_paths "$old" > "$os" || ! flatten_json_paths "$new" > "$ns"; then
+    rm -f "$os" "$ns"
+    return 1
+  fi
+  { diff -U0 -- "$os" "$ns" || true; } | LC_ALL=C awk '
+    /^(\+\+\+|---) / { next }
+    /^@@/            { next }
+    /^[+-]/ {
+      mark = substr($0, 1, 1)
+      key  = substr($0, 2)
+      sub(/ = .*$/, "", key)
+      sub(/\[\].*$/, "", key)
+      if (key == "") key = "[]"
+      if (!(key in seen)) { seen[key] = 1; order[++n] = key }
+      if (mark == "+") add[key]++; else del[key]++
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        k = order[i]
+        if (add[k] > 0 && del[k] > 0)  printf "changed\t0\t%s\n", k
+        else if (add[k] > 0)           printf "added\t%d\t%s\n", add[k], k
+        else                           printf "removed\t%d\t%s\n", del[k], k
+      }
+    }'
+  rm -f "$os" "$ns"
+  return 0
+}
+
 # Byte-preserving JSON syntax highlighter. It inserts ANSI ONLY between the
 # content's original characters -- it never reindents, reorders, or reparses
 # -- so what is displayed is EXACTLY what is hashed. (A trust prompt must not
@@ -3687,6 +3752,7 @@ do_approve_files() {
   local base_ok recorded=0 declined=0 failed=0 answer state_note nl
   local ign ign_json old_ign old_bad had_copy copy_bad cur_copy ign_note cust_note decl_changed
   local cust_changed shape gate_shape n_lines
+  local keys_rows keys_line kstate kcount kname kfrag
   local gk gscope gwhere gr_keys gr_pairs gr_scope gr_mixed gr_mach
   local -a hdr_opt=()
 
@@ -3975,6 +4041,26 @@ EOF
         # is re-cut to the gate's spelling rather than counted a second time.
         gate_shape="${shape#*, }"; gate_shape="${gate_shape% lines}"
         gate_shape="${gate_shape/\// }"
+        # The keys summary, computed here with the diff -- before the gate
+        # announces anything -- from the same two frozen buffers the diff
+        # reads (baseline = $FROZEN_COPY, candidate = $fro). House palette:
+        # key names are identifiers (cyan); the (+N)/(-N) magnitudes wear the
+        # diff's own green/red; a both-ways "changed" key carries no count.
+        # An empty row set (non-JSON, malformed JSON, or no jq -- rc 1 from
+        # json_keys_changed) fails safe to NO line, never to a wrong one.
+        keys_line=""
+        keys_rows="$(json_keys_changed "$FROZEN_COPY" "$fro")" || keys_rows=""
+        while IFS="$TAB" read -r kstate kcount kname; do
+          [ -n "$kname" ] || continue
+          case "$kstate" in
+            added)   kfrag="${C_CYN}${kname}${C_OFF}${C_GRN}(+${kcount})${C_OFF}" ;;
+            removed) kfrag="${C_CYN}${kname}${C_OFF}${C_RED}(-${kcount})${C_OFF}" ;;
+            *)       kfrag="${C_CYN}${kname}${C_OFF}" ;;
+          esac
+          keys_line="${keys_line:+$keys_line }$kfrag"
+        done <<EOF
+$keys_rows
+EOF
       fi
     fi
     # THE GATE BEFORE THE PAGER, as the repo ceremony has it: nothing
@@ -3990,6 +4076,10 @@ EOF
       printf '%s--- diff vs the approved baseline (exactly the bytes being approved) ---%s\n' "$C_B" "$C_OFF"
       printf '%scontext trimmed to 1 line; every changed line is always shown; @@ section labels are orientation, not authority.%s\n' "$C_DIM" "$C_OFF"
       printf '%s%s%s\n' "$C_DIM" "$shape" "$C_OFF"
+      # One summary line, above the whole diff (see json_keys_changed: a
+      # per-hunk placement would let one hunk lie about another); absent
+      # entirely when there is no structural view.
+      [ -z "$keys_line" ] || printf '%skeys:%s %s\n' "$C_DIM" "$C_OFF" "$keys_line"
       printf '%s\n' "$line" | color_diff | page || true
     else
       if [ -n "$base" ] && [ -n "$old_digest" ]; then

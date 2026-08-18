@@ -693,6 +693,84 @@ assert_exit "$RC" 0 "a baseline-diff ceremony records"
 assert_contains "$OUT" "+1 -0; Enter opens the diff" "the gate states the diff's magnitude"
 assert_contains "$OUT" "diff vs the approved baseline" "and the pager is that diff"
 
+# --- the keys summary above a JSON baseline diff ----------------------------
+# One line naming WHICH keys changed, computed from whole-document
+# flattenings of the two frozen buffers (json_keys_changed) -- a summary,
+# never a per-hunk claim -- and failing safe to NO line on non-JSON content,
+# malformed JSON, or a missing jq.
+assert_missing "$OUT" "keys:" "a non-JSON baseline diff carries no keys line"
+printf '{"a":1}\n' > "$FIX/kc-old.json"
+printf '{"a":2}\n' > "$FIX/kc-new.json"
+if command -v jq >/dev/null 2>&1; then
+  run_probe json_keys_changed "$FIX/kc-old.json" "$FIX/kc-new.json"
+  assert_exit "$RC" 0 "json_keys_changed answers 0 for two JSON documents"
+  assert_eq "$POUT" "$(printf 'changed\t0\ta')" \
+            "a key changed on both sides folds to one bare 'changed' row"
+  mkdir -p "$SUB/a/keys"
+  printf '{\n  "extra": true,\n  "model": "opus",\n  "permissions": {\n    "ask": ["a"]\n  }\n}\n' \
+    > "$SUB/a/keys/set.json"
+  ANS='
+y
+'
+  run_pinned review --file "$SUB/a/keys/set.json"
+  assert_exit "$RC" 0 "fixture: set.json first approval"
+  cp "$SUB/a/keys/set.json" "$FIX/keys-baseline.json"
+  printf '{\n  "model": "sonnet",\n  "permissions": {\n    "ask": ["a", "b", "c"]\n  }\n}\n' \
+    > "$SUB/a/keys/set.json"
+  ANS='
+y
+'
+  run_pinned review --file "$SUB/a/keys/set.json" --baseline "$FIX/keys-baseline.json"
+  assert_exit "$RC" 0 "a JSON baseline-diff ceremony records"
+  assert_contains "$OUT" "keys: extra(-1) model permissions.ask(+2)" \
+                  "ONE keys line counts removals and additions, leaves a changed key bare, and folds array leaves to their key"
+  # Malformed JSON degrades to the byte diff alone: the summary must fail
+  # safe to nothing, never render a wrong structural claim.
+  printf '{\n  "model": "opus"\n}\n' > "$SUB/a/keys/broken.json"
+  ANS='
+y
+'
+  run_pinned review --file "$SUB/a/keys/broken.json"
+  assert_exit "$RC" 0 "fixture: broken.json first approval"
+  cp "$SUB/a/keys/broken.json" "$FIX/broken-baseline.json"
+  printf '{\n  "model": "opus", oops\n' > "$SUB/a/keys/broken.json"
+  ANS='
+y
+'
+  run_pinned review --file "$SUB/a/keys/broken.json" --baseline "$FIX/broken-baseline.json"
+  assert_exit "$RC" 0 "a now-malformed JSON file still reviews as bytes"
+  assert_contains "$OUT" "diff vs the approved baseline" "the byte diff still renders"
+  assert_missing "$OUT" "keys:" "malformed JSON yields no keys line (fail safe to nothing)"
+else
+  say "  keys-summary JSON cases SKIPPED (no jq in the trusted PATH)"
+fi
+# jq absent: the structural view answers 1 and emits nothing, so the ceremony
+# prints no keys line -- jq stays a hard requirement only where
+# --ignore-json-key declares a tolerance. The script pins its OWN trusted
+# PATH (and macOS ships /usr/bin/jq), so a caller-env override cannot hide
+# jq; a probe variant whose pinned PATH line is rewritten to an empty dir --
+# anchored like every other harness sed -- is the honest simulation.
+# `command -v jq` is the function's FIRST check, so nothing else needs to
+# resolve from that empty dir.
+need '^export PATH=/usr/bin:/bin:/usr/sbin:/sbin$' 1 'pinned trusted PATH'
+NOJQ="$FIX/nojq-bin"; mkdir -p "$NOJQ"
+sed "s#^export PATH=/usr/bin:/bin:/usr/sbin:/sbin\$#export PATH='$NOJQ'#" "$LIB" \
+  > "$FIX/nojq-lib.bash"
+cat > "$FIX/nojq-probe" <<EOF
+#!$HARNESS_BASH
+set -euo pipefail
+fn="\$1"; shift
+args=("\$@")
+# shellcheck disable=SC1090
+. "$FIX/nojq-lib.bash" probe
+"\$fn" \${args[@]+"\${args[@]}"}
+EOF
+chmod 755 "$FIX/nojq-probe"
+RC=0
+POUT="$("$FIX/nojq-probe" json_keys_changed "$FIX/kc-old.json" "$FIX/kc-new.json" 2>"$ERRF")" || RC=$?
+assert_exit "$RC" 1 "no jq in the trusted PATH -> json_keys_changed answers 1 (no structural view)"
+assert_eq "$POUT" "" "and emits nothing, so no keys line can render"
+
 # ---------------------------------------------------------------------------
 say "S5: tombstone"
 # ---------------------------------------------------------------------------

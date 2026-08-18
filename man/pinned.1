@@ -232,6 +232,17 @@ the stored copy, loudly.
 (after its
 .BR \-\-file )
 Diff against a copy that must re-hash to the prior record.
+When both sides parse as JSON and
+.B jq
+is available, one summary line above the diff names the changed keys with
+their added/removed counts (e.g.
+.IR "keys: permissions.ask(+2)" ).
+It is computed from whole-document comparison \(em a summary, never a
+per-hunk claim \(em and is silently absent for non-JSON content, malformed
+JSON, or a missing
+.BR jq ;
+every changed line is still shown either way, and the recorded digest is
+taken from the frozen bytes.
 .TP
 .BI \-\-ignore\-json\-key " key"
 (after its
