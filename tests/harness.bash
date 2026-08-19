@@ -2384,6 +2384,63 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_missing "$OUT" "Enter continues" "and prints no gate"
   NOTTY=""
 
+  # --- tombstone / mv ---------------------------------------------------------
+  # The record verbs share signer/ignorable's handoff shape: contract line,
+  # command, gate. A record mutation is a trust mutation, so its argv is the
+  # same pre-auth disclosure as everyone else's.
+  ANS='
+'
+  run_preview tombstone "$FIX/ts-gone"
+  assert_exit "$RC" 97 "an answered tombstone gate reaches the elevation"
+  assert_missing "$OUT" "Will run as root:" "tombstone prints no prose header"
+  assert_contains "$OUT" "sudo -- $PREVIEW tombstone $FIX/ts-gone" \
+    "tombstone's argv stays on screen"
+  assert_contains "$OUT" "next: tombstone the record as root (sudo); Enter continues" \
+    "the gate names the retirement in the verb's own word"
+  assert_before "$OUT" "sudo asks you to authenticate" "sudo -- $PREVIEW tombstone" \
+    "the contract sentence sits above the command"
+  assert_before "$OUT" "sudo -- $PREVIEW tombstone" "next: tombstone the record" \
+    "and the gate comes last"
+
+  ANS='
+'
+  run_preview mv "$FIX/mv-old-gone" "$FIX/mv-new"
+  assert_exit "$RC" 97 "an answered mv gate reaches the elevation"
+  assert_contains "$OUT" "sudo -- $PREVIEW mv $FIX/mv-old-gone $FIX/mv-new" \
+    "mv's argv stays on screen"
+  assert_contains "$OUT" "next: move the record as root (sudo); Enter continues" \
+    "the gate names the move"
+  assert_before "$OUT" "old:" "sudo asks you to authenticate" \
+    "mv's own preview stays above the handoff"
+
+  ANS=""
+  run_preview tombstone "$FIX/ts-gone" --yes
+  assert_exit "$RC" 97 "--yes elevates tombstone without a gate"
+  assert_missing "$OUT" "Enter continues" "no gate is printed under --yes"
+  assert_contains "$OUT" "sudo -- $PREVIEW tombstone $FIX/ts-gone --yes" \
+    "the flag is shown where it will really be passed"
+
+  # --yes answers the gate; it is not the path and not a second path.
+  ANS=""
+  run_preview tombstone --yes
+  assert_exit "$RC" 1 "tombstone with only --yes is still missing its path"
+  assert_contains "$OUT" "usage: pinned" "and says so as a usage error"
+  ANS=""
+  run_preview mv "$FIX/mv-old-gone" --yes
+  assert_exit "$RC" 1 "mv with one path and --yes is still missing the other"
+  assert_contains "$OUT" "usage: pinned" "as a usage error too"
+
+  NOTTY=1
+  ANS=""
+  run_preview mv "$FIX/mv-old-gone" "$FIX/mv-new"
+  assert_exit "$RC" 2 "off-tty mv without --yes refuses"
+  assert_contains "$OUT" "no tty for confirmation -- pass --yes to proceed non-interactively" \
+    "with the shared refusal"
+  ANS=""
+  run_preview tombstone "$FIX/ts-gone"
+  assert_exit "$RC" 2 "off-tty tombstone without --yes refuses"
+  NOTTY=""
+
   # --- the root side accepts the answer it was handed -----------------------
   # The gate's --yes rides through in "$@" (the display IS the argv), so every
   # root-side parser must take it as the no-op it is. A parser that did not
@@ -2420,6 +2477,19 @@ y
   else
     say "S8i: SKIPPED ignorable --yes (no jq)"
   fi
+
+  # Far enough into do_tombstone / do_mv to prove their parsers took --yes:
+  # the refusals below come from the slot, not from the grammar.
+  ANS=""
+  run_pinned tombstone "$FIX/ts-gone" --yes
+  assert_exit "$RC" 1 "tombstone with --yes reaches its own checks"
+  assert_contains "$OUT" "nothing to tombstone" "and fails on the slot, not on the flag"
+  assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there"
+  ANS=""
+  run_pinned mv "$FIX/mv-old-gone" "$FIX/mv-new" --yes
+  assert_exit "$RC" 1 "mv with --yes reaches its own checks"
+  assert_contains "$OUT" "there is no record to move" "and fails on the slot, not on the flag"
+  assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there either"
 else
   say "S8i: SKIPPED (no git fixture)"
 fi

@@ -2674,16 +2674,29 @@ case "$action" in
   review|add|setup|tombstone|upgrade|mv)
     if [ "$EUID" -ne 0 ]; then
       # tombstone without exactly its <path> can only ever reach usage --
-      # fail here, before authentication costs a sudo prompt.
-      if [ "$action" = "tombstone" ] && [ $# -ne 1 ]; then usage; fi
+      # fail here, before authentication costs a sudo prompt. (--yes answers
+      # the elevation gate below and is not the path.)
+      if [ "$action" = "tombstone" ]; then
+        ts_paths=0
+        for a in "$@"; do [ "$a" = "--yes" ] || ts_paths=$((ts_paths + 1)); done
+        [ "$ts_paths" -eq 1 ] || usage
+      fi
       # mv: two paths that differ, and an old path that is really gone --
       # every one of those is checkable free, so none of them costs an
       # authentication. The peek below is orientation only; the root side
       # re-reads the slot and stays the authority.
       if [ "$action" = "mv" ]; then
-        [ $# -eq 2 ] || usage
-        mv_old="$(canon_path "$1")" || exit 1
-        mv_new="$(canon_path "$2")" || exit 1
+        # Two positionals in order; --yes answers the elevation gate below.
+        mv_old_arg="" mv_new_arg=""
+        for a in "$@"; do
+          [ "$a" = "--yes" ] && continue
+          if [ -z "$mv_old_arg" ]; then mv_old_arg="$a"
+          elif [ -z "$mv_new_arg" ]; then mv_new_arg="$a"
+          else usage; fi
+        done
+        [ -n "$mv_new_arg" ] || usage
+        mv_old="$(canon_path "$mv_old_arg")" || exit 1
+        mv_new="$(canon_path "$mv_new_arg")" || exit 1
         if [ "$mv_old" = "$mv_new" ]; then
           echo "REFUSE: old and new name the same path: $mv_old" >&2
           exit 1
@@ -3116,6 +3129,22 @@ case "$action" in
               elevation_gate "approve $add_name + edit the flake" "$@"
             fi ;;
         esac
+      fi
+      # tombstone and mv: the same handoff shape as signer/ignorable. Their
+      # root sides show the record and take the y/N, so the contract line
+      # says that; the command and the gate follow, because a record verb is
+      # still a trust mutation and its argv is still the pre-auth disclosure
+      # (mv's preview above is orientation, like review's).
+      if { [ "$action" = "tombstone" ] || [ "$action" = "mv" ]; } \
+        && [ "$elev" = "$INSTALL_TARGET" ]; then
+        printf '%ssudo asks you to authenticate; the root-side ceremony shows the record\nand confirms -- nothing is written until you answer y after it.%s\n\n' \
+          "$C_YEL$C_B" "$C_OFF"
+        printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
+        if [ "$action" = "tombstone" ]; then
+          elevation_gate "tombstone the record" "$@"
+        else
+          elevation_gate "move the record" "$@"
+        fi
       fi
       exec sudo -- "$elev" "$action" "$@"
     fi
@@ -4244,9 +4273,17 @@ EOF
 # semantics, the line is forensics.
 do_tombstone() {
   require_root tombstone
-  [ $# -eq 1 ] || usage
+  # The elevation gate's answer, riding through in the displayed argv; the
+  # ceremony's own y/N below is untouched by it.
+  local a path_arg=""
+  for a in "$@"; do
+    [ "$a" = "--yes" ] && continue
+    [ -z "$path_arg" ] || usage
+    path_arg="$a"
+  done
+  [ -n "$path_arg" ] || usage
   local path slot answer line
-  path="$(canon_path "$1")" || exit 1
+  path="$(canon_path "$path_arg")" || exit 1
   if [ -e "$path" ]; then
     echo "REFUSE: $path still exists -- you tombstone what's gone, not what's live" >&2
     echo "        (retire the content first, or review the current content instead)" >&2
@@ -4313,12 +4350,21 @@ mv_verify_said() { # $1 old  $2 new  $3 captured output
 # a missing slot would merely re-prompt.
 do_mv() {
   require_root mv
-  [ $# -eq 2 ] || usage
+  # The elevation gate's answer, riding through in the displayed argv; the
+  # ceremony's own y/N below is untouched by it.
+  local a old_arg="" new_arg=""
+  for a in "$@"; do
+    [ "$a" = "--yes" ] && continue
+    if [ -z "$old_arg" ]; then old_arg="$a"
+    elif [ -z "$new_arg" ]; then new_arg="$a"
+    else usage; fi
+  done
+  [ -n "$new_arg" ] || usage
   local old new old_slot new_slot target what answer line f e
   local state kind src rev digest label tag="" ign_show="" drifted="" travels=""
   local vrc=0 irc=0 vout
-  old="$(canon_path "$1")" || exit 1
-  new="$(canon_path "$2")" || exit 1
+  old="$(canon_path "$old_arg")" || exit 1
+  new="$(canon_path "$new_arg")" || exit 1
   if [ "$old" = "$new" ]; then
     echo "REFUSE: old and new name the same path: $old" >&2
     exit 1
