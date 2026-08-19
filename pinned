@@ -787,11 +787,14 @@ sgit() {
 # The "commits since last approval" listing, one aligned line per commit,
 # newest first:
 #
-#   <hash>  <subject>  <n> files  +<ins> -<del>
+#   <hash>  <subject>  <n> file(s)  +<ins> -<del>
 #
 # Counts pluralize ("1 file", "2 files") without breaking alignment: the
-# count-and-noun pair is one token, right-aligned to the widest token in
-# the range, exactly like the signed +/- numbers beside it.
+# count right-aligns in its own digit column and the noun left-aligns
+# beside it, so the ones digits stack exactly like the signed +/- numbers
+# and the plural "s" hangs into padding where nothing follows it. (A
+# whole-token right-align would let a lone singular drag its digit out of
+# the column.)
 #
 # Orientation before the review: how many places each commit touched, so a
 # one-line "fix typo" that rewrites forty files cannot pass as one. The
@@ -845,25 +848,27 @@ print_commit_range() {
     END {
       for (j = 1; j <= n; j++) {
         if (mrg[j]) continue
-        tok[j] = nfl[j] (nfl[j] == 1 ? " file" : " files")
-        if (length(tok[j]) > tw) tw = length(tok[j])
+        nn[j] = (nfl[j] == 1 ? "file" : "files")
+        if (length(nfl[j]) > cw) cw = length(nfl[j])
+        if (length(nn[j]) > fw) fw = length(nn[j])
         if (length(ins[j]) > iw) iw = length(ins[j])
         if (length(del[j]) > dw) dw = length(del[j])
       }
       if (hw < 1) hw = 1
       if (sw < 1) sw = 1
-      if (tw < 1) tw = 1
+      if (cw < 1) cw = 1
+      if (fw < 1) fw = 1
       if (iw < 1) iw = 1
       if (dw < 1) dw = 1
       for (j = 1; j <= n; j++) {
         out = pre cyn sprintf("%-" hw "s", hsh[j]) off "  " sprintf("%-" sw "s", sbj[j]) "  "
         if (mrg[j])
-          out = out dim sprintf("%" tw "s", "-") "  " \
+          out = out dim sprintf("%" cw "s %-" fw "s", "-", "") "  " \
                 sprintf("%" (iw + 1) "s", "-") " " sprintf("%" (dw + 1) "s", "-") off
         else
           # The sign is part of the token, right-aligned with it: "+103"
           # over "  +2", never a "+" stranded from its digits.
-          out = out dim sprintf("%" tw "s", tok[j]) off "  " \
+          out = out dim sprintf("%" cw "d %-" fw "s", nfl[j], nn[j]) off "  " \
                 grn sprintf("%" (iw + 1) "s", "+" ins[j]) off " " \
                 red sprintf("%" (dw + 1) "s", "-" del[j]) off
         print out
