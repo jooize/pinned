@@ -2188,10 +2188,11 @@ if [ -f "$INSTALL_TARGET" ]; then
   verify_ancestry "$INSTALL_TARGET" || exit 1
 fi
 
-# The program token of a "Will run as root:" command line. The dirname is
-# provenance and stays plain cyan; the basename is the ACT and goes bold
-# inside that cyan (C_B does not cancel a color, so the two compose). A bare
-# name carries no provenance and is bold whole. Scoped to the program token:
+# The program token of a displayed command line (the pre-sudo elevation
+# lines and deploy's "Will run as root:" block). The dirname is provenance
+# and stays plain cyan; the basename is the ACT and goes bold inside that
+# cyan (C_B does not cancel a color, so the two compose). A bare name
+# carries no provenance and is bold whole. Scoped to the program token:
 # argument paths stay whole-token cyan like every other path this tool
 # prints. One helper because three call sites render such a line, and three
 # spellings of one rule drift.
@@ -2224,6 +2225,42 @@ elevation_cmd_disp() { # elev action args...
     esac
   done
   printf '%s' "$out"
+}
+
+# The last line before sudo: what the authentication buys, and a pause to
+# leave. No question mark -- y/N is the root side's register, and this gate
+# takes no decision away from it; it only announces the root-owned section
+# that Enter opens (sudowhat's disclosure, the verify code, the
+# authentication sheet), so nothing full-screen arrives unannounced.
+#
+# One helper for every self-elevating verb: the gate is a security pause,
+# and a pause spelled once per site would drift into as many behaviours.
+#
+# Off-tty there is nobody to answer, so it REFUSES rather than skip the
+# checkpoint -- silently proceeding when stdin is redirected would make
+# detaching the tty the way around the gate. --yes is the explicit,
+# auditable opt-out, and it rides in the argv the display already showed.
+# (sudo needs a tty for its own prompt a few lines later anyway, so a
+# refusal here just beats a more cryptic failure there.)
+elevation_gate() { # <what-the-root-side-does> argv...
+  local what="$1" a answer
+  shift
+  for a in "$@"; do
+    [ "$a" = "--yes" ] && return 0
+  done
+  if [ ! -t 0 ]; then
+    printf '%serror: no tty for confirmation -- pass --yes to proceed non-interactively%s\n' \
+      "$C_RED" "$C_OFF" >&2
+    exit 2
+  fi
+  printf '%snext: %s as root (sudo); Enter continues%s %s· Ctrl-C stops%s ' \
+    "$C_B" "$what" "$C_OFF" "$C_DIM" "$C_OFF"
+  read -r answer </dev/tty
+  # THE PROCESS SEAM. The gate line's own newline is the user's Enter echo,
+  # so this blank is the one separator between pinned and the root-owned
+  # section: after the exec, sudo (and sudowhat's block, where installed)
+  # starts flush.
+  printf '\n'
 }
 
 # The in-place editor every flake write goes through: sed, not perl -- sed
@@ -2734,12 +2771,17 @@ case "$action" in
       if [ "$action" = "review" ]; then
         preview_repos=() preview_tag="" skip_next=0 want_tag=0 file_mode=0 have_ev=0
         preview_step=0 preview_trust=0 preview_signed=0 preview_decl=""
+        # Counted here rather than re-derived at the gate: the gate promises a
+        # number, and the only honest source for it is the argv it is about to
+        # hand to sudo. (Repos get their own count below -- the ones already at
+        # their pin are skipped, so the argv count would overstate the round.)
+        preview_files=0 preview_todo=0
         for a in "$@"; do
           if [ "$want_tag" -eq 1 ]; then preview_tag="$a"; want_tag=0; continue; fi
           if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
           case "$a" in
             --signed-tag) have_ev=1; preview_signed=1; skip_next=1 ;;
-            --file) file_mode=1; skip_next=1 ;;
+            --file) file_mode=1; preview_files=$((preview_files + 1)); skip_next=1 ;;
             --baseline|--algo) skip_next=1 ;;
             --tag) have_ev=1; want_tag=1 ;;
             --trust) have_ev=1; preview_trust=1 ;;
@@ -2835,6 +2877,7 @@ case "$action" in
               continue
             fi
             all_pinned=0
+            preview_todo=$((preview_todo + 1))
             [ "$first_prev" -eq 1 ] || echo
             first_prev=0
             # THE ANCESTRY FLOOR, mirrored: an undeclared backward or
@@ -2910,6 +2953,9 @@ case "$action" in
             --input) add_want=input ;;
             --flake) add_want=flake ;;
             --signed-tag) add_signed=1; add_want=signed-tag ;;
+            # Answers the elevation gate below; the ceremony's own y/N is the
+            # root side's and this says nothing about it.
+            --yes) ;;
             -*) usage ;;
             *)
               [ -z "$add_arg" ] || { echo "add takes one repo or url" >&2; exit 1; }
@@ -3013,20 +3059,27 @@ case "$action" in
           esac
         fi
       fi
-      # Say what the authentication buys BEFORE sudo asks for it, in
-      # deploy's shape: the exact command, then one dim line for the
-      # contract. The ownership/digest details that used to follow said
-      # nothing the checks just above had not already enforced -- the
-      # command line and the contract are the parts a reader acts on.
+      # Say what the authentication buys BEFORE sudo asks for it: the
+      # contract, then the exact command, then the gate. There is no prose
+      # header over the command any more -- the argv already begins with
+      # `sudo` and the gate already says "as root (sudo)", so a third
+      # statement of the same fact was the redundant one. The ownership and
+      # digest details that used to follow said nothing the checks just above
+      # had not already enforced.
+      #
+      # THIS COMMAND LINE IS THE PRE-AUTH DISCLOSURE, and on a host without
+      # sudowhat it is the ONLY one: nothing root-side reprints the argv
+      # before the authentication sheet. It is printed unconditionally for
+      # that reason -- never conditioned on some other tool being installed,
+      # which would make its absence a lie by omission.
       #
       # THE CONTRACT LINE BELONGS TO WHOEVER ORIENTED. It says "the preview
       # above", so it is printed by the process that printed that preview:
       # pinned, for the repo verbs, whose preview is a few lines up. A
       # `review --file` has no preview of its own -- the launcher that
       # measured the files printed the index and owns the sentence there --
-      # so pinned saying it too would either double the launcher's line
-      # around "Will run as root:", or point at nothing at all on a direct
-      # invocation.
+      # so pinned saying it too would either double the launcher's line, or
+      # point at nothing at all on a direct invocation.
       #
       # upgrade is the exception to the command display: reaching this line
       # means its plan found work, and the gate below is both the statement
@@ -3034,32 +3087,35 @@ case "$action" in
       # typed would only sit between the two.
       if { [ "$action" = "review" ] || [ "$action" = "upgrade" ] || [ "$action" = "add" ]; } \
         && [ "$elev" = "$INSTALL_TARGET" ]; then
-        if [ "$action" != "upgrade" ]; then
-          cmd_disp="$(elevation_cmd_disp "$elev" "$action" "$@")"
-          printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
-          printf '  %s\n\n' "$cmd_disp"
-        fi
         if [ "${file_mode:-0}" -eq 0 ]; then
           printf '%sThe preview above was orientation only. The sudo ceremony re-derives\n' "$C_DIM"
           printf 'everything it displays, and nothing is pinned until you confirm there.%s\n\n' "$C_OFF"
         fi
-        # The last line before sudo: what the authentication buys, counted,
-        # and a pause to leave. No question mark -- y/N is the root side's
-        # register, and this gate takes no decision away from it.
-        if [ "$action" = "upgrade" ]; then
-          upg_yes=0
-          for a in "$@"; do [ "$a" = "--yes" ] && upg_yes=1; done
-          if [ "$upg_yes" -eq 0 ]; then
-            if [ ! -t 0 ]; then
-              printf '%serror: no tty for confirmation -- pass --yes to proceed non-interactively%s\n' \
-                "$C_RED" "$C_OFF" >&2
-              exit 2
-            fi
-            printf '%snext: review %s repo%s + rebuild as root (sudo); Enter continues%s %s· Ctrl-C stops%s ' \
-              "$C_B" "$upg_reviews" "$(plural_s "$upg_reviews")" "$C_OFF" "$C_DIM" "$C_OFF"
-            read -r answer </dev/tty
-          fi
+        if [ "$action" != "upgrade" ]; then
+          printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
         fi
+        # What the gate counts is what the root side will actually do: the
+        # files named on the command line, or the repos that survived the
+        # preview's already-pinned skip.
+        case "$action" in
+          upgrade)
+            elevation_gate "review $upg_reviews repo$(plural_s "$upg_reviews") + rebuild" "$@" ;;
+          review)
+            if [ "${file_mode:-0}" -eq 1 ]; then
+              elevation_gate "review $preview_files file$(plural_s "$preview_files")" "$@"
+            else
+              elevation_gate "review $preview_todo repo$(plural_s "$preview_todo")" "$@"
+            fi ;;
+          add)
+            # An input already at a pin buys no approval ceremony -- the round
+            # is the flake edit alone, and the gate says so rather than
+            # promising a review that will not happen.
+            if [ -n "$add_pin" ]; then
+              elevation_gate "edit the flake" "$@"
+            else
+              elevation_gate "approve $add_name + edit the flake" "$@"
+            fi ;;
+        esac
       fi
       exec sudo -- "$elev" "$action" "$@"
     fi
@@ -3119,15 +3175,24 @@ case "$action" in
               *) echo "aborted"; exit 2 ;;
             esac
           fi
-          # The pre-sudo handoff review gives, in the same shape: the
-          # exact command, then what the authentication buys. The root
+          # The pre-sudo handoff review gives, in the same shape and the
+          # same order: what the authentication buys, the exact command,
+          # the gate. No prose header over the command -- see the long
+          # comment at review's arm for why that line went away. The root
           # side stays authoritative -- it displays the object and
           # confirms before writing.
           if [ "$elev" = "$INSTALL_TARGET" ]; then
-            printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
-            printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
             printf '%ssudo asks you to authenticate; the root-side ceremony shows the %s\nand confirms -- nothing is written until you answer y after it.%s\n\n' \
               "$C_YEL$C_B" "$([ "$action" = signer ] && echo "key" || echo "grant")" "$C_OFF"
+            printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
+            # The verb reads off the sub-verb: what root does with the key or
+            # the grant, in the words the ceremony itself uses.
+            case "$action $1" in
+              "signer add")       elevation_gate "record the key" "$@" ;;
+              "signer remove")    elevation_gate "remove the key" "$@" ;;
+              "ignorable add")    elevation_gate "record the grant" "$@" ;;
+              "ignorable remove") elevation_gate "withdraw the grant" "$@" ;;
+            esac
           fi
           exec sudo -- "$elev" "$action" "$@"
         fi
@@ -3220,6 +3285,11 @@ do_approve() {
       --algo)
         [ $# -ge 2 ] || { echo "--algo needs a value" >&2; exit 1; }
         file_algo="$2"; algo_given=1; shift 2 ;;
+      # Answered the unprivileged side's elevation gate and rode through in
+      # the argv that gate displayed (display == the exact argv sudo runs, so
+      # it cannot be stripped on the way). It says nothing about the ceremony
+      # below, whose y/N is a separate decision and stays interactive.
+      --yes)        shift ;;
       -*)           usage ;;
       *)            repo_args+=("$1"); shift ;;
     esac
@@ -5525,6 +5595,9 @@ do_signer() {
       --principal)
         [ $# -ge 2 ] || { echo "--principal needs an identity" >&2; exit 1; }
         principal="$2"; shift 2 ;;
+      # The elevation gate's answer, riding through in the displayed argv;
+      # the ceremony's own confirmation below is untouched by it.
+      --yes) shift ;;
       *) echo "unknown signer option: $1" >&2; usage ;;
     esac
   done
@@ -5717,6 +5790,9 @@ do_ignorable() {
       --under)
         [ $# -ge 2 ] || { echo "--under needs a directory" >&2; exit 1; }
         under="$2"; shift 2 ;;
+      # The elevation gate's answer, riding through in the displayed argv;
+      # the ceremony's own confirmation below is untouched by it.
+      --yes) shift ;;
       -*) echo "unknown ignorable option: $1" >&2; usage ;;
       *)  [ -z "$key" ] || { echo "ignorable $sub takes one key" >&2; usage; }
           key="$1"; shift ;;
@@ -6384,6 +6460,9 @@ do_add() {
       --flake)
         [ $# -ge 2 ] || { echo "--flake needs a path" >&2; exit 1; }
         flake_arg="$2"; shift 2 ;;
+      # The elevation gate's answer, riding through in the displayed argv;
+      # the ceremony's own confirmations below are untouched by it.
+      --yes) shift ;;
       -*) usage ;;
       *)
         [ -z "$arg" ] || { echo "add takes one repo or url" >&2; exit 1; }

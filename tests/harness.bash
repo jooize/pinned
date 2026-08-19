@@ -87,6 +87,19 @@ assert_contains() { # file needle label
 assert_missing() { # file needle label
   if grep -qF -e "$2" "$1"; then fail "$3 (unexpected '$2' in output)"; else ok "$3"; fi
 }
+assert_before() { # file first-needle second-needle label -- ORDER on the page
+  # Some displays are only correct in one order (orientation, then the thing
+  # under decision, then the gate), and every needle being present says
+  # nothing about that. Both must appear, first strictly above second.
+  local a b
+  a="$(grep -nF -m1 -e "$2" "$1" | cut -d: -f1)"
+  b="$(grep -nF -m1 -e "$3" "$1" | cut -d: -f1)"
+  if [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; then
+    ok "$4"
+  else
+    fail "$4 (line of '$2' = ${a:-none}, of '$3' = ${b:-none})"
+  fi
+}
 assert_row() { # file label path desc -- ONE output line carries both
   # The upgrade plan is one row per input: label column, then the path. The
   # pairing is what the assertions are about ("this path is highlighted for
@@ -2189,6 +2202,229 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+say "S8i: the pre-sudo elevation display and its gate"
+# ---------------------------------------------------------------------------
+# The rest of the PREVIEW stub's territory: what review, add, signer and
+# ignorable put on screen before sudo is asked for anything.
+#
+# THE COMMAND LINE IS THE ASSERTION THAT MATTERS. The prose header over it is
+# gone (the argv already opens with `sudo` and the gate already says "as root
+# (sudo)" -- three statements of one fact), but on a host without sudowhat
+# nothing root-side reprints the argv before the authentication sheet, so the
+# line itself is the only pre-auth disclosure there is. Its disappearance
+# would be a silent loss, which is why every path below asserts BOTH halves:
+# no header, and the exact `sudo -- ...` line still on the page.
+#
+# The gate's own newline is the user's Enter echo, which a file-backed stdin
+# never produces -- so the separator blank the script prints after the read
+# is what terminates the gate line here.
+if [ "$GIT_OK" -eq 1 ]; then
+  EV_STALE="$FIX/ev-stale"; EV_STALE2="$FIX/ev-stale2"; EV_PINNED="$FIX/ev-pinned"
+  EV_ADD="$FIX/ev-add"; EV_ADDPIN="$FIX/ev-addpin"
+  for ur in "$EV_STALE" "$EV_STALE2" "$EV_PINNED" "$EV_ADD" "$EV_ADDPIN"; do
+    mkdir -p "$ur"
+    bgit "$ur" init -q
+    printf 'e1\n' > "$ur/f"; bgit "$ur" add f; bgit "$ur" commit -q -m e1
+  done
+  # Pinned at the commit they are on; the two stale ones then move past it.
+  seed_state "$EV_STALE"  rev.git "$(bgit "$EV_STALE"  rev-parse 'HEAD^{commit}')"
+  seed_state "$EV_STALE2" rev.git "$(bgit "$EV_STALE2" rev-parse 'HEAD^{commit}')"
+  seed_state "$EV_PINNED" rev.git "$(bgit "$EV_PINNED" rev-parse 'HEAD^{commit}')"
+  seed_state "$EV_ADDPIN" rev.git "$(bgit "$EV_ADDPIN" rev-parse 'HEAD^{commit}')"
+  printf 'e2\n' > "$EV_STALE/f";  bgit "$EV_STALE"  commit -q -am e2
+  printf 'e2\n' > "$EV_STALE2/f"; bgit "$EV_STALE2" commit -q -am e2
+  EV_FLAKE="$FIX/flake-ev.nix"
+  printf '{ inputs = { }; }\n' > "$EV_FLAKE"
+
+  # --- review <repo> --------------------------------------------------------
+  ANS='
+'
+  run_preview review "$EV_STALE"
+  assert_exit "$RC" 97 "an answered review gate reaches the elevation"
+  assert_missing "$OUT" "Will run as root:" "review prints no prose header"
+  assert_contains "$OUT" "sudo -- $PREVIEW review $EV_STALE" \
+    "the exact argv stays on screen -- it is the only pre-auth disclosure"
+  assert_contains "$OUT" "next: review 1 repo as root (sudo); Enter continues" \
+    "the gate counts the repo in the singular"
+  assert_contains "$OUT" "Ctrl-C stops" "and names the way out"
+  assert_contains "$OUT" "The preview above was orientation only." \
+    "the orientation disclaimer stays"
+  assert_before "$OUT" "The preview above was orientation only." "sudo -- $PREVIEW" \
+    "the contract sentence sits above the command it describes"
+  assert_before "$OUT" "sudo -- $PREVIEW" "next: review 1 repo" \
+    "and the gate comes last, after the command has been read"
+
+  ANS='
+'
+  run_preview review "$EV_STALE" "$EV_STALE2"
+  assert_exit "$RC" 97 "the two-repo review reaches the elevation"
+  assert_contains "$OUT" "next: review 2 repos as root (sudo)" "the gate counts both repos"
+
+  # The gate counts the ROUND, not the argv: a repo already at its pin was
+  # skipped by the preview and buys no ceremony, so promising it would be a
+  # count the root side then contradicts.
+  ANS='
+'
+  run_preview review "$EV_PINNED" "$EV_STALE"
+  assert_exit "$RC" 97 "a mixed batch still elevates for the stale repo"
+  assert_contains "$OUT" "already pinned:" "the preview skips the pinned one"
+  assert_contains "$OUT" "next: review 1 repo as root (sudo)" \
+    "and the gate counts only what the root side will review"
+
+  # --yes answers the gate at the command line -- and rides through in the
+  # displayed argv, because the display IS the argv sudo gets.
+  ANS=""
+  run_preview review "$EV_STALE" --yes
+  assert_exit "$RC" 97 "--yes elevates review without a gate"
+  assert_missing "$OUT" "Enter continues" "no gate is printed under --yes"
+  assert_contains "$OUT" "sudo -- $PREVIEW review $EV_STALE --yes" \
+    "the flag is shown where it will really be passed"
+
+  # Off-tty there is nobody to answer: refuse rather than elevate unasked.
+  NOTTY=1
+  ANS=""
+  run_preview review "$EV_STALE"
+  assert_exit "$RC" 2 "off-tty review without --yes refuses"
+  assert_contains "$OUT" "no tty for confirmation -- pass --yes to proceed non-interactively" \
+    "the refusal names the flag that proceeds"
+  ANS=""
+  run_preview review "$EV_STALE" --yes
+  assert_exit "$RC" 97 "off-tty WITH --yes still elevates"
+  NOTTY=""
+
+  # --- review --file --------------------------------------------------------
+  # No preview of its own, so no contract sentence either: the launcher that
+  # measured the files owns that line.
+  ANS='
+'
+  run_preview review --file "$SUB/real.txt"
+  assert_exit "$RC" 97 "an answered --file gate reaches the elevation"
+  assert_missing "$OUT" "Will run as root:" "review --file prints no prose header"
+  assert_contains "$OUT" "sudo -- $PREVIEW review --file $SUB/real.txt" \
+    "the file ceremony's argv stays on screen"
+  assert_contains "$OUT" "next: review 1 file as root (sudo); Enter continues" \
+    "the gate counts the file in the singular"
+  assert_missing "$OUT" "The preview above was orientation only." \
+    "and claims no preview it did not print"
+
+  ANS='
+'
+  run_preview review --file "$SUB/real.txt" --file "$SUB/link.txt"
+  assert_exit "$RC" 97 "two files reach the elevation too"
+  assert_contains "$OUT" "next: review 2 files as root (sudo)" "the gate counts both files"
+
+  # --- add ------------------------------------------------------------------
+  ANS='
+'
+  run_preview add "$EV_ADD" --flake "$EV_FLAKE"
+  assert_exit "$RC" 97 "an answered add gate reaches the elevation"
+  assert_missing "$OUT" "Will run as root:" "add prints no prose header"
+  assert_contains "$OUT" "sudo -- $PREVIEW add $EV_ADD --flake $EV_FLAKE" \
+    "add's argv stays on screen"
+  assert_contains "$OUT" "next: approve ev-add + edit the flake as root (sudo); Enter continues" \
+    "the gate names the input the ceremony will approve"
+
+  # Already pinned: the round is the flake edit alone, and the gate says so
+  # rather than promising a review that will not happen.
+  ANS='
+'
+  run_preview add "$EV_ADDPIN" --flake "$EV_FLAKE"
+  assert_exit "$RC" 97 "an already-pinned checkout still elevates for the flake edit"
+  assert_contains "$OUT" "next: edit the flake as root (sudo); Enter continues" \
+    "the gate promises only the edit"
+  assert_missing "$OUT" "next: approve" "and no approval it will not perform"
+
+  # --- signer / ignorable ---------------------------------------------------
+  ANS='
+'
+  run_preview signer add alice --file "$SUB/alice.pub"
+  assert_exit "$RC" 97 "an answered signer gate reaches the elevation"
+  assert_missing "$OUT" "Will run as root:" "signer prints no prose header"
+  assert_contains "$OUT" "sudo -- $PREVIEW signer add alice --file $SUB/alice.pub" \
+    "signer's argv stays on screen"
+  assert_contains "$OUT" "next: record the key as root (sudo); Enter continues" \
+    "the gate names what root does with the key"
+  assert_contains "$OUT" "sudo asks you to authenticate" "the site's contract line survives"
+  assert_before "$OUT" "sudo asks you to authenticate" "sudo -- $PREVIEW signer" \
+    "the contract sentence sits above the command"
+  assert_before "$OUT" "sudo -- $PREVIEW signer" "next: record the key" \
+    "and the gate comes last here too"
+
+  ANS='
+'
+  run_preview signer remove alice --file "$SUB/alice.pub"
+  assert_exit "$RC" 97 "signer remove reaches the elevation"
+  assert_contains "$OUT" "next: remove the key as root (sudo)" "its gate names the withdrawal"
+
+  ANS='
+'
+  run_preview ignorable add model
+  assert_exit "$RC" 97 "an answered ignorable gate reaches the elevation"
+  assert_missing "$OUT" "Will run as root:" "ignorable prints no prose header"
+  assert_contains "$OUT" "sudo -- $PREVIEW ignorable add model" "ignorable's argv stays on screen"
+  assert_contains "$OUT" "next: record the grant as root (sudo); Enter continues" \
+    "the gate names what root does with the grant"
+
+  ANS='
+'
+  run_preview ignorable remove model
+  assert_exit "$RC" 97 "ignorable remove reaches the elevation"
+  assert_contains "$OUT" "next: withdraw the grant as root (sudo)" \
+    "its gate names the withdrawal in the grant's own words"
+
+  NOTTY=1
+  ANS=""
+  run_preview signer add alice --file "$SUB/alice.pub"
+  assert_exit "$RC" 2 "off-tty signer without --yes refuses"
+  assert_contains "$OUT" "no tty for confirmation -- pass --yes to proceed non-interactively" \
+    "with the same refusal every gate uses"
+  ANS=""
+  run_preview ignorable add model --yes
+  assert_exit "$RC" 97 "off-tty ignorable WITH --yes elevates"
+  assert_missing "$OUT" "Enter continues" "and prints no gate"
+  NOTTY=""
+
+  # --- the root side accepts the answer it was handed -----------------------
+  # The gate's --yes rides through in "$@" (the display IS the argv), so every
+  # root-side parser must take it as the no-op it is. A parser that did not
+  # would turn the documented non-interactive path into a usage error AFTER
+  # the authentication.
+  ANS='
+y
+'
+  run_pinned review "$EV_STALE2" --yes
+  assert_exit "$RC" 0 "the root side reviews with --yes in its argv"
+  assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there"
+  assert_eq "$(cat "$(slot_of "$EV_STALE2")/rev.git")" \
+            "$(bgit "$EV_STALE2" rev-parse 'HEAD^{commit}')" \
+            "and the ceremony still wrote the pin it was asked for"
+
+  if command -v ssh-keygen >/dev/null 2>&1; then
+    # Far enough into do_signer to prove the option parser took --yes: the
+    # refusal below comes from the key file, not from the grammar.
+    ANS=""
+    run_pinned signer add --file "$FIX/no-such-key.pub" --yes
+    assert_exit "$RC" 1 "signer with --yes reaches its own checks"
+    assert_contains "$OUT" "not a readable file" "and fails on the key, not on the flag"
+    assert_missing "$OUT" "unknown signer option" "--yes is not an unknown option"
+  else
+    say "S8i: SKIPPED signer --yes (no ssh-keygen)"
+  fi
+
+  if command -v jq >/dev/null 2>&1; then
+    ANS=""
+    run_pinned ignorable add 'bad!key' --yes
+    assert_exit "$RC" 1 "ignorable with --yes reaches its own checks"
+    assert_contains "$OUT" "outside the key grammar" "and fails on the key, not on the flag"
+    assert_missing "$OUT" "unknown ignorable option" "--yes is not an unknown option"
+  else
+    say "S8i: SKIPPED ignorable --yes (no jq)"
+  fi
+else
+  say "S8i: SKIPPED (no git fixture)"
+fi
+
+# ---------------------------------------------------------------------------
 say "S9: ignored keys (ignored.json / approved / exit 5)"
 # ---------------------------------------------------------------------------
 # The tolerance path is jq-driven by construction (structural comparison of
@@ -3367,6 +3603,16 @@ y
   assert_contains "$OUT" "already approved" "the pin is reported, not re-asked"
   assert_contains "$OUT" "already names this repo" "and so is the input"
   assert_eq "$(digest_of "$FL_A")" "$FL_A_BEFORE" "the flake is untouched"
+
+  # The elevation gate's --yes rides through in the argv the display showed
+  # (S8i), so the root side must take it as the no-op it is rather than turn
+  # the documented non-interactive path into a usage error after the
+  # authentication.
+  ANS=""
+  run_pinned add "$ADD_A" --flake "$FL_A" --yes
+  assert_exit "$RC" 0 "the root side adds with --yes in its argv"
+  assert_contains "$OUT" "nothing to do" "reaching the same no-op"
+  assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there"
 
   # An add interrupted between its insert and its rev sync leaves the
   # placeholder behind. The rerun does not re-edit the flake -- syncing revs

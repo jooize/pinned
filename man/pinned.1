@@ -41,10 +41,48 @@ and
 add/remove ceremonies self-elevate the same way; their
 .B list
 forms, like every reading verb, run unprivileged.
+.PP
+.B The pre\-sudo handoff.
+Every self-elevating verb discloses the exact command it is about to
+hand to
+.BR sudo (8),
+indented on its own line, and closes with a gate naming what the
+authentication buys:
+.PP
+.nf
+    sudo \-\- /usr/local/bin/pinned review /home/u/src/foo
+
+  next: review 1 repo as root (sudo); Enter continues \(pc Ctrl\-C stops
+.fi
+.PP
+The displayed line is the argv, token for token \(em nothing is added,
+elided, or reworded for the display \(em and it is printed
+unconditionally, because on a host without a root-side echo it is the
+only account of the command the human gets before authenticating.
+The gate is a pause, not a decision: the ceremony's own
+.RB \(dq [y/N] \(dq
+comes later, as root, and nothing is recorded until it is answered.
+.B \-\-yes
+skips the gate (and rides through into the root-side argv, where it
+decides nothing); off a tty, a verb whose gate cannot be answered
+refuses with exit 2 rather than elevate unasked.
+The gate applies to
+.BR review ,
+.BR add ,
+.BR upgrade ,
+and the
+.B signer
+and
+.B ignorable
+add/remove ceremonies;
+.B deploy
+and
+.B setup
+take their own confirmation instead, before any authentication.
 .SH COMMANDS
 .SS Repository approval
 .TP
-.B review \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP] [\fB\-\-step\fP] [\fB\-\-backward\fP|\fB\-\-diverged\fP]
+.B review \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP] [\fB\-\-step\fP] [\fB\-\-backward\fP|\fB\-\-diverged\fP] [\fB\-\-yes\fP]
 (sudo) Review the diff since the last pin (the full tree on a first
 approval), approve, write the pin.
 .I repo
@@ -60,6 +98,10 @@ deletion counts, so a subject line cannot pass a large commit off as a
 small one.
 A merge shows "\-" for all three: git keeps no per-commit diff for it,
 and the review below covers the merged content anyway.
+.IP
+That preview closes with the pre-sudo handoff: the exact command, then a
+gate counting the repos that still need a ceremony \(em a repo already at
+its pin was skipped above and is never promised here.
 .IP
 Several repos run as sequential ceremonies under one authentication:
 each is displayed and confirmed on its own, a decline skips only that
@@ -132,6 +174,11 @@ Review and pin the tag's commit, not HEAD.
 Skip a first approval's full-tree review, loudly.
 Later approvals always show the diff.
 .TP
+.B \-\-yes
+Skip the pre-sudo gate, and nothing else: every repo is still displayed
+and confirmed as root.
+Required off a tty, where the gate cannot be answered.
+.TP
 .B \-\-step
 A reading aid for a large delta: instead of one diff of the whole
 delta, walk the commits since the pin oldest-first \(em one diff and
@@ -201,7 +248,7 @@ exists to catch \(em and a deliberate, declared downgrade to a signed
 release is the legitimate manual override it exists to allow.
 .RE
 .TP
-.B review \fIrepo\fP \fB\-\-signed\-tag\fP \fItag\fP [\fB\-\-signed\-tag\fP \fItag\fP ...] [\fB\-\-tag\fP \fItag\fP]
+.B review \fIrepo\fP \fB\-\-signed\-tag\fP \fItag\fP [\fB\-\-signed\-tag\fP \fItag\fP ...] [\fB\-\-tag\fP \fItag\fP] [\fB\-\-yes\fP]
 (sudo) Verify each signed tag against root-owned allowed signers (the
 slot's own
 .IR signers/allowed_signers ,
@@ -213,12 +260,17 @@ may add an unsigned name (a clean release name) that must name the
 same commit.
 .SS File approval
 .TP
-.B review \-\-file \fIpath\fP [\fB\-\-baseline\fP \fIcopy\fP] [\fB\-\-ignore\-json\-key\fP \fIkey\fP ...] [\fB\-\-file\fP \fIpath\fP ...] [\fB\-\-algo\fP \fIname\fP] [\fB\-\-store\fP]
+.B review \-\-file \fIpath\fP [\fB\-\-baseline\fP \fIcopy\fP] [\fB\-\-ignore\-json\-key\fP \fIkey\fP ...] [\fB\-\-file\fP \fIpath\fP ...] [\fB\-\-algo\fP \fIname\fP] [\fB\-\-store\fP] [\fB\-\-yes\fP]
 (sudo) File-pin ceremony: each file is frozen, displayed root-side,
 confirmed, and its hash recorded.
 Multiple
 .B \-\-file
 arguments share one authentication.
+The pre-sudo handoff counts the files named on the command line
+.RB ( "next: review 2 files as root (sudo)" );
+.B \-\-yes
+skips that gate and no other, so each file is still displayed and
+confirmed as root.
 .IP
 The ceremony re-states
 .B \-\-ignore\-json\-key
@@ -350,7 +402,7 @@ Create signed tag
 .I tag
 at the pinned hash \(em no sudo (needs your SSH agent, e.g. 1Password).
 .TP
-.B signer add [\-\-repo \fIpath\fP] (\-\-file \fIpubkey\fP | \-\-key \fIline\fP) [\-\-principal \fIid\fP]
+.B signer add [\-\-repo \fIpath\fP] (\-\-file \fIpubkey\fP | \-\-key \fIline\fP) [\-\-principal \fIid\fP] [\-\-yes]
 (sudo) Allowed-signers ceremony: fingerprint, confirm, root-owned
 write.
 A bare public key needs
@@ -358,26 +410,45 @@ A bare public key needs
 (the label signature verification matches);
 .B \-\-repo
 targets the per-repo override.
+The pre-sudo gate reads
+.RB \(dq "next: record the key as root (sudo)" \(dq;
+.B \-\-yes
+skips it and leaves the fingerprint confirmation, which runs as root,
+untouched.
 .TP
-.B signer remove [\-\-repo \fIpath\fP] (\-\-file \fIpubkey\fP | \-\-key \fIline\fP)
+.B signer remove [\-\-repo \fIpath\fP] (\-\-file \fIpubkey\fP | \-\-key \fIline\fP) [\-\-yes]
 (sudo) Remove that key's entries (key compromise must not be the
 hand-edited path).
+Its gate reads
+.RB \(dq "next: remove the key as root (sudo)" \(dq,
+and
+.B \-\-yes
+skips that gate only.
 .TP
 .B signer list [\-\-repo \fIpath\fP]
 Principals, key types, fingerprints.
 .SS Ignorable-key policy
 .TP
-.B ignorable add \fIkey\fP [\-\-under \fIdir\fP]
+.B ignorable add \fIkey\fP [\-\-under \fIdir\fP] [\-\-yes]
 (sudo) Grant a dotted JSON key that
 .B review \-\-file
 may then declare ignored.
 .B \-\-under
 scopes the grant to that directory's subtree; omitted means
 everywhere.
+The pre-sudo gate reads
+.RB \(dq "next: record the grant as root (sudo)" \(dq;
+.B \-\-yes
+skips it and leaves the root-side confirmation untouched.
 .TP
-.B ignorable remove \fIkey\fP [\-\-under \fIdir\fP]
+.B ignorable remove \fIkey\fP [\-\-under \fIdir\fP] [\-\-yes]
 (sudo) Withdraw exactly that grant (same key, same scope).
 Slots recording it fall back to byte-exact.
+Its gate reads
+.RB \(dq "next: withdraw the grant as root (sudo)" \(dq,
+and
+.B \-\-yes
+skips that gate only.
 .TP
 .B ignorable list
 Machine tier, user tier and the effective intersection, each entry
@@ -459,7 +530,7 @@ The version is bumped in the release commit its tag points at, so a
 checkout between releases reports the release it descends from.
 .SS Adding a repository
 .TP
-.B add \fIrepo\fP|\fIurl\fP [\fB\-\-input\fP \fIname\fP] [\fB\-\-signed\-tag\fP \fItag\fP] [\fB\-\-flake\fP \fIpath\fP]
+.B add \fIrepo\fP|\fIurl\fP [\fB\-\-input\fP \fIname\fP] [\fB\-\-signed\-tag\fP \fItag\fP] [\fB\-\-flake\fP \fIpath\fP] [\fB\-\-yes\fP]
 (sudo) Take a repository from "it exists somewhere" to "pinned, and
 declared as an input of the system flake", in three idempotent parts:
 a checkout, a pin, a declaration.
@@ -467,7 +538,13 @@ Each part is skipped with a note when it is already satisfied, so a
 rerun after an interruption picks up exactly where it stopped, and all
 three satisfied is a no-op that exits 0.
 An unprivileged preview names the checkout, the input, the flake and
-the ceremony before the sudo prompt.
+the ceremony before the sudo prompt, and closes with the pre-sudo
+handoff: the gate promises the approval and the flake edit
+.RB ( "next: approve " \fIname\fP " + edit the flake as root (sudo)" ),
+or the edit alone when the checkout is already at a pin.
+.B \-\-yes
+skips that gate; the input block is still shown and confirmed as root
+before the flake is touched.
 .RS
 .PP
 .B 1. The checkout.
