@@ -606,17 +606,21 @@ flatten_json_paths() {
          + " = " + (.[1] | tojson)' "$1" 2>/dev/null | sort
 }
 json_keys_changed() { # <old> <new> -> "<state>\t<count>\t<key>" rows
-  local old="$1" new="$2" os ns
+  local old="$1" new="$2"
   command -v jq >/dev/null 2>&1 || return 1
   jq -e . "$old" >/dev/null 2>&1 || return 1
   jq -e . "$new" >/dev/null 2>&1 || return 1
-  os="$(mktemp 2>/dev/null)" || return 1
-  ns="$(mktemp 2>/dev/null)" || { rm -f "$os"; return 1; }
-  if ! flatten_json_paths "$old" > "$os" || ! flatten_json_paths "$new" > "$ns"; then
-    rm -f "$os" "$ns"
-    return 1
-  fi
-  { diff -U0 -- "$os" "$ns" || true; } | LC_ALL=C awk '
+  # No temp files: diff reads both flattenings through process substitution, so
+  # there is nothing to create and nothing to clean up -- the function cannot leak
+  # a temp file on any exit path, no matter how a caller invokes it. (An earlier
+  # mktemp version was leak-free only because its sole caller sits on the LHS of
+  # `||`, which suppresses errexit through the function so its trailing `rm` was
+  # always reached; a future caller without that `||` would have leaked. Removing
+  # the files removes the dependency on the caller's errexit context.) Both inputs
+  # are validated JSON above, so a flatten cannot fail for content reasons; if one
+  # somehow emitted nothing the summary would be incomplete, never wrong -- fail
+  # safe to a missing key, never a false one.
+  { diff -U0 -- <(flatten_json_paths "$old") <(flatten_json_paths "$new") || true; } | LC_ALL=C awk '
     /^(\+\+\+|---) / { next }
     /^@@/            { next }
     /^[+-]/ {
@@ -636,8 +640,6 @@ json_keys_changed() { # <old> <new> -> "<state>\t<count>\t<key>" rows
         else                           printf "removed\t%d\t%s\n", del[k], k
       }
     }'
-  rm -f "$os" "$ns"
-  return 0
 }
 
 # Byte-preserving JSON syntax highlighter. It inserts ANSI ONLY between the
