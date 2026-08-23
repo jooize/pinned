@@ -87,6 +87,22 @@ assert_contains() { # file needle label
 assert_missing() { # file needle label
   if grep -qF -e "$2" "$1"; then fail "$3 (unexpected '$2' in output)"; else ok "$3"; fi
 }
+# The self-elevation handoff argv is pretty-printed one flag-group per line
+# (trailing ` \`, aligned padding) so a long review reads as a list. This joins
+# those continuation lines back into one logical, single-spaced command so the
+# "exact argv disclosed pre-auth" checks stay exact without pinning the cosmetic
+# layout. The needle is the old single-line argv.
+assert_shows_cmd() { # file single-line-argv label
+  local norm
+  norm="$(awk '
+    { l=$0; sub(/^[ \t]+/,"",l)
+      buf=(buf=="" ? l : buf " " l)
+      if (buf ~ /\\$/) sub(/\\[ \t]*$/,"",buf)
+      else { print buf; buf="" }
+    }
+    END { if (buf!="") print buf }' "$1" | tr -s ' ')"
+  if printf '%s\n' "$norm" | grep -qF -e "$2"; then ok "$3"; else fail "$3 (no '$2' in normalized argv)"; fi
+}
 assert_before() { # file first-needle second-needle label -- ORDER on the page
   # Some displays are only correct in one order (orientation, then the thing
   # under decision, then the gate), and every needle being present says
@@ -2245,7 +2261,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   run_preview review "$EV_STALE"
   assert_exit "$RC" 97 "an answered review gate reaches the elevation"
   assert_missing "$OUT" "Will run as root:" "review prints no prose header"
-  assert_contains "$OUT" "sudo -- $PREVIEW review $EV_STALE" \
+  assert_shows_cmd "$OUT" "sudo -- $PREVIEW review $EV_STALE" \
     "the exact argv stays on screen -- it is the only pre-auth disclosure"
   assert_contains "$OUT" "next: review 1 repo as root (sudo); Enter continues" \
     "the gate counts the repo in the singular"
@@ -2280,7 +2296,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   run_preview review "$EV_STALE" --yes
   assert_exit "$RC" 97 "--yes elevates review without a gate"
   assert_missing "$OUT" "Enter continues" "no gate is printed under --yes"
-  assert_contains "$OUT" "sudo -- $PREVIEW review $EV_STALE --yes" \
+  assert_shows_cmd "$OUT" "sudo -- $PREVIEW review $EV_STALE --yes" \
     "the flag is shown where it will really be passed"
 
   # Off-tty there is nobody to answer: refuse rather than elevate unasked.
@@ -2303,7 +2319,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   run_preview review --file "$SUB/real.txt"
   assert_exit "$RC" 97 "an answered --file gate reaches the elevation"
   assert_missing "$OUT" "Will run as root:" "review --file prints no prose header"
-  assert_contains "$OUT" "sudo -- $PREVIEW review --file $SUB/real.txt" \
+  assert_shows_cmd "$OUT" "sudo -- $PREVIEW review --file $SUB/real.txt" \
     "the file ceremony's argv stays on screen"
   assert_contains "$OUT" "next: review 1 file as root (sudo); Enter continues" \
     "the gate counts the file in the singular"
@@ -2322,7 +2338,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   run_preview add "$EV_ADD" --flake "$EV_FLAKE"
   assert_exit "$RC" 97 "an answered add gate reaches the elevation"
   assert_missing "$OUT" "Will run as root:" "add prints no prose header"
-  assert_contains "$OUT" "sudo -- $PREVIEW add $EV_ADD --flake $EV_FLAKE" \
+  assert_shows_cmd "$OUT" "sudo -- $PREVIEW add $EV_ADD --flake $EV_FLAKE" \
     "add's argv stays on screen"
   assert_contains "$OUT" "next: approve ev-add + edit the flake as root (sudo); Enter continues" \
     "the gate names the input the ceremony will approve"
@@ -2343,7 +2359,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   run_preview signer add alice --file "$SUB/alice.pub"
   assert_exit "$RC" 97 "an answered signer gate reaches the elevation"
   assert_missing "$OUT" "Will run as root:" "signer prints no prose header"
-  assert_contains "$OUT" "sudo -- $PREVIEW signer add alice --file $SUB/alice.pub" \
+  assert_shows_cmd "$OUT" "sudo -- $PREVIEW signer add alice --file $SUB/alice.pub" \
     "signer's argv stays on screen"
   assert_contains "$OUT" "next: record the key as root (sudo); Enter continues" \
     "the gate names what root does with the key"
@@ -2364,7 +2380,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   run_preview ignorable add model
   assert_exit "$RC" 97 "an answered ignorable gate reaches the elevation"
   assert_missing "$OUT" "Will run as root:" "ignorable prints no prose header"
-  assert_contains "$OUT" "sudo -- $PREVIEW ignorable add model" "ignorable's argv stays on screen"
+  assert_shows_cmd "$OUT" "sudo -- $PREVIEW ignorable add model" "ignorable's argv stays on screen"
   assert_contains "$OUT" "next: record the grant as root (sudo); Enter continues" \
     "the gate names what root does with the grant"
 
@@ -2396,7 +2412,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   run_preview tombstone "$FIX/ts-gone"
   assert_exit "$RC" 97 "an answered tombstone gate reaches the elevation"
   assert_missing "$OUT" "Will run as root:" "tombstone prints no prose header"
-  assert_contains "$OUT" "sudo -- $PREVIEW tombstone $FIX/ts-gone" \
+  assert_shows_cmd "$OUT" "sudo -- $PREVIEW tombstone $FIX/ts-gone" \
     "tombstone's argv stays on screen"
   assert_contains "$OUT" "next: tombstone the record as root (sudo); Enter continues" \
     "the gate names the retirement in the verb's own word"
@@ -2409,7 +2425,7 @@ if [ "$GIT_OK" -eq 1 ]; then
 '
   run_preview mv "$FIX/mv-old-gone" "$FIX/mv-new"
   assert_exit "$RC" 97 "an answered mv gate reaches the elevation"
-  assert_contains "$OUT" "sudo -- $PREVIEW mv $FIX/mv-old-gone $FIX/mv-new" \
+  assert_shows_cmd "$OUT" "sudo -- $PREVIEW mv $FIX/mv-old-gone $FIX/mv-new" \
     "mv's argv stays on screen"
   assert_contains "$OUT" "next: move the record as root (sudo); Enter continues" \
     "the gate names the move"
@@ -2420,7 +2436,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   run_preview tombstone "$FIX/ts-gone" --yes
   assert_exit "$RC" 97 "--yes elevates tombstone without a gate"
   assert_missing "$OUT" "Enter continues" "no gate is printed under --yes"
-  assert_contains "$OUT" "sudo -- $PREVIEW tombstone $FIX/ts-gone --yes" \
+  assert_shows_cmd "$OUT" "sudo -- $PREVIEW tombstone $FIX/ts-gone --yes" \
     "the flag is shown where it will really be passed"
 
   # --yes answers the gate; it is not the path and not a second path.

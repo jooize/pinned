@@ -2208,26 +2208,72 @@ prog_disp() { # <program-path-or-name>
   esac
 }
 
-# The exact argv sudo is about to run, colored by role the same way deploy
-# renders its commands: sudo bold, command name cyan, verb and flags plain,
-# file paths cyan (identifiers and paths are cyan everywhere; yellow stays
-# reserved for attention text). The color codes go into the DISPLAY string
-# only -- the exec sites build their argv from the variables, never from
-# this. Quote first (anything outside the safe set gets single quotes, so
-# the line stays pasteable), then color the quoted token.
+# Quote a token for display: single-quote anything outside the pasteable safe
+# set, so a path with a space stays one copyable argument.
+elevation_quote() { # token
+  case "$1" in
+    *[!A-Za-z0-9_/.:=-]*) printf "'%s'" "$1" ;;
+    *)                    printf '%s' "$1" ;;
+  esac
+}
+
+# The exact argv sudo is about to run, one flag-group per line so a long verb
+# (a review with many --file/--baseline pairs) reads as a list instead of a
+# wrapped wall. Line 1 is `sudo -- <prog> <act>` plus any leading positionals
+# (repo/path, which these verbs place before options); each --flag then gets
+# its own continuation line, carrying the value that follows it when the next
+# token is not itself a flag, with flag names padded to a common column so the
+# values align. Role colour as deploy renders commands -- sudo bold, command
+# name cyan, verb and flags plain, paths cyan -- plus one refinement: a
+# --baseline value is a slot-digest path nobody typed (machine-derived), so it
+# renders dim to keep the eye on the --file path being approved. The colour
+# codes go into the DISPLAY string only; the exec sites build argv from the
+# variables, never from this. Continuation lines carry a trailing ` \` so the
+# whole block stays pasteable.
 elevation_cmd_disp() { # elev action args...
-  local elev="$1" act="$2" a a_disp out
+  local elev="$1" act="$2"
   shift 2
-  out="${C_B}sudo${C_OFF} -- $(prog_disp "$elev") $act"
-  for a in "$@"; do
-    case "$a" in
-      *[!A-Za-z0-9_/.:=-]*) a_disp="'$a'" ;;
-      *)                    a_disp="$a" ;;
+  local fl=() fv=() lead="" seen=0 tok val fw=0
+  while [ "$#" -gt 0 ]; do
+    tok="$1"; shift
+    case "$tok" in
+      -*)
+        seen=1
+        val=""
+        if [ "$#" -gt 0 ]; then
+          case "$1" in
+            -*) ;;                 # next is a flag -> this one takes no value
+            *)  val="$1"; shift ;;
+          esac
+        fi
+        fl+=("$tok"); fv+=("$val")
+        [ "${#tok}" -gt "$fw" ] && fw="${#tok}"
+        ;;
+      *)
+        if [ "$seen" -eq 0 ]; then
+          lead="${lead:+$lead }${C_CYN}$(elevation_quote "$tok")${C_OFF}"
+        else
+          fl+=(""); fv+=("$tok")     # stray positional after a flag: own line
+        fi
+        ;;
     esac
-    case "$a" in
-      -*) out="$out $a_disp" ;;
-      *)  out="$out ${C_CYN}${a_disp}${C_OFF}" ;;
-    esac
+  done
+
+  local out="${C_B}sudo${C_OFF} -- $(prog_disp "$elev") ${act}${lead:+ $lead}"
+  local n="${#fl[@]}" i=0 name padded vcol
+  while [ "$i" -lt "$n" ]; do
+    name="${fl[$i]}"
+    printf -v padded '%-*s' "$fw" "$name"       # pad flag (plain) so values align
+    if [ -n "${fv[$i]}" ]; then
+      case "$name" in
+        --baseline) vcol="$C_DIM" ;;
+        *)          vcol="$C_CYN" ;;
+      esac
+      out="$out \\"$'\n'"      ${padded}  ${vcol}$(elevation_quote "${fv[$i]}")${C_OFF}"
+    else
+      out="$out \\"$'\n'"      ${padded}"
+    fi
+    i=$((i + 1))
   done
   printf '%s' "$out"
 }
@@ -4175,9 +4221,14 @@ EOF
     # decision. Off-tty the read fails and set -e aborts the ceremony: the
     # same fail-closed contract as the confirm below.
     if [ "$base_ok" -eq 1 ]; then
-      printf '%snext: review %s%s%s %s%s%s; Enter opens the diff%s ' \
+      # Colour the magnitude the diff's own way -- additions green, deletions
+      # red -- matching the keys summary and the diff body below it. gate_shape
+      # is always "+A -D" (diff_shape prints both counts, either may be 0), so
+      # the first word is the add count and the rest the delete count.
+      gate_disp="${C_GRN}${gate_shape%% *}${C_OFF} ${C_RED}${gate_shape#* }${C_OFF}${C_B}"
+      printf '%snext: review %s%s%s %s; Enter opens the diff%s ' \
         "$C_B" "$C_B$C_MAG" "${path##*/}" "$C_OFF$C_B" \
-        "$C_CYN" "$gate_shape" "$C_OFF$C_B" "$C_OFF"
+        "$gate_disp" "$C_OFF"
       read -r answer </dev/tty
       printf '%s--- diff vs the approved baseline (exactly the bytes being approved) ---%s\n' "$C_B" "$C_OFF"
       printf '%scontext trimmed to 1 line; every changed line is always shown; @@ section labels are orientation, not authority.%s\n' "$C_DIM" "$C_OFF"
