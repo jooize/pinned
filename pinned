@@ -229,9 +229,14 @@ if [ -t 1 ]; then
   # Reserved for repo identity: cyan is the workhorse accent, so the repo
   # under review gets a color nothing else uses.
   C_MAG=$'\033[35m'
+  # Option flags inside a rendered command line. Shared role with sudowhat's
+  # SGR_FLAG so one command line reads the same whichever tool drew it.
+  # BOLD is not a style choice: plain blue measures ~3.6:1 against a dark
+  # terminal ground, under the 4.5:1 floor, and the bright variant clears it.
+  C_BLU=$'\033[1;34m'
   DIFF_COLOR=always
 else
-  C_OFF='' C_B='' C_DIM='' C_RED='' C_GRN='' C_YEL='' C_CYN='' C_MAG=''
+  C_OFF='' C_B='' C_DIM='' C_RED='' C_GRN='' C_YEL='' C_CYN='' C_MAG='' C_BLU=''
   DIFF_COLOR=never
 fi
 NL=$'\n' TAB=$'\t'
@@ -6141,6 +6146,11 @@ EOF
   set_sed_i
 
   local sed_exprs=() updates=0 unpinned=0 slot approved ahead
+  # Display strings for sed_exprs, composed from the SAME parts at the SAME
+  # moment. pinned wrote these expressions, so it never has to re-parse one to
+  # know which half is the outgoing rev -- the advantage a self-composed display
+  # has over sudowhat, which must mark an argv it did not author.
+  local sed_disp=()
   local decl_tag want_ref ref_stale live_tag tag_detail esc
   printf '%sgit+file inputs%s %s(%s)%s\n' "$C_B" "$C_OFF" "$C_DIM" "$FLAKE" "$C_OFF"
   while IFS='|' read -r path flake_rev flake_ref; do
@@ -6191,6 +6201,9 @@ EOF
       updates=$((updates + 1))
       if [ "$flake_rev" != "$approved" ]; then
         sed_exprs+=(-e "s/rev=${flake_rev}/rev=${approved}/g")
+        # Outgoing rev dim (meta -- it is leaving), incoming rev bold cyan (the
+        # identifier that will be in force). Both roles are the framework's.
+        sed_disp+=("${C_BLU}-e${C_OFF} 's/rev=${C_DIM}${flake_rev}${C_OFF}/rev=${C_CYN}${C_B}${approved}${C_OFF}/g'")
       fi
       printf '  %-*s  %spinned %s%s %s!=%s %snix flake %s%s   %s-> update%s\n' \
         "$width" "$name" "$C_CYN" "${approved:0:10}" "$C_OFF" "$C_YEL" "$C_OFF" \
@@ -6200,6 +6213,7 @@ EOF
         # rev expressions can stay global because revs are unique hex.
         esc="$(printf '%s' "$path" | sed 's/[][\.*^$|]/\\&/g')"
         sed_exprs+=(-e "s|\\(git+file://${esc}?[^\"]*\\)ref=[^&\"]*|\\1ref=${want_ref}|")
+        sed_disp+=("${C_BLU}-e${C_OFF} 's|\\(git+file://${esc}?[^\"]*\\)ref=[^&\"]*|\\1ref=${C_CYN}${C_B}${want_ref}${C_OFF}|'")
         printf '  %-*s  %sref %s -> %s%s\n' \
           "$width" '' "$C_YEL" "$flake_ref" "$want_ref" "$C_OFF"
       fi
@@ -6270,9 +6284,11 @@ EOF
   # argv that runs (expressions hold no quotes -- hex revs, fixed template
   # -- so single-quoting them is their pasteable form). Parts are colored
   # by role so the command reads at a glance: sudo bold, the program token
-  # through prog_disp, expressions plain, file paths cyan (identifiers and
+  # through prog_disp, option flags bold blue, file paths cyan (identifiers and
   # paths are cyan everywhere; yellow stays reserved for attention text).
-  local PIN_CMD=() REBUILD_CMD=() expr_disp="" e
+  # `bs` holds the line-continuation backslash: passing it as a %s argument
+  # keeps the escaping identical in the single- and double-quoted formats below.
+  local PIN_CMD=() REBUILD_CMD=() e bs='\'
   # Whether sudo belongs on these lines is ONE decision, taken here and used
   # by both the display and the exec: under `pinned upgrade` the whole verb
   # already runs self-elevated, where sudo would be an admitted no-op, and a
@@ -6286,19 +6302,27 @@ EOF
   printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
   if [ "$updates" -gt 0 ]; then
     PIN_CMD=("${SED_I[@]}" "${sed_exprs[@]}" "$FLAKE")
-    for e in "${sed_exprs[@]}"; do
-      if [ "$e" = "-e" ]; then expr_disp="${expr_disp}-e "; else expr_disp="${expr_disp}'${e}' "; fi
-    done
+    # ONE FLAG-GROUP PER LINE, backslash-continued -- the same shape the
+    # `sudo --` handoff already uses. The expressions ARE the payload of this
+    # ceremony: they carry the revs that change the system, and they are the one
+    # part a reader must actually check. Emitted on a single line they ran past
+    # 200 columns and wrapped into a paragraph-shaped wall precisely there. The
+    # continuations mean the display is still literally the command that runs,
+    # which is the whole basis on which this block can be approved.
     if [ "${#SED_I[@]}" -eq 3 ]; then
-      printf "  %s%s -i '' %s%s%s%s\n" \
-        "$sudo_disp" "$(prog_disp "${SED_I[0]}")" "$expr_disp" "$C_CYN" "$FLAKE" "$C_OFF"
+      printf "  %s%s %s-i%s '' %s%s%s\n" \
+        "$sudo_disp" "$(prog_disp "${SED_I[0]}")" "$C_BLU" "$C_OFF" "$C_DIM" "$bs" "$C_OFF"
     else
-      printf '  %s%s -i %s%s%s%s\n' \
-        "$sudo_disp" "$(prog_disp "${SED_I[0]}")" "$expr_disp" "$C_CYN" "$FLAKE" "$C_OFF"
+      printf '  %s%s %s-i%s %s%s%s\n' \
+        "$sudo_disp" "$(prog_disp "${SED_I[0]}")" "$C_BLU" "$C_OFF" "$C_DIM" "$bs" "$C_OFF"
     fi
+    for e in "${sed_disp[@]}"; do
+      printf '    %s %s%s%s\n' "$e" "$C_DIM" "$bs" "$C_OFF"
+    done
+    printf '    %s%s%s\n' "$C_CYN" "$FLAKE" "$C_OFF"
   fi
-  printf '  %s%s switch --flake %s%s%s\n' \
-    "$sudo_disp" "$(prog_disp "$REBUILD")" "$C_CYN" "$(dirname "$FLAKE")" "$C_OFF"
+  printf '  %s%s switch %s--flake%s %s%s%s\n' \
+    "$sudo_disp" "$(prog_disp "$REBUILD")" "$C_BLU" "$C_OFF" "$C_CYN" "$(dirname "$FLAKE")" "$C_OFF"
   # The rebuild runs whether or not a rev moved, and the confirm below cannot
   # assume the table above was read -- so the reason rides on the command
   # itself. The flake being in sync says NOTHING about what the running
