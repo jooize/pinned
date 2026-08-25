@@ -2199,7 +2199,7 @@ if [ -f "$INSTALL_TARGET" ]; then
 fi
 
 # The program token of a displayed command line (the pre-sudo elevation
-# lines and deploy's "Will run as root:" block). The dirname is provenance
+# lines and deploy's "Will run:" block). The dirname is provenance
 # and stays plain cyan; the basename is the ACT and goes bold inside that
 # cyan (C_B does not cancel a color, so the two compose). A bare name
 # carries no provenance and is bold whole. Scoped to the program token:
@@ -6299,7 +6299,12 @@ EOF
   sudo_disp="${C_B}sudo${C_OFF} "
   if [ "$EUID" -eq 0 ]; then SUDO_ARGV=(); sudo_disp=""; fi
   REBUILD_CMD=("$REBUILD" switch --flake "$(dirname "$FLAKE")")
-  printf '%sWill run as root:%s\n' "$C_B" "$C_OFF"
+  # "Will run:", not "Will run as root:" -- this process execs the displayed
+  # line AS THE USER; authority begins at the bold `sudo` token inside it (and
+  # the sudo prompt states it again at the real boundary). In the root context
+  # sudo is dropped above and the bare label is simply true. Claiming root
+  # over a line that starts with sudo double-counts the elevation.
+  printf '%sWill run:%s\n' "$C_B" "$C_OFF"
   if [ "$updates" -gt 0 ]; then
     PIN_CMD=("${SED_I[@]}" "${sed_exprs[@]}" "$FLAKE")
     # ONE FLAG-GROUP PER LINE, backslash-continued -- the same shape the

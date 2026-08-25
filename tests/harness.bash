@@ -2128,7 +2128,7 @@ EOF
   assert_contains "$OUT" "To rebuild anyway:" "and the hint follows it"
   assert_contains "$OUT" "pinned deploy" "naming the verb that rebuilds"
   assert_missing "$OUT" "Then: deploy" "the old chained-plan line is gone"
-  assert_missing "$OUT" "Will run as root:" "no elevation is displayed"
+  assert_missing "$OUT" "Will run:" "no elevation is displayed"
   assert_missing "$OUT" "Enter continues" "and no gate is offered"
 
   # --yes and --dry-run buy nothing here: an empty round needs no root either
@@ -2153,7 +2153,7 @@ EOF
   assert_contains "$OUT" "Ctrl-C stops" "and names the way out"
   assert_contains "$OUT" "The preview above was orientation only." \
     "the orientation disclaimer stays"
-  assert_missing "$OUT" "Will run as root:" "upgrade displays no command line pre-sudo"
+  assert_missing "$OUT" "Will run:" "upgrade displays no command line pre-sudo"
   assert_missing "$OUT" "To rebuild anyway:" "and no no-op hint on the stale path"
 
   # Two of them: plural_s, and the count is the plan's own review rows.
@@ -2211,7 +2211,7 @@ EOF
 '
     run_preview deploy --flake "$FIX/flake-pv-quiet.nix"
     assert_exit "$RC" 2 "the root-context deploy still confirms"
-    assert_contains "$OUT" "Will run as root:" "the label stays in the root context"
+    assert_contains "$OUT" "Will run:" "the label stays in the root context"
     assert_contains "$OUT" "$REBUILD_TOOL switch --flake" "the rebuild command is unchanged"
     assert_missing "$OUT" "sudo $REBUILD_TOOL" "but sudo is dropped from the displayed line"
     TESTROOT=""
@@ -2260,7 +2260,7 @@ if [ "$GIT_OK" -eq 1 ]; then
 '
   run_preview review "$EV_STALE"
   assert_exit "$RC" 97 "an answered review gate reaches the elevation"
-  assert_missing "$OUT" "Will run as root:" "review prints no prose header"
+  assert_missing "$OUT" "Will run:" "review prints no prose header"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW review $EV_STALE" \
     "the exact argv stays on screen -- it is the only pre-auth disclosure"
   assert_contains "$OUT" "next: review 1 repo as root (sudo); Enter continues" \
@@ -2318,7 +2318,7 @@ if [ "$GIT_OK" -eq 1 ]; then
 '
   run_preview review --file "$SUB/real.txt"
   assert_exit "$RC" 97 "an answered --file gate reaches the elevation"
-  assert_missing "$OUT" "Will run as root:" "review --file prints no prose header"
+  assert_missing "$OUT" "Will run:" "review --file prints no prose header"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW review --file $SUB/real.txt" \
     "the file ceremony's argv stays on screen"
   assert_contains "$OUT" "next: review 1 file as root (sudo); Enter continues" \
@@ -2337,7 +2337,7 @@ if [ "$GIT_OK" -eq 1 ]; then
 '
   run_preview add "$EV_ADD" --flake "$EV_FLAKE"
   assert_exit "$RC" 97 "an answered add gate reaches the elevation"
-  assert_missing "$OUT" "Will run as root:" "add prints no prose header"
+  assert_missing "$OUT" "Will run:" "add prints no prose header"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW add $EV_ADD --flake $EV_FLAKE" \
     "add's argv stays on screen"
   assert_contains "$OUT" "next: approve ev-add + edit the flake as root (sudo); Enter continues" \
@@ -2358,7 +2358,7 @@ if [ "$GIT_OK" -eq 1 ]; then
 '
   run_preview signer add alice --file "$SUB/alice.pub"
   assert_exit "$RC" 97 "an answered signer gate reaches the elevation"
-  assert_missing "$OUT" "Will run as root:" "signer prints no prose header"
+  assert_missing "$OUT" "Will run:" "signer prints no prose header"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW signer add alice --file $SUB/alice.pub" \
     "signer's argv stays on screen"
   assert_contains "$OUT" "next: record the key as root (sudo); Enter continues" \
@@ -2379,7 +2379,7 @@ if [ "$GIT_OK" -eq 1 ]; then
 '
   run_preview ignorable add model
   assert_exit "$RC" 97 "an answered ignorable gate reaches the elevation"
-  assert_missing "$OUT" "Will run as root:" "ignorable prints no prose header"
+  assert_missing "$OUT" "Will run:" "ignorable prints no prose header"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW ignorable add model" "ignorable's argv stays on screen"
   assert_contains "$OUT" "next: record the grant as root (sudo); Enter continues" \
     "the gate names what root does with the grant"
@@ -2411,7 +2411,7 @@ if [ "$GIT_OK" -eq 1 ]; then
 '
   run_preview tombstone "$FIX/ts-gone"
   assert_exit "$RC" 97 "an answered tombstone gate reaches the elevation"
-  assert_missing "$OUT" "Will run as root:" "tombstone prints no prose header"
+  assert_missing "$OUT" "Will run:" "tombstone prints no prose header"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW tombstone $FIX/ts-gone" \
     "tombstone's argv stays on screen"
   assert_contains "$OUT" "next: tombstone the record as root (sudo); Enter continues" \
