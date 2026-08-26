@@ -26,6 +26,7 @@ run as root.
 .BR add ,
 .BR tombstone ,
 .BR mv ,
+.BR declare ,
 and
 .B setup
 self-elevate when invoked unprivileged: they re-exec the installed,
@@ -258,6 +259,77 @@ All tags must name the same commit; approve, pin.
 .B \-\-tag
 may add an unsigned name (a clean release name) that must name the
 same commit.
+.SS Declaring a release name
+.TP
+.B declare \fIrepo\fP (\fB\-\-tag\fP \fIname\fP | \fB\-\-remove\fP) [\fB\-\-yes\fP]
+(sudo) Name the release a pinned rev already is \(em or withdraw that
+name.
+The declaration is the slot's
+.B tag
+annotation: the release name
+.B deploy
+syncs the input's
+.B ref=
+to, after cross-checking that the live tag still names the approved
+rev.
+A review that moves the pin already writes it
+.RB ( \-\-tag ,
+.BR \-\-signed\-tag ),
+and a plain review clears it; this verb is how a slot that is already
+pinned gains a declaration \(em or gives one up \(em without waiting
+for the next release.
+.IP
+A declaration may only name a tag that already resolves to the slot's
+pinned rev \(em deploy's own cross-check, run at declaration time, so
+declare can never write a record deploy would refuse.
+It cannot change what is built: the rev is the trust decision and
+declare never touches it \(em
+.B ref=
+only tells nix where to fetch a rev it verifies anyway, so a wrong ref
+is a fetch failure, never a different build.
+It cannot invent provenance: "this rev is also known as \fIname\fP" is
+checked, not taken.
+And a name that moves later fails closed, because deploy re-runs the
+same check on every sync.
+A tag missing from the checkout, a tag naming another commit, a name
+outside the declared-name grammar, and an unpinned or tombstoned slot
+all refuse before anything is written.
+.IP
+Signatures are deliberately out of scope: unsigned annotated and
+lightweight tags work, because the tag carries no authority here
+beyond "this name currently points at the already-approved commit",
+which is checked directly.
+Repos that sign keep the stronger path they already have:
+.B review \-\-signed\-tag
+writes the declaration as a side effect, and
+.B upgrade
+offers it automatically.
+.B upgrade
+never promotes a rev-only slot on its own \(em tag names are repo
+content, and content must never choose the shape of a slot; once a
+slot is declared, the tagged and signed routes maintain the name at
+every release.
+.IP
+.B \-\-remove
+withdraws the declaration and the slot goes rev-only:
+.B deploy
+stops managing the input's
+.BR ref= ,
+which keeps whatever it says.
+Withdrawing from a rev-only slot refuses \(em there is no declaration
+to withdraw.
+.IP
+The pre-sudo gate reads
+.RB \(dq "next: declare the release name as root (sudo)" \(dq
+(for
+.BR \-\-remove :
+.RB \(dq "withdraw the declaration" \(dq);
+.B \-\-yes
+skips it and leaves the root-side confirmation untouched.
+.B status
+reports the declaration in all three of its states \(em declared and
+live, rev-only, or stale (the live tag no longer names the pin), the
+last being the early warning for a deploy that would refuse.
 .SS File approval
 .TP
 .B review \-\-file \fIpath\fP [\fB\-\-baseline\fP \fIcopy\fP] [\fB\-\-ignore\-json\-key\fP \fIkey\fP ...] [\fB\-\-file\fP \fIpath\fP ...] [\fB\-\-algo\fP \fIname\fP] [\fB\-\-store\fP] [\fB\-\-yes\fP]
@@ -465,9 +537,12 @@ with its scope.
 .SS Inspection
 .TP
 .B status \fIrepo\fP|\fIfile\fP
-Repo: pinned hash vs HEAD, dirty-tree warning, and an early warning
-when the checkout no longer holds the pinned rev (rewritten history or
-gc \(em a deploy that needs to re-fetch it would fail).
+Repo: pinned hash vs HEAD, the declared release name in its three
+states (declared and live, rev-only, or stale \(em the live tag no
+longer names the pin, so deploy will refuse), dirty-tree warning, and
+an early warning when the checkout no longer holds the pinned rev
+(rewritten history or gc \(em a deploy that needs to re-fetch it would
+fail).
 File: record vs live state.
 .TP
 .B show \fIfile\fP|\fIrepo\fP [\-\-algo \fIname\fP] [\-\-length \fIbits\fP]
@@ -510,8 +585,9 @@ belong to the file form and are refused here.
 .TP
 .B list [\-\-under \fIdir\fP]
 Live pins in your tier: decoded path, declared kind and full digest,
-the ignored\-key declaration if the slot has one, and custody state
-\(em a stored approved copy, or the note that there is none.
+the declared release name if a repo slot carries one, the ignored\-key
+declaration if a file slot has one, and custody state \(em a stored
+approved copy, or the note that there is none.
 .B \-\-under
 restricts to paths below that directory.
 .IP
@@ -541,8 +617,8 @@ checkout between releases reports the release it descends from.
 .TP
 .B add \fIrepo\fP|\fIurl\fP [\fB\-\-input\fP \fIname\fP] [\fB\-\-signed\-tag\fP \fItag\fP] [\fB\-\-flake\fP \fIpath\fP] [\fB\-\-yes\fP]
 (sudo) Take a repository from "it exists somewhere" to "pinned, and
-declared as an input of the system flake", in three idempotent parts:
-a checkout, a pin, a declaration.
+wired in as an input of the system flake", in three idempotent parts:
+a checkout, a pin, a wired input.
 Each part is skipped with a note when it is already satisfied, so a
 rerun after an interruption picks up exactly where it stopped, and all
 three satisfied is a no-op that exits 0.
@@ -603,9 +679,9 @@ every named tag must verify and name the same commit), so a repository
 whose release is signed by an installed signer key can be added without
 reading the tree.
 A repository that already carries a pin keeps it: the ceremony is
-skipped, and the input is declared at the rev already approved.
+skipped, and the input is wired at the rev already approved.
 .PP
-.B 3. The declaration.
+.B 3. The wiring.
 The system flake gains one input block, shown in full and confirmed
 before a byte of the file is touched:
 .PP
@@ -648,12 +724,12 @@ uses.
 An add interrupted between the two leaves an input that can never be
 fetched, so the next rebuild fails loudly \(em an interruption cannot
 leave a floating ref that quietly builds unapproved content.
-A rerun says the declared input does not name the approved rev yet and
+A rerun says the wired input does not name the approved rev yet and
 points at
 .BR deploy ,
 whose one job is syncing revs; add never does that job behind its back.
 .PP
-Consuming the input stays a human edit: add declares it and never writes
+Consuming the input stays a human edit: add wires it in and never writes
 into the repositories it gates, because a tool that edited them would be
 approving its own changes.
 Wire the input up (a module import, an overlay, whatever it feeds), then
@@ -813,6 +889,18 @@ readable to that user through the
 .I _<user>\-pinned
 group.
 .TP
+.I /var/db/pinned/<user>/slots/<enc>/tag
+The slot's declared release name.
+Written by a review that carries one and by
+.BR declare ,
+cleared by a plain review and by
+.BR "declare \-\-remove" ;
+.B deploy
+syncs the input's
+.B ref=
+to it after cross-checking that the live tag still names the pinned
+rev.
+.TP
 .I /var/db/pinned\-clones
 Shared clone tree, one directory per input added by url.
 Created root-owned at the first
@@ -859,11 +947,19 @@ The same, selectively:
     pinned deploy
 .fi
 .PP
-Take a new repository all the way to a declared flake input \(em clone,
-review, declare:
+Take a new repository all the way to a wired flake input \(em clone,
+review, wire:
 .PP
 .nf
     pinned add https://example.org/o/thing.git
+.fi
+.PP
+Name the release an already-pinned rev is, so deploy manages the
+input's ref= from now on:
+.PP
+.nf
+    pinned declare ~/Projects/some\-repo \-\-tag v0.12.0
+    pinned deploy
 .fi
 .PP
 Pin a config file, keeping a served witness and tolerating one key:

@@ -89,6 +89,15 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       recorded digest, or drift confined
                                       to the keys the slot already
                                       ignores), and <old> is tombstoned
+    pinned declare <repo> --tag <name> | --remove
+                                      name the release a pinned rev
+                                      already is: the tag must already
+                                      resolve to the pinned rev (checked,
+                                      not taken -- the rev never moves),
+                                      and deploy then syncs the input's
+                                      ref= to it; --remove withdraws the
+                                      declaration and the slot goes
+                                      rev-only
     pinned sign <repo> <tag>          signed release tag at the pinned hash
     pinned signer add|list|remove [--repo <path>] (--file <pubkey> | --key '<line>')
                                       allowed-signers ceremony:
@@ -176,9 +185,9 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
 
     pinned --version                  print the release version
 
-review, add, setup, tombstone, mv, upgrade, signer add/remove and
-ignorable add/remove self-elevate via sudo (re-exec of the installed
-root-owned binary).
+review, add, setup, tombstone, mv, declare, upgrade, signer add/remove
+and ignorable add/remove self-elevate via sudo (re-exec of the
+installed root-owned binary).
 sign, show and cat
 run as you: sign needs your SSH agent, show and cat write nothing. The
 verb triple: `show` rehearses (no record), `review` records, `verify`
@@ -463,7 +472,9 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   slot that declares a release tag also gets its `ref=` synced to
   `refs/tags/<tag>` -- after cross-checking that the live tag still
   names the approved rev; a moved or deleted tag is a clean fail-closed
-  refusal, never a nix fetch error. Inputs without a pin slot are
+  refusal, never a nix fetch error. `pinned declare` is how an
+  already-pinned slot gains (or gives up) that name -- a review that
+  moves the pin writes it too, and a plain review clears it. Inputs without a pin slot are
   surfaced loudly (they deploy as hand-edited); non-local inputs are
   not pinned's to speak for. One binary for gate and consumer is
   deliberate: one file to hand-read at bootstrap, and the sudoers
@@ -471,8 +482,8 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   deploy composes the exact commands that run as root, so a
   user-writable copy is a user-writable root command line.
 - **`add` composes; it decides nothing.** One verb carries a repo from
-  "it exists somewhere" to "pinned and declared as a flake input", in
-  three idempotent parts -- checkout, pin, declaration -- each skipped
+  "it exists somewhere" to "pinned and wired in as a flake input", in
+  three idempotent parts -- checkout, pin, wired input -- each skipped
   with a note when it is already satisfied, so an interrupted run is
   resumed by rerunning it. The pin is `review`'s own ceremony, called
   as-is (`--signed-tag` rides through to it): a second review path
@@ -508,7 +519,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   the invoker and says so -- content addressing gates trust either way,
   so availability wins here, unlike the record tree, where an absent
   group fails closed to root-only.
-- **`add` never edits a consuming repo.** It declares the input and
+- **`add` never edits a consuming repo.** It wires the input in and
   stops. Wiring that input into a configuration -- a module import, an
   overlay, an anchor template's mirror -- stays a human edit, because a
   tool that wrote into the repositories it gates would be approving its
