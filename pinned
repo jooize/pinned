@@ -30,13 +30,20 @@
 #                                             content at <new> must answer to
 #                                             the record, and <old> is
 #                                             tombstoned)
+#   pinned declare <repo> --tag <name>        name the release a pinned rev
+#                                             ALREADY is: the tag must already
+#                                             resolve to the pinned rev, and
+#                                             deploy then syncs the input's
+#                                             ref= to it (--remove withdraws
+#                                             the declaration; the slot goes
+#                                             rev-only)
 #   pinned sign <repo> <tag>                  signed release tag at the pinned hash
 #   pinned signer add|list|remove             allowed-signers ceremony
 #   pinned ignorable add|remove|list          which keys a ceremony may declare
 #                                             ignored, and where (the policy)
 #   pinned status <repo|file>                 record vs live state
 #   pinned add <repo|url>                     checkout (clone if a url) ->
-#                                             review -> declare the repo as
+#                                             review -> wire the repo in as
 #                                             a git+file input of the system
 #                                             flake (--input <name>,
 #                                             --signed-tag <t> for the
@@ -45,9 +52,9 @@
 #   pinned deploy [--dry-run]                 sync flake inputs to approved revs, rebuild
 #   pinned setup [--yes]                      provision sudoers digest pin; self-install
 #
-# review, add, setup, tombstone, mv, signer add/remove and ignorable
-# add/remove self-elevate via sudo (re-exec of the installed root-owned
-# binary); sign runs as the user because it needs the SSH agent.
+# review, add, setup, tombstone, mv, declare, signer add/remove and
+# ignorable add/remove self-elevate via sudo (re-exec of the installed
+# root-owned binary); sign runs as the user because it needs the SSH agent.
 #
 # review runs root-owned code end to end: it resolves the rev to a hash, shows
 # the diff from the OBJECT STORE (scrubbed env, no user git config, no pager,
@@ -282,6 +289,8 @@ usage: pinned <action> [args]
   review --file <path> ...       (sudo) file-pin ceremony: freeze, review, record hash
   tombstone <path>               (sudo) retire a pinned file that is gone
   mv <old> <new>                 (sudo) re-key a record to a moved path
+  declare <repo> --tag <t>|--remove
+                                 (sudo) declare the release name deploy syncs ref= to
   verify [options] <path>        file-pin verdict; quiet exit-code contract for gates
   cat <path>                     the approved bytes, from root custody; fail-closed
   sign <repo> <tag>              create a signed tag at the pinned hash
@@ -291,7 +300,7 @@ usage: pinned <action> [args]
   show <file|repo> [options]     trusted re-display; files get hash + wrapper
   list [--under <dir>]           live pins in your tier
   slot <path>                    print the slot directory for a path
-  add <repo|url> [options]       (sudo) clone if needed, review, declare as a flake input
+  add <repo|url> [options]       (sudo) clone if needed, review, wire as a flake input
   deploy [--dry-run] [--yes]     sync system flake inputs to approved revs, rebuild
   upgrade [--dry-run] [--yes]    (sudo) review every stale flake input, then deploy
   setup [--yes]                  (sudo) provision sudoers digest pin; self-install
@@ -2727,7 +2736,7 @@ EOF
 # back to this script's own path. Sits after the helper definitions so the
 # review preview below can reuse them.
 case "$action" in
-  review|add|setup|tombstone|upgrade|mv)
+  review|add|setup|tombstone|upgrade|mv|declare)
     if [ "$EUID" -ne 0 ]; then
       # tombstone without exactly its <path> can only ever reach usage --
       # fail here, before authentication costs a sudo prompt. (--yes answers
@@ -2778,6 +2787,36 @@ case "$action" in
             "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
         fi
         echo
+      fi
+      # declare: an argv that can only ever reach a root-side argument error
+      # fails here, before authentication costs a sudo prompt (the
+      # tombstone/mv precedent): the repo present and a directory, exactly
+      # one of --tag <name> / --remove, and the name inside the
+      # declared-name grammar. The root side re-checks every one of these
+      # and stays the authority.
+      if [ "$action" = "declare" ]; then
+        dc_repo="" dc_tag="" dc_remove=0 dc_want=0
+        for a in "$@"; do
+          if [ "$dc_want" -eq 1 ]; then dc_tag="$a"; dc_want=0; continue; fi
+          case "$a" in
+            --tag) dc_want=1 ;;
+            --remove) dc_remove=1 ;;
+            --yes) ;;
+            -*) usage ;;
+            *)
+              [ -z "$dc_repo" ] || usage
+              dc_repo="$a" ;;
+          esac
+        done
+        [ "$dc_want" -eq 0 ] || { echo "--tag needs a name" >&2; exit 1; }
+        [ -n "$dc_repo" ] || usage
+        [ -d "$dc_repo" ] || { echo "not a directory: $dc_repo" >&2; exit 1; }
+        if [ -n "$dc_tag" ] && [ "$dc_remove" -eq 1 ]; then usage; fi
+        if [ -z "$dc_tag" ] && [ "$dc_remove" -eq 0 ]; then usage; fi
+        if [ -n "$dc_tag" ] && ! validate_tag_name "$dc_tag"; then
+          echo "ERROR: tag name '$dc_tag' is outside the declared-name grammar [A-Za-z0-9._/+-]" >&2
+          exit 1
+        fi
       fi
       # upgrade: the plan, free of charge -- every input of the flake, with
       # the ones the root-side ceremonies will cover highlighted among them.
@@ -3186,20 +3225,25 @@ case "$action" in
             fi ;;
         esac
       fi
-      # tombstone and mv: the same handoff shape as signer/ignorable. Their
-      # root sides show the record and take the y/N, so the contract line
-      # says that; the command and the gate follow, because a record verb is
-      # still a trust mutation and its argv is still the pre-auth disclosure
-      # (mv's preview above is orientation, like review's).
-      if { [ "$action" = "tombstone" ] || [ "$action" = "mv" ]; } \
+      # tombstone, mv and declare: the same handoff shape as
+      # signer/ignorable. Their root sides show the record and take the
+      # y/N, so the contract line says that; the command and the gate
+      # follow, because a record verb is still a trust mutation and its
+      # argv is still the pre-auth disclosure (mv's preview above is
+      # orientation, like review's).
+      if { [ "$action" = "tombstone" ] || [ "$action" = "mv" ] || [ "$action" = "declare" ]; } \
         && [ "$elev" = "$INSTALL_TARGET" ]; then
         printf '%ssudo asks you to authenticate; the root-side ceremony shows the record\nand confirms -- nothing is written until you answer y after it.%s\n\n' \
           "$C_YEL$C_B" "$C_OFF"
         printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
         if [ "$action" = "tombstone" ]; then
           elevation_gate "tombstone the record" "$@"
-        else
+        elif [ "$action" = "mv" ]; then
           elevation_gate "move the record" "$@"
+        elif [ "$dc_remove" -eq 1 ]; then
+          elevation_gate "withdraw the declaration" "$@"
+        else
+          elevation_gate "declare the release name" "$@"
         fi
       fi
       exec sudo -- "$elev" "$action" "$@"
@@ -4683,6 +4727,165 @@ do_mv() {
   log_action mv "$old" "$new"
 }
 
+# ---- declare ---------------------------------------------------------------
+
+# Name the release a pinned rev ALREADY is. The declaration is the slot's
+# `tag` annotation: the release name deploy syncs the input's ref= to,
+# after cross-checking that the live tag still names the approved rev. A
+# review that MOVES the pin already writes it (--tag, --signed-tag), and a
+# plain review clears it; this verb is how a slot that is already pinned
+# gains a declaration -- or gives one up -- without waiting for the next
+# release.
+#
+# THE INVARIANT: a declaration may only name a tag that already resolves to
+# the slot's pinned rev -- deploy's own cross-check, run at declaration
+# time, so declare can never write a record deploy would refuse. Everything
+# that makes this ceremony lighter than an approval follows from it. It
+# cannot change what is built: the rev is the trust decision and declare
+# never touches it -- ref= only tells nix where to fetch a rev it verifies
+# anyway, so a wrong ref is a fetch failure, never a different build. It
+# cannot invent provenance: "this rev is also known as <name>" is checked,
+# not taken. And a name that moves later fails closed, because deploy
+# re-runs the same check on every sync.
+#
+# Signatures are deliberately OUT OF SCOPE: declare never verifies one and
+# never requires one, so unsigned annotated and lightweight tags work. The
+# tag carries no authority here beyond "this name currently points at the
+# already-approved commit", which is checked directly. Repos that sign keep
+# the stronger path they already have: review --signed-tag writes the
+# declaration as a side effect, and upgrade offers it automatically.
+do_declare() {
+  require_root declare
+  # --yes answered the elevation gate and rides through in the displayed
+  # argv; the ceremony's own y/N below is untouched by it.
+  local a repo_arg="" name="" remove=0 want=0
+  for a in "$@"; do
+    if [ "$want" -eq 1 ]; then name="$a"; want=0; continue; fi
+    case "$a" in
+      --tag) want=1 ;;
+      --remove) remove=1 ;;
+      --yes) ;;
+      -*) usage ;;
+      *)
+        [ -z "$repo_arg" ] || usage
+        repo_arg="$a" ;;
+    esac
+  done
+  [ "$want" -eq 0 ] || { echo "--tag needs a name" >&2; exit 1; }
+  [ -n "$repo_arg" ] || usage
+  # Exactly one of the two: a name to declare, or the withdrawal.
+  if [ -n "$name" ] && [ "$remove" -eq 1 ]; then usage; fi
+  if [ -z "$name" ] && [ "$remove" -eq 0 ]; then usage; fi
+  # The declared-name grammar, before the name can reach a sed expression
+  # or a flake URL -- enforced on write here and on read in deploy.
+  if [ -n "$name" ] && ! validate_tag_name "$name"; then
+    echo "ERROR: tag name '$name' is outside the declared-name grammar [A-Za-z0-9._/+-]" >&2
+    exit 1
+  fi
+
+  resolve_repo "$repo_arg"
+  local slot="$default_slot"
+  # Same shape as review: walk from the annotation when the slot exists,
+  # from the slot itself when there is nothing there yet.
+  if [ -d "$slot" ]; then
+    verify_ancestry "$slot/tag" || exit 1
+  else
+    verify_ancestry "$slot" || exit 1
+  fi
+
+  local rev
+  rev="$(read_rev "$slot")" || exit 1
+  [ -n "$rev" ] || {
+    echo "nothing is pinned here; pinned review $repo first" >&2
+    exit 1
+  }
+
+  local old_tag=""
+  if [ -f "$slot/tag" ]; then
+    verify_record_file "$slot/tag" || exit 1
+    IFS= read -r old_tag <"$slot/tag" || old_tag=""
+  fi
+
+  local t_hash="" answer
+  if [ "$remove" -eq 1 ]; then
+    [ -n "$old_tag" ] || { echo "no declaration to withdraw" >&2; exit 1; }
+  else
+    # THE INVARIANT, via sgit (scrubbed env, no user git config, no
+    # hooks): the name must already resolve to the pinned rev.
+    t_hash="$(sgit rev-parse -q --verify "refs/tags/${name}"'^{commit}' 2>/dev/null || true)"
+    if [ -z "$t_hash" ]; then
+      printf '%sREFUSE: tag %s is missing from this checkout%s\n' \
+        "$C_RED$C_B" "$name" "$C_OFF" >&2
+      exit 1
+    fi
+    if [ "$t_hash" != "$rev" ]; then
+      printf '%sREFUSE: tag %s names %.10s, not the pinned %.10s%s\n' \
+        "$C_RED$C_B" "$name" "$t_hash" "$rev" "$C_OFF" >&2
+      exit 1
+    fi
+    if [ "$old_tag" = "$name" ]; then
+      printf '%salready declared:%s %s\n' "$C_GRN" "$C_OFF" "$name"
+      exit 0
+    fi
+  fi
+
+  printf '%srepo:%s       %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_B$C_MAG" "${repo##*/}" "$C_OFF" \
+    "$C_DIM" "$repo" "$C_OFF"
+  printf '%sslot:%s       %s\n' "$C_B" "$C_OFF" "$slot"
+  printf '%spinned:%s     %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$rev" "$C_OFF" \
+    "$C_DIM" "$(sgit log -1 --format=%s "$rev" 2>/dev/null || echo 'commit not in repo!')" "$C_OFF"
+  if [ "$remove" -eq 1 ]; then
+    printf '%sdeclared:%s   %s%s%s -> (none)\n' "$C_B" "$C_OFF" "$C_DIM" "$old_tag" "$C_OFF"
+    printf "%sdeploy:%s     %sthe input's ref= stops being managed; it keeps whatever it says now%s\n" \
+      "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
+    echo
+    printf '%swithdraw this declaration? [y/N]%s ' "$C_B" "$C_OFF"
+  else
+    printf '%stag:%s        %s -> %s%.10s%s  %s✓ names the pinned rev%s\n' \
+      "$C_B" "$C_OFF" "$name" "$C_CYN" "$t_hash" "$C_OFF" "$C_GRN" "$C_OFF"
+    printf '%sdeclared:%s   %s%s%s -> %s%s%s\n' "$C_B" "$C_OFF" \
+      "$C_DIM" "${old_tag:-(none)}" "$C_OFF" "$C_CYN$C_B" "$name" "$C_OFF"
+    # The deploy: row is the point of the whole ceremony -- the effect on
+    # the root anchor, which is the only thing the declaration changes. It
+    # prints the ref string and NOTHING about any flake's current contents,
+    # deliberately: deploy picks its own file (--flake), so a row rendered
+    # off the default flake would be a confident claim about a file that
+    # may not be the one edited. declare states what it causes; deploy
+    # states what it found.
+    printf '%sdeploy:%s     %sref=refs/tags/%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$name" "$C_OFF"
+    echo
+    printf "            %sdeploy syncs this input's ref= to that name, and refuses if the%s\n" \
+      "$C_DIM" "$C_OFF"
+    printf '            %slive tag ever stops naming the pinned rev%s\n' "$C_DIM" "$C_OFF"
+    echo
+    printf '%sdeclare this release name? [y/N]%s ' "$C_B" "$C_OFF"
+  fi
+  read -r answer </dev/tty
+  case "$answer" in
+    y|Y|yes) ;;
+    *)
+      printf '%saborted; record unchanged%s\n' "$C_YEL" "$C_OFF"
+      log_action declare "$repo" "${name:-$old_tag}" abort
+      exit 2 ;;
+  esac
+
+  # ensure_tree before the write: write_note consumes TREE_GRP/TREE_FMODE,
+  # which only ensure_tree sets.
+  ensure_tree "$inv"
+  if [ "$remove" -eq 1 ]; then
+    rm -f "$slot/tag"
+    printf '%s✓ withdrawn:%s %s %s(the slot is rev-only)%s\n' \
+      "$C_GRN$C_B" "$C_OFF" "$old_tag" "$C_DIM" "$C_OFF"
+    log_action declare "$repo" "$old_tag"
+  else
+    write_note "$slot" tag "$name"
+    printf '%s✓ declared:%s %s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$name" "$slot/tag"
+    printf '  %spinned deploy%s   %s(syncs ref= to refs/tags/%s, rebuilds)%s\n' \
+      "$C_CYN" "$C_OFF" "$C_DIM" "$name" "$C_OFF"
+    log_action declare "$repo" "$name"
+  fi
+}
+
 # ---- verify ----------------------------------------------------------------
 
 # The consumer verdict for file pins -- replaces every consumer's
@@ -5037,6 +5240,32 @@ do_status() {
   else
     printf '%spinned:%s     %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
       "$C_DIM" "$(sgit log -1 --format=%s "$hash" 2>/dev/null || echo 'commit not in repo!')" "$C_OFF"
+    # The declared release name, in its three states: declared and live
+    # (deploy syncs ref= to it), rev-only, or stale -- the third is the
+    # early warning for a state that otherwise surfaces as a failed
+    # deploy. Without this row the declaration is invisible to every
+    # reader, which is how a slot silently stays rev-only.
+    local decl_tag="" decl_live
+    if [ -f "$slot/tag" ]; then IFS= read -r decl_tag <"$slot/tag" || decl_tag=""; fi
+    if [ -z "$decl_tag" ]; then
+      printf '%sdeclared:%s   (none)  %s(rev-only; deploy leaves ref= alone)%s\n' \
+        "$C_DIM" "$C_OFF" "$C_DIM" "$C_OFF"
+    elif ! validate_tag_name "$decl_tag"; then
+      printf '%sdeclared:%s   %s✗ outside the declared-name grammar -- deploy will refuse%s\n' \
+        "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF"
+    else
+      decl_live="$(sgit rev-parse -q --verify "refs/tags/${decl_tag}"'^{commit}' 2>/dev/null || true)"
+      if [ "$decl_live" = "$hash" ]; then
+        printf '%sdeclared:%s   %s%s%s  %s(deploy syncs ref= to refs/tags/%s)%s\n' \
+          "$C_DIM" "$C_OFF" "$C_CYN" "$decl_tag" "$C_OFF" "$C_DIM" "$decl_tag" "$C_OFF"
+      elif [ -z "$decl_live" ]; then
+        printf '%sdeclared:%s   %s  %s✗ the live tag is missing from this checkout -- deploy will refuse%s\n' \
+          "$C_DIM" "$C_OFF" "$decl_tag" "$C_RED$C_B" "$C_OFF"
+      else
+        printf '%sdeclared:%s   %s  %s✗ the live tag names %.10s, not the pin -- deploy will refuse%s\n' \
+          "$C_DIM" "$C_OFF" "$decl_tag" "$C_RED$C_B" "$decl_live" "$C_OFF"
+      fi
+    fi
   fi
   printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$head_hash" "$C_OFF" \
     "$C_DIM" "$(sgit log -1 --format=%s "$head_hash")" "$C_OFF"
@@ -5285,6 +5514,17 @@ do_list() {
       rev)
         if digest="$(read_rev "$d" 2>/dev/null)" && [ -n "$digest" ]; then
           list_field "$slot_kind" "$C_CYN" "$digest" ""
+          # The declared release name, beside the declared kind -- absent
+          # for a rev-only slot, exactly like the ignored declaration on
+          # file entries.
+          if [ -f "$d/tag" ]; then
+            IFS= read -r line <"$d/tag" || line=""
+            if [ -n "$line" ] && validate_tag_name "$line"; then
+              list_field declared "$C_CYN" "$line" "deploy syncs ref= to refs/tags/$line"
+            else
+              list_field declared "$C_YEL" "unusable declaration" ""
+            fi
+          fi
         else
           list_field state "$C_RED$C_B" CORRUPT "no readable revision"
         fi ;;
@@ -6552,9 +6792,9 @@ add_clone() { # <url> <name>
   printf '%s✓ cloned:%s   %s\n' "$C_GRN" "$C_OFF" "$CLONE_DIR"
 }
 
-# One verb from "this repo exists somewhere" to "pinned, and declared as an
+# One verb from "this repo exists somewhere" to "pinned, and wired in as an
 # input of the system flake", in three idempotent parts -- a checkout, a
-# pin, a declaration -- each skipped with a note when it is already
+# pin, a wired input -- each skipped with a note when it is already
 # satisfied, and all three satisfied meaning there is nothing to do.
 #
 # NOTHING HERE IS A SECOND REVIEW PATH: the pin comes from do_approve, the
@@ -6660,10 +6900,10 @@ do_add() {
     do_approve "$repo" ${tag_args[@]+"${tag_args[@]}"}
     pin="$(read_rev "$slot")" || exit 1
     # Defensive: the ceremony exits 2 on a decline, so reaching this with no
-    # record would mean a shape neither verb knows about. Never declare an
+    # record would mean a shape neither verb knows about. Never wire in an
     # input for a repo nothing vouched for.
     [ -n "$pin" ] || {
-      echo "ERROR: the ceremony recorded no pin; refusing to declare an input" >&2
+      echo "ERROR: the ceremony recorded no pin; refusing to wire an input" >&2
       exit 1
     }
     echo
@@ -6681,14 +6921,14 @@ do_add() {
       *"rev=${pin}"*)
         printf '%snothing to do -- checkout, pin and input are all in place%s\n' "$C_DIM" "$C_OFF" ;;
       *)
-        printf '%snote: the declared input does not name the approved rev yet%s\n' "$C_YEL" "$C_OFF"
+        printf '%snote: the wired input does not name the approved rev yet%s\n' "$C_YEL" "$C_OFF"
         printf '  %spinned deploy%s   %s(syncs every input to its pin, rebuilds)%s\n' \
           "$C_CYN" "$C_OFF" "$C_DIM" "$C_OFF" ;;
     esac
     return 0
   fi
 
-  # ---- part 3: the declaration ---------------------------------------------
+  # ---- part 3: the wiring --------------------------------------------------
   # The ref an input needs. A slot that declares a release name pins to that
   # name (the same declaration deploy syncs ref= to); otherwise the
   # checkout's own branch. A detached HEAD with no declared name leaves
@@ -6819,7 +7059,7 @@ do_add() {
   log_action add "$repo" "$pin"
 
   echo
-  printf '%sConsuming it stays yours:%s pinned declares the input and never edits the\n' "$C_B" "$C_OFF"
+  printf '%sConsuming it stays yours:%s pinned wires the input in and never edits the\n' "$C_B" "$C_OFF"
   printf 'repositories it gates, so the module import (or overlay, or whatever this\n'
   printf 'input feeds) is a hand edit. Once it is wired:\n'
   printf '  %spinned deploy%s   %s(sync every input to its pin, rebuild)%s\n' \
@@ -6831,6 +7071,7 @@ case "$action" in
   add)       do_add "$@" ;;
   tombstone) do_tombstone "$@" ;;
   mv)        do_mv "$@" ;;
+  declare)   do_declare "$@" ;;
   verify)    do_verify "$@" ;;
   cat)       do_cat "$@" ;;
   sign)      do_sign "$@" ;;

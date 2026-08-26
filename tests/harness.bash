@@ -196,7 +196,7 @@ need '-o root -g "\$TREE_GRP" '                             4 'slot-tree install
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
-need '</dev/tty'                                            19 'ceremony tty reads'
+need '</dev/tty'                                            20 'ceremony tty reads'
 need '^# ---- setup ---'                                    1 'library cut marker'
 need '^#!/bin/bash$'                                        1 'pinned shebang'
 # The preview stub's own anchors (see its construction below).
@@ -2514,6 +2514,202 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+say "S8j: declare (name the release a pinned rev already is)"
+# ---------------------------------------------------------------------------
+# The record-mutation verb for the slot's `tag` annotation. The invariant:
+# a declaration may only name a tag that ALREADY resolves to the pinned rev
+# -- deploy's own cross-check, run at declaration time -- so declare can
+# never write a record deploy would refuse, and it never touches the rev,
+# so nothing about what is BUILT can change here. --remove withdraws the
+# declaration and the slot goes rev-only.
+if [ "$GIT_OK" -eq 1 ]; then
+  REPO_DC="$FIX/decl-repo"
+  mkdir -p "$REPO_DC"
+  bgit "$REPO_DC" init -q
+  printf 'd1\n' > "$REPO_DC/f"; bgit "$REPO_DC" add f; bgit "$REPO_DC" commit -q -m d1
+  DC_C1="$(bgit "$REPO_DC" rev-parse 'HEAD^{commit}')"
+  printf 'd2\n' > "$REPO_DC/f"; bgit "$REPO_DC" commit -q -am d2
+  DC_C2="$(bgit "$REPO_DC" rev-parse 'HEAD^{commit}')"
+  DC_SLOT="$(slot_of "$REPO_DC")"
+  bgit "$REPO_DC" tag v1 "$DC_C2"
+
+  # Unpinned: nothing for a name to be about.
+  ANS=""
+  run_pinned declare "$REPO_DC" --tag v1
+  assert_exit "$RC" 1 "an unpinned repo refuses"
+  assert_contains "$OUT" "nothing is pinned here" "the refusal points at review"
+  assert_absent "$DC_SLOT/tag" "and no declaration was written"
+
+  seed_state "$REPO_DC" rev.git "$DC_C2"
+
+  # A tag naming another commit: the invariant refuses, naming the commit
+  # the tag actually points at.
+  bgit "$REPO_DC" tag v0 "$DC_C1"
+  ANS=""
+  run_pinned declare "$REPO_DC" --tag v0
+  assert_exit "$RC" 1 "a tag naming another commit refuses"
+  assert_contains "$OUT" "names ${DC_C1:0:10}, not the pinned ${DC_C2:0:10}" \
+    "the refusal names the commit the tag actually points at"
+  assert_absent "$DC_SLOT/tag" "the slot stays rev-only"
+
+  ANS=""
+  run_pinned declare "$REPO_DC" --tag v99
+  assert_exit "$RC" 1 "a tag missing from the checkout refuses"
+  assert_contains "$OUT" "is missing from this checkout" "and says so"
+  assert_absent "$DC_SLOT/tag" "without writing anything"
+
+  # Out-of-grammar names refuse root-side, slot untouched...
+  for badname in 'v1;rm -rf /' 'a..b' 'x.lock' -x; do
+    ANS=""
+    run_pinned declare "$REPO_DC" --tag "$badname"
+    assert_exit "$RC" 1 "out-of-grammar name '$badname' refuses"
+    assert_absent "$DC_SLOT/tag" "and leaves the slot untouched"
+  done
+  # ...and pre-sudo, before authentication costs a prompt: the preview stub
+  # keeps the elevation live, so a bad argv must die at 1 and never reach
+  # the sudo marker (97).
+  ANS=""
+  run_preview declare "$REPO_DC" --tag 'a..b'
+  assert_exit "$RC" 1 "an out-of-grammar name dies pre-sudo"
+  ANS=""
+  run_preview declare "$FIX/no-such-dir" --tag v1
+  assert_exit "$RC" 1 "a repo that is not a directory dies pre-sudo"
+
+  # Both flags, and neither: usage.
+  ANS=""
+  run_pinned declare "$REPO_DC" --tag v1 --remove
+  assert_exit "$RC" 1 "--tag with --remove is usage"
+  assert_contains "$OUT" "usage: pinned" "and says so"
+  ANS=""
+  run_pinned declare "$REPO_DC"
+  assert_exit "$RC" 1 "neither --tag nor --remove is usage"
+
+  # A decline leaves the record unchanged.
+  ANS='n
+'
+  run_pinned declare "$REPO_DC" --tag v1
+  assert_exit "$RC" 2 "declining exits 2"
+  assert_contains "$OUT" "aborted; record unchanged" "the decline says so"
+  assert_absent "$DC_SLOT/tag" "and no declaration was written"
+
+  # The verb's whole point: a rev-only slot gains its declaration.
+  ANS='y
+'
+  run_pinned declare "$REPO_DC" --tag v1
+  assert_exit "$RC" 0 "declaring a valid name on a rev-only slot succeeds"
+  assert_contains "$OUT" "names the pinned rev" "the display shows the invariant holding"
+  assert_contains "$OUT" "(none) -> v1" "the declared row shows the transition"
+  assert_contains "$OUT" "ref=refs/tags/v1" "the deploy row states the effect on the anchor"
+  assert_contains "$OUT" "pinned deploy" "the follow-up points at deploy"
+  assert_file "$DC_SLOT/tag" "the declaration was written"
+  assert_eq "$(cat "$DC_SLOT/tag")" "v1" "and holds exactly the name"
+  assert_eq "$(cat "$DC_SLOT/rev.git")" "$DC_C2" "the pin itself is untouched"
+
+  # Re-declaring the same name is a no-op; no answer is consumed.
+  ANS=""
+  run_pinned declare "$REPO_DC" --tag v1
+  assert_exit "$RC" 0 "re-declaring the same name needs no answer"
+  assert_contains "$OUT" "already declared" "and short-circuits"
+
+  # status renders the declared state, and list adds the name to the block.
+  ANS=""
+  run_pinned status "$REPO_DC"
+  assert_exit "$RC" 0 "status exits 0 on a declared slot"
+  assert_contains "$OUT" "declared:   v1" "status shows the declared name"
+  assert_contains "$OUT" "deploy syncs ref= to refs/tags/v1" "and its effect"
+  ANS=""
+  run_pinned list --under "$REPO_DC"
+  assert_exit "$RC" 0 "list exits 0 over the declared slot"
+  assert_contains "$OUT" "declared: v1" "list adds the declared name to the repo block"
+
+  # The stale state: the live tag stops naming the pin -- the early warning
+  # for a deploy that would refuse.
+  bgit "$REPO_DC" tag -f v1 "$DC_C1" >/dev/null
+  ANS=""
+  run_pinned status "$REPO_DC"
+  assert_exit "$RC" 0 "status still answers on a stale declaration"
+  assert_contains "$OUT" "the live tag names ${DC_C1:0:10}, not the pin -- deploy will refuse" \
+    "the stale declaration is the loud third state"
+  bgit "$REPO_DC" tag -f v1 "$DC_C2" >/dev/null
+
+  # Withdrawal, and the rev-only state it leaves.
+  ANS='y
+'
+  run_pinned declare "$REPO_DC" --remove
+  assert_exit "$RC" 0 "--remove withdraws the declaration"
+  assert_contains "$OUT" "v1 -> (none)" "the display shows the withdrawal"
+  assert_contains "$OUT" "stops being managed" "and says what deploy stops doing"
+  assert_absent "$DC_SLOT/tag" "the slot is rev-only again"
+  ANS=""
+  run_pinned status "$REPO_DC"
+  assert_contains "$OUT" "(rev-only; deploy leaves ref= alone)" \
+    "status names the rev-only state instead of omitting the row"
+
+  ANS=""
+  run_pinned declare "$REPO_DC" --remove
+  assert_exit "$RC" 1 "--remove on a rev-only slot refuses"
+  assert_contains "$OUT" "no declaration to withdraw" "and says so"
+
+  # A tombstoned slot is read_rev's own refusal.
+  REPO_TS="$FIX/decl-tomb"
+  seed_tombstone "$REPO_TS"
+  mkdir -p "$REPO_TS"
+  bgit "$REPO_TS" init -q
+  printf 't1\n' > "$REPO_TS/f"; bgit "$REPO_TS" add f; bgit "$REPO_TS" commit -q -m t1
+  ANS=""
+  run_pinned declare "$REPO_TS" --tag v1
+  assert_exit "$RC" 1 "a tombstoned slot refuses"
+  assert_contains "$OUT" "is tombstoned" "with read_rev's own refusal"
+
+  # The elevation gates, in the verb's own words.
+  ANS='
+'
+  run_preview declare "$REPO_DC" --tag v1
+  assert_exit "$RC" 97 "an answered declare gate reaches the elevation"
+  assert_shows_cmd "$OUT" "sudo -- $PREVIEW declare $REPO_DC --tag v1" \
+    "the exact argv stays on screen"
+  assert_contains "$OUT" "next: declare the release name as root (sudo); Enter continues" \
+    "the gate names the declaration"
+  assert_contains "$OUT" "sudo asks you to authenticate" "the record-verb contract line survives"
+  ANS='
+'
+  run_preview declare "$REPO_DC" --remove
+  assert_exit "$RC" 97 "an answered withdrawal gate reaches the elevation"
+  assert_contains "$OUT" "next: withdraw the declaration as root (sudo)" \
+    "its gate names the withdrawal"
+
+  # --yes answers the gate at the command line, never the root confirm.
+  ANS='y
+'
+  run_pinned declare "$REPO_DC" --tag v1 --yes
+  assert_exit "$RC" 0 "the root side declares with --yes in its argv"
+  assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there"
+  assert_eq "$(cat "$DC_SLOT/tag")" "v1" "and the declaration landed"
+
+  # Integration, the case that proves the point: declare, then deploy
+  # --dry-run shows the ref= sed expression for that input alone -- and no
+  # rev change, because declare never touches the rev.
+  if [ -x "$REBUILD_TOOL" ]; then
+    cat > "$FIX/flake-dc.nix" <<EOF
+{
+  inputs.decl-repo.url = "git+file://$REPO_DC?ref=refs/heads/main&rev=$DC_C2";
+}
+EOF
+    ANS=""
+    run_pinned deploy --flake "$FIX/flake-dc.nix" --dry-run
+    assert_exit "$RC" 0 "deploy --dry-run exits 0 over the declared slot"
+    assert_contains "$OUT" "ref=refs/tags/v1" "the sed expression syncs ref= to the declared name"
+    assert_missing "$OUT" "s/rev=" "and no rev expression rides along"
+    assert_contains "$OUT" "Dry run -- nothing executed" "nothing ran"
+    assert_contains "$FIX/flake-dc.nix" "ref=refs/heads/main" "the flake file itself is untouched"
+  else
+    say "S8j: SKIPPED deploy integration (no rebuild tool)"
+  fi
+else
+  say "S8j: SKIPPED (no git fixture)"
+fi
+
+# ---------------------------------------------------------------------------
 say "S9: ignored keys (ignored.json / approved / exit 5)"
 # ---------------------------------------------------------------------------
 # The tolerance path is jq-driven by construction (structural comparison of
@@ -3900,7 +4096,7 @@ LOG_TAGS="$(grep -v '^[[:space:]]*#' "$SRC" \
   | grep -o 'log_action "\{0,1\}[A-Za-z][A-Za-z0-9$_-]*' \
   | sed 's/^log_action "\{0,1\}//' | LC_ALL=C sort -u | tr '\n' ' ')"
 assert_eq "$LOG_TAGS" \
-  'add approve approve-file ignorable-$sub mv setup show sign signer-add signer-remove tombstone ' \
+  'add approve approve-file declare ignorable-$sub mv setup show sign signer-add signer-remove tombstone ' \
   "the syslog action tags are exactly the frozen set (see log_action's comment)"
 
 # ---------------------------------------------------------------------------
