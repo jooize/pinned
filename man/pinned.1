@@ -1,4 +1,4 @@
-.TH PINNED 1 "2026-08-03" "pinned" "User Commands"
+.TH PINNED 1 "2026-08-27" "pinned" "User Commands"
 .SH NAME
 pinned \- review-and-pin trust gate for git repositories and files
 .SH SYNOPSIS
@@ -25,7 +25,7 @@ run as root.
 .BR review ,
 .BR add ,
 .BR tombstone ,
-.BR mv ,
+.BR rekey ,
 .BR declare ,
 and
 .B setup
@@ -401,7 +401,7 @@ The pre-sudo gate reads
 .B \-\-yes
 skips it and leaves the root-side confirmation untouched.
 .TP
-.B mv \fIold\fP \fInew\fP [\-\-yes]
+.B rekey \fIold\fP \fInew\fP [\-\-yes]
 (sudo) Re-key an existing record to the path its content has moved to.
 The record travels verbatim \(em same commit hash or digest, same
 declarations \(em so this is a rename, never a re-approval, and it
@@ -437,12 +437,12 @@ than deleted: content reappearing at a formerly trusted path must fail
 closed (see
 .BR tombstone ).
 An interrupted
-.B mv
+.B rekey
 therefore leaves the old record live beside the new one, both naming the
 same bytes, and re-running finishes the job.
 .IP
 The pre-sudo gate reads
-.RB \(dq "next: move the record as root (sudo)" \(dq;
+.RB \(dq "next: re-key the record as root (sudo)" \(dq;
 .B \-\-yes
 skips it and leaves the root-side confirmation untouched.
 .SS Verification and serving

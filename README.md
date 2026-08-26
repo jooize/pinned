@@ -78,7 +78,7 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       20 live file missing,
                                       30 slot invariant, 1 error)
     pinned tombstone <path>           retire a pinned file that is gone
-    pinned mv <old> <new>             re-key a record to the path its
+    pinned rekey <old> <new>          re-key a record to the path its
                                       content has moved to: the rev or
                                       digest and every annotation travel
                                       verbatim, the content at <new>
@@ -185,7 +185,7 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
 
     pinned --version                  print the release version
 
-review, add, setup, tombstone, mv, declare, upgrade, signer add/remove
+review, add, setup, tombstone, rekey, declare, upgrade, signer add/remove
 and ignorable add/remove self-elevate via sudo (re-exec of the
 installed root-owned binary).
 sign, show and cat
@@ -411,7 +411,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   file that vanished refuses until restored or ceremonially tombstoned,
   and a tombstoned path that reappears refuses until re-approved --
   retired content resurrected must not read as merely new.
-- A path is a record's identity, and `mv` is how an identity changes
+- A path is a record's identity, and `rekey` is how an identity changes
   hands without trust changing with it. The record travels verbatim and
   the machine -- not the human -- establishes the one new claim it makes:
   the content already at the new path must be exactly what the record

@@ -24,7 +24,7 @@
 #                                             custody, re-hashed against the
 #                                             record before a byte is emitted
 #   pinned tombstone <path>                   retire a pinned file that is GONE
-#   pinned mv <old> <new>                     re-key a record to the path its
+#   pinned rekey <old> <new>                  re-key a record to the path its
 #                                             content MOVED to (rev/digest and
 #                                             annotations travel verbatim; the
 #                                             content at <new> must answer to
@@ -52,7 +52,7 @@
 #   pinned deploy [--dry-run]                 sync flake inputs to approved revs, rebuild
 #   pinned setup [--yes]                      provision sudoers digest pin; self-install
 #
-# review, add, setup, tombstone, mv, declare, signer add/remove and
+# review, add, setup, tombstone, rekey, declare, signer add/remove and
 # ignorable add/remove self-elevate via sudo (re-exec of the installed
 # root-owned binary); sign runs as the user because it needs the SSH agent.
 #
@@ -288,7 +288,7 @@ usage: pinned <action> [args]
   review <repo>... [options]     (sudo) review the diff since the last pin, write pin
   review --file <path> ...       (sudo) file-pin ceremony: freeze, review, record hash
   tombstone <path>               (sudo) retire a pinned file that is gone
-  mv <old> <new>                 (sudo) re-key a record to a moved path
+  rekey <old> <new>              (sudo) re-key a record to a moved path
   declare <repo> --tag <t>|--remove
                                  (sudo) declare the release name deploy syncs ref= to
   verify [options] <path>        file-pin verdict; quiet exit-code contract for gates
@@ -2736,7 +2736,7 @@ EOF
 # back to this script's own path. Sits after the helper definitions so the
 # review preview below can reuse them.
 case "$action" in
-  review|add|setup|tombstone|upgrade|mv|declare)
+  review|add|setup|tombstone|upgrade|rekey|declare)
     if [ "$EUID" -ne 0 ]; then
       # tombstone without exactly its <path> can only ever reach usage --
       # fail here, before authentication costs a sudo prompt. (--yes answers
@@ -2746,42 +2746,42 @@ case "$action" in
         for a in "$@"; do [ "$a" = "--yes" ] || ts_paths=$((ts_paths + 1)); done
         [ "$ts_paths" -eq 1 ] || usage
       fi
-      # mv: two paths that differ, and an old path that is really gone --
+      # rekey: two paths that differ, and an old path that is really gone --
       # every one of those is checkable free, so none of them costs an
       # authentication. The peek below is orientation only; the root side
       # re-reads the slot and stays the authority.
-      if [ "$action" = "mv" ]; then
+      if [ "$action" = "rekey" ]; then
         # Two positionals in order; --yes answers the elevation gate below.
-        mv_old_arg="" mv_new_arg=""
+        rk_old_arg="" rk_new_arg=""
         for a in "$@"; do
           [ "$a" = "--yes" ] && continue
-          if [ -z "$mv_old_arg" ]; then mv_old_arg="$a"
-          elif [ -z "$mv_new_arg" ]; then mv_new_arg="$a"
+          if [ -z "$rk_old_arg" ]; then rk_old_arg="$a"
+          elif [ -z "$rk_new_arg" ]; then rk_new_arg="$a"
           else usage; fi
         done
-        [ -n "$mv_new_arg" ] || usage
-        mv_old="$(canon_path "$mv_old_arg")" || exit 1
-        mv_new="$(canon_path "$mv_new_arg")" || exit 1
-        if [ "$mv_old" = "$mv_new" ]; then
-          echo "REFUSE: old and new name the same path: $mv_old" >&2
+        [ -n "$rk_new_arg" ] || usage
+        rk_old="$(canon_path "$rk_old_arg")" || exit 1
+        rk_new="$(canon_path "$rk_new_arg")" || exit 1
+        if [ "$rk_old" = "$rk_new" ]; then
+          echo "REFUSE: old and new name the same path: $rk_old" >&2
           exit 1
         fi
-        if [ -e "$mv_old" ]; then
-          echo "REFUSE: $mv_old still exists -- you mv a record whose content has already moved" >&2
-          echo "        (move the content first, or review $mv_new instead)" >&2
+        if [ -e "$rk_old" ]; then
+          echo "REFUSE: $rk_old still exists -- you rekey a record whose content has already moved" >&2
+          echo "        (move the content first, or review $rk_new instead)" >&2
           exit 1
         fi
-        printf '%sold:%s        %s %s(gone)%s\n' "$C_B" "$C_OFF" "$mv_old" "$C_DIM" "$C_OFF"
-        printf '%snew:%s        %s\n' "$C_B" "$C_OFF" "$mv_new"
-        mv_slot="$(slot_dir_for "$(tier_user)" "$mv_old")"
+        printf '%sold:%s        %s %s(gone)%s\n' "$C_B" "$C_OFF" "$rk_old" "$C_DIM" "$C_OFF"
+        printf '%snew:%s        %s\n' "$C_B" "$C_OFF" "$rk_new"
+        rk_slot="$(slot_dir_for "$(tier_user)" "$rk_old")"
         # Nothing is CONCLUDED from what this peek cannot see: the tier is
         # root-only until the group exists, so an absent-looking slot may
         # simply be one this user cannot traverse. Hence one honest line for
         # both, and no refusal built on it.
-        if [ -d "$mv_slot" ] && inspect_slot "$mv_slot" 2>/dev/null \
+        if [ -d "$rk_slot" ] && inspect_slot "$rk_slot" 2>/dev/null \
            && [ "$slot_state" != none ]; then
           printf '%srecord:%s     %s%s%s %s(%s)%s\n' "$C_B" "$C_OFF" \
-            "$C_CYN" "${slot_file##*/}" "$C_OFF" "$C_DIM" "$mv_slot" "$C_OFF"
+            "$C_CYN" "${slot_file##*/}" "$C_OFF" "$C_DIM" "$rk_slot" "$C_OFF"
         else
           printf '%srecord:%s     %s(none visible from here; the root side reads it and answers)%s\n' \
             "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
@@ -2790,7 +2790,7 @@ case "$action" in
       fi
       # declare: an argv that can only ever reach a root-side argument error
       # fails here, before authentication costs a sudo prompt (the
-      # tombstone/mv precedent): the repo present and a directory, exactly
+      # tombstone/rekey precedent): the repo present and a directory, exactly
       # one of --tag <name> / --remove, and the name inside the
       # declared-name grammar. The root side re-checks every one of these
       # and stays the authority.
@@ -3225,21 +3225,21 @@ case "$action" in
             fi ;;
         esac
       fi
-      # tombstone, mv and declare: the same handoff shape as
+      # tombstone, rekey and declare: the same handoff shape as
       # signer/ignorable. Their root sides show the record and take the
       # y/N, so the contract line says that; the command and the gate
       # follow, because a record verb is still a trust mutation and its
-      # argv is still the pre-auth disclosure (mv's preview above is
+      # argv is still the pre-auth disclosure (rekey's preview above is
       # orientation, like review's).
-      if { [ "$action" = "tombstone" ] || [ "$action" = "mv" ] || [ "$action" = "declare" ]; } \
+      if { [ "$action" = "tombstone" ] || [ "$action" = "rekey" ] || [ "$action" = "declare" ]; } \
         && [ "$elev" = "$INSTALL_TARGET" ]; then
         printf '%ssudo asks you to authenticate; the root-side ceremony shows the record\nand confirms -- nothing is written until you answer y after it.%s\n\n' \
           "$C_YEL$C_B" "$C_OFF"
         printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
         if [ "$action" = "tombstone" ]; then
           elevation_gate "tombstone the record" "$@"
-        elif [ "$action" = "mv" ]; then
-          elevation_gate "move the record" "$@"
+        elif [ "$action" = "rekey" ]; then
+          elevation_gate "re-key the record" "$@"
         elif [ "$dc_remove" -eq 1 ]; then
           elevation_gate "withdraw the declaration" "$@"
         else
@@ -4422,12 +4422,12 @@ do_tombstone() {
   log_action tombstone "$path"
 }
 
-# ---- mv --------------------------------------------------------------------
+# ---- rekey -----------------------------------------------------------------
 
 # Hand verify's own diagnosis through, saying whose record and whose bytes it
 # was about -- verify names the path whose SLOT it read (the old one), which
 # without this line reads as a verdict about the wrong file.
-mv_verify_said() { # $1 old  $2 new  $3 captured output
+rekey_verify_said() { # $1 old  $2 new  $3 captured output
   printf '%sverify, on the record for %s and the bytes now at %s:%s\n' \
     "$C_DIM" "$1" "$2" "$C_OFF" >&2
   cat -- "$3" >&2
@@ -4453,8 +4453,8 @@ mv_verify_said() { # $1 old  $2 new  $3 captured output
 # The old slot is TOMBSTONED, never deleted: something reappearing at a
 # formerly-trusted path must fail closed, and tombstone+present refuses where
 # a missing slot would merely re-prompt.
-do_mv() {
-  require_root mv
+do_rekey() {
+  require_root rekey
   # The elevation gate's answer, riding through in the displayed argv; the
   # ceremony's own y/N below is untouched by it.
   local a old_arg="" new_arg=""
@@ -4490,7 +4490,7 @@ do_mv() {
   }
   case "$slot_state" in
     none)
-      echo "no slot: $old was never approved; there is no record to move" >&2
+      echo "no slot: $old was never approved; there is no record to re-key" >&2
       echo "       (review $new instead)" >&2
       exit 1 ;;
     tombstone)
@@ -4503,11 +4503,11 @@ do_mv() {
   state="$slot_state" kind="$slot_kind" src="$slot_file"
   verify_ancestry "$src" || exit 1
 
-  # mv FOLLOWS a move that already happened. While the old path is still
+  # rekey FOLLOWS a move that already happened. While the old path is still
   # there the premise is simply false, and two live paths would be claiming
   # one record.
   if [ -e "$old" ]; then
-    echo "REFUSE: $old still exists -- you mv a record whose content has already moved" >&2
+    echo "REFUSE: $old still exists -- you rekey a record whose content has already moved" >&2
     echo "        (move the content first, or review $new instead)" >&2
     exit 1
   fi
@@ -4585,14 +4585,14 @@ do_mv() {
       freeze_file "$new" || { echo "ERROR: cannot read $new" >&2; exit 1; }
       # THE CHECK IS VERIFY ITSELF -- the gate's own verdict, run against the
       # OLD slot's record with the NEW path's frozen bytes. Reusing it is what
-      # keeps mv from holding a private opinion about what "matches" means: 0
+      # keeps rekey from holding a private opinion about what "matches" means: 0
       # is byte-exact, 5 is drift confined to keys the slot already declares
       # ignored (and the policy still grants), and every other answer refuses.
       # The owner/mode invariant is the one part this cannot exercise -- verify
       # checks it on the original path, which is by definition gone here -- so
       # it stays what it always was, a per-use question the next verify at the
       # new path answers (30), never something a record carries.
-      vout="$workdir/mv-verify"
+      vout="$workdir/rekey-verify"
       vrc=0
       (do_verify --frozen "$FROZEN_COPY" "$old") >"$vout" 2>&1 || vrc=$?
       case "$vrc" in
@@ -4604,12 +4604,12 @@ do_mv() {
             esac
           done <"$vout" ;;
         11)
-          mv_verify_said "$old" "$new" "$vout"
+          rekey_verify_said "$old" "$new" "$vout"
           echo "REFUSE: the content at $new is not what $old's record names" >&2
-          echo "        a mv carries the record verbatim; review $new instead" >&2
+          echo "        a rekey carries the record verbatim; review $new instead" >&2
           exit 1 ;;
         *)
-          mv_verify_said "$old" "$new" "$vout"
+          rekey_verify_said "$old" "$new" "$vout"
           echo "ERROR: $old's record could not be checked against $new (verify exit $vrc)" >&2
           exit 1 ;;
       esac
@@ -4677,7 +4677,7 @@ do_mv() {
   printf 'path it answers to does. The old path above is tombstoned by this move, so\n'
   printf 'anything reappearing there refuses until it is approved on its own.%s\n' "$C_OFF"
   echo
-  printf '%smv %s%s%s -> %s%s%s? [y/N]%s ' \
+  printf '%srekey %s%s%s -> %s%s%s? [y/N]%s ' \
     "$C_B" "$C_CYN" "$old" "$C_OFF$C_B" "$C_CYN" "$new" "$C_OFF$C_B" "$C_OFF"
   read -r answer </dev/tty
   case "$answer" in
@@ -4709,7 +4709,7 @@ do_mv() {
     install -d -m "$TREE_DMODE" -o root -g "$TREE_GRP" "$new_slot/signers"
     write_slot_copy "$new_slot/signers" allowed_signers "$old_slot/signers/allowed_signers"
   fi
-  printf '%s✓ moved:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$new" "$C_OFF" "$new_slot/$target"
+  printf '%s✓ re-keyed:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$new" "$C_OFF" "$new_slot/$target"
 
   write_slot_state "$old_slot" tombstone "$(date -u +%Y-%m-%dT%H:%M:%SZ) moved to $new by $inv"
   rm -f "$old_slot/tag"          # the declared name left with the record
@@ -7070,7 +7070,7 @@ case "$action" in
   review)    do_approve "$@" ;;
   add)       do_add "$@" ;;
   tombstone) do_tombstone "$@" ;;
-  mv)        do_mv "$@" ;;
+  rekey)     do_rekey "$@" ;;
   declare)   do_declare "$@" ;;
   verify)    do_verify "$@" ;;
   cat)       do_cat "$@" ;;

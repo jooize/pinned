@@ -2403,7 +2403,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_missing "$OUT" "Enter continues" "and prints no gate"
   NOTTY=""
 
-  # --- tombstone / mv ---------------------------------------------------------
+  # --- tombstone / rekey ------------------------------------------------------
   # The record verbs share signer/ignorable's handoff shape: contract line,
   # command, gate. A record mutation is a trust mutation, so its argv is the
   # same pre-auth disclosure as everyone else's.
@@ -2423,14 +2423,14 @@ if [ "$GIT_OK" -eq 1 ]; then
 
   ANS='
 '
-  run_preview mv "$FIX/mv-old-gone" "$FIX/mv-new"
-  assert_exit "$RC" 97 "an answered mv gate reaches the elevation"
-  assert_shows_cmd "$OUT" "sudo -- $PREVIEW mv $FIX/mv-old-gone $FIX/mv-new" \
-    "mv's argv stays on screen"
-  assert_contains "$OUT" "next: move the record as root (sudo); Enter continues" \
-    "the gate names the move"
+  run_preview rekey "$FIX/mv-old-gone" "$FIX/mv-new"
+  assert_exit "$RC" 97 "an answered rekey gate reaches the elevation"
+  assert_shows_cmd "$OUT" "sudo -- $PREVIEW rekey $FIX/mv-old-gone $FIX/mv-new" \
+    "rekey's argv stays on screen"
+  assert_contains "$OUT" "next: re-key the record as root (sudo); Enter continues" \
+    "the gate names the re-key"
   assert_before "$OUT" "old:" "sudo asks you to authenticate" \
-    "mv's own preview stays above the handoff"
+    "rekey's own preview stays above the handoff"
 
   ANS=""
   run_preview tombstone "$FIX/ts-gone" --yes
@@ -2445,14 +2445,14 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_exit "$RC" 1 "tombstone with only --yes is still missing its path"
   assert_contains "$OUT" "usage: pinned" "and says so as a usage error"
   ANS=""
-  run_preview mv "$FIX/mv-old-gone" --yes
-  assert_exit "$RC" 1 "mv with one path and --yes is still missing the other"
+  run_preview rekey "$FIX/mv-old-gone" --yes
+  assert_exit "$RC" 1 "rekey with one path and --yes is still missing the other"
   assert_contains "$OUT" "usage: pinned" "as a usage error too"
 
   NOTTY=1
   ANS=""
-  run_preview mv "$FIX/mv-old-gone" "$FIX/mv-new"
-  assert_exit "$RC" 2 "off-tty mv without --yes refuses"
+  run_preview rekey "$FIX/mv-old-gone" "$FIX/mv-new"
+  assert_exit "$RC" 2 "off-tty rekey without --yes refuses"
   assert_contains "$OUT" "no tty for confirmation -- pass --yes to proceed non-interactively" \
     "with the shared refusal"
   ANS=""
@@ -2497,7 +2497,7 @@ y
     say "S8i: SKIPPED ignorable --yes (no jq)"
   fi
 
-  # Far enough into do_tombstone / do_mv to prove their parsers took --yes:
+  # Far enough into do_tombstone / do_rekey to prove their parsers took --yes:
   # the refusals below come from the slot, not from the grammar.
   ANS=""
   run_pinned tombstone "$FIX/ts-gone" --yes
@@ -2505,9 +2505,9 @@ y
   assert_contains "$OUT" "nothing to tombstone" "and fails on the slot, not on the flag"
   assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there"
   ANS=""
-  run_pinned mv "$FIX/mv-old-gone" "$FIX/mv-new" --yes
-  assert_exit "$RC" 1 "mv with --yes reaches its own checks"
-  assert_contains "$OUT" "there is no record to move" "and fails on the slot, not on the flag"
+  run_pinned rekey "$FIX/mv-old-gone" "$FIX/mv-new" --yes
+  assert_exit "$RC" 1 "rekey with --yes reaches its own checks"
+  assert_contains "$OUT" "there is no record to re-key" "and fails on the slot, not on the flag"
   assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there either"
 else
   say "S8i: SKIPPED (no git fixture)"
@@ -3494,9 +3494,9 @@ assert_exit "$RC" 1 "a missing path is still a file-display refusal"
 assert_contains "$OUT" "not a regular file" "and says so"
 
 # ---------------------------------------------------------------------------
-say "S14: mv (re-key a record to a moved path)"
+say "S14: rekey (re-key a record to a moved path)"
 # ---------------------------------------------------------------------------
-# mv carries a record VERBATIM to the path its content moved to. The cases
+# rekey carries a record VERBATIM to the path its content moved to. The cases
 # below are the two halves of that claim: what travels (record, annotations,
 # tombstone at the old key) and what the machine refuses to move (anything it
 # cannot prove the new path already holds).
@@ -3516,7 +3516,7 @@ mv "$SUB/mv/from.txt" "$SUB/mv/deeper/to.txt"
 MV_NEW_SLOT="$(slot_of "$SUB/mv/deeper/to.txt")"
 ANS='y
 '
-run_pinned mv "$SUB/mv/from.txt" "$SUB/mv/deeper/to.txt"
+run_pinned rekey "$SUB/mv/from.txt" "$SUB/mv/deeper/to.txt"
 assert_exit "$RC" 0 "a file record moves to the path its content moved to"
 assert_contains "$OUT" "at the new path" "the ceremony states what the y buys"
 assert_contains "$OUT" "the approved copy" "and names the annotations that travel"
@@ -3558,8 +3558,8 @@ DECL_NEW="$(slot_of "$SUB/mv/dto.txt")"
 mv "$SUB/mv/dfrom.txt" "$SUB/mv/dto.txt"
 ANS='n
 '
-run_pinned mv "$SUB/mv/dfrom.txt" "$SUB/mv/dto.txt"
-assert_exit "$RC" 2 "declining the mv exits 2"
+run_pinned rekey "$SUB/mv/dfrom.txt" "$SUB/mv/dto.txt"
+assert_exit "$RC" 2 "declining the rekey exits 2"
 assert_contains "$OUT" "both slots unchanged" "and says nothing moved"
 assert_file "$DECL_OLD/pin.sha256" "the old record is untouched"
 assert_absent "$DECL_OLD/tombstone" "no tombstone was written"
@@ -3567,10 +3567,10 @@ assert_absent "$DECL_NEW" "the new slot was never created"
 
 # --- the refuse matrix -----------------------------------------------------
 ANS=""
-run_pinned mv "$SUB/mv/dto.txt"
-assert_exit "$RC" 1 "mv with one path is usage (exit 1)"
+run_pinned rekey "$SUB/mv/dto.txt"
+assert_exit "$RC" 1 "rekey with one path is usage (exit 1)"
 assert_contains "$OUT" "usage: pinned" "and prints usage"
-run_pinned mv "$SUB/mv/dto.txt" "$SUB/mv/dto.txt"
+run_pinned rekey "$SUB/mv/dto.txt" "$SUB/mv/dto.txt"
 assert_exit "$RC" 1 "old and new naming one path refuses"
 assert_contains "$OUT" "name the same path" "the refusal says why"
 
@@ -3582,17 +3582,17 @@ run_pinned review --file "$SUB/mv/live.txt"
 assert_exit "$RC" 0 "fixture: a record whose path is still live"
 printf 'copy at the new path\n' > "$SUB/mv/live-copy.txt"
 ANS=""
-run_pinned mv "$SUB/mv/live.txt" "$SUB/mv/live-copy.txt"
-assert_exit "$RC" 1 "mv refuses while the old path still exists"
+run_pinned rekey "$SUB/mv/live.txt" "$SUB/mv/live-copy.txt"
+assert_exit "$RC" 1 "rekey refuses while the old path still exists"
 assert_contains "$OUT" "has already moved" "the refusal names the premise"
 
-run_pinned mv "$SUB/mv/never-approved.txt" "$SUB/mv/live-copy.txt"
-assert_exit "$RC" 1 "mv refuses a path that was never approved"
-assert_contains "$OUT" "was never approved" "and says there is no record to move"
+run_pinned rekey "$SUB/mv/never-approved.txt" "$SUB/mv/live-copy.txt"
+assert_exit "$RC" 1 "rekey refuses a path that was never approved"
+assert_contains "$OUT" "was never approved" "and says there is no record to re-key"
 
 seed_tombstone "$SUB/mv/retired.txt"
-run_pinned mv "$SUB/mv/retired.txt" "$SUB/mv/live-copy.txt"
-assert_exit "$RC" 1 "mv refuses a tombstoned record"
+run_pinned rekey "$SUB/mv/retired.txt" "$SUB/mv/live-copy.txt"
+assert_exit "$RC" 1 "rekey refuses a tombstoned record"
 assert_contains "$OUT" "does not travel" "a tombstone is the old path's own history"
 
 # An occupied new slot: records do not merge, in either direction.
@@ -3610,8 +3610,8 @@ assert_exit "$RC" 0 "fixture: two records, both live"
 MOVER_SLOT="$(slot_of "$SUB/mv/mover.txt")"
 rm -f "$SUB/mv/mover.txt"
 ANS=""
-run_pinned mv "$SUB/mv/mover.txt" "$SUB/mv/occupied.txt"
-assert_exit "$RC" 1 "mv refuses a new path that already has a record"
+run_pinned rekey "$SUB/mv/mover.txt" "$SUB/mv/occupied.txt"
+assert_exit "$RC" 1 "rekey refuses a new path that already has a record"
 assert_contains "$OUT" "records do not merge" "the refusal names the rule"
 assert_absent "$MOVER_SLOT/tombstone" "the old record is left alone"
 
@@ -3624,8 +3624,8 @@ printf 'harness@example.invalid ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAK
   > "$SIGNED_SLOT/signers/allowed_signers"
 chmod 640 "$SIGNED_SLOT/signers/allowed_signers"
 ANS=""
-run_pinned mv "$SUB/mv/mover.txt" "$SUB/mv/signed-target.txt"
-assert_exit "$RC" 1 "mv refuses a signers-only slot at the new path"
+run_pinned rekey "$SUB/mv/mover.txt" "$SUB/mv/signed-target.txt"
+assert_exit "$RC" 1 "rekey refuses a signers-only slot at the new path"
 assert_contains "$OUT" "per-slot signer data" "the refusal names the signer data by role"
 
 # Content that is not what the record names, at the new path.
@@ -3639,17 +3639,17 @@ DRIFT_SLOT="$(slot_of "$SUB/mv/drifter.txt")"
 rm -f "$SUB/mv/drifter.txt"
 printf 'different bytes\n' > "$SUB/mv/drifted-to.txt"
 ANS=""
-run_pinned mv "$SUB/mv/drifter.txt" "$SUB/mv/drifted-to.txt"
-assert_exit "$RC" 1 "mv refuses content at the new path that is not what the record names"
+run_pinned rekey "$SUB/mv/drifter.txt" "$SUB/mv/drifted-to.txt"
+assert_exit "$RC" 1 "rekey refuses content at the new path that is not what the record names"
 assert_contains "$OUT" "is not what" "the refusal says the content does not answer to the record"
 assert_absent "$DRIFT_SLOT/tombstone" "and nothing was written"
-run_pinned mv "$SUB/mv/drifter.txt" "$SUB/mv/absent-entirely.txt"
-assert_exit "$RC" 1 "mv refuses when nothing is at the new path"
+run_pinned rekey "$SUB/mv/drifter.txt" "$SUB/mv/absent-entirely.txt"
+assert_exit "$RC" 1 "rekey refuses when nothing is at the new path"
 assert_contains "$OUT" "not a regular file" "and says the new path is not a file"
 
 # --- tolerated drift: the record still names this content ------------------
 if command -v jq >/dev/null 2>&1; then
-  # The declared keys' grant has to hold at mv time exactly as at verify time,
+  # The declared keys' grant has to hold at rekey time exactly as at verify time,
   # so the ceremony's tolerance is the gate's tolerance and nothing else.
   seed_policy_user '[{"path":["model"]}]'
   printf '{\n  "model": "opus",\n  "keep": 1\n}\n' > "$SUB/mv/tol.json"
@@ -3664,7 +3664,7 @@ y
   TOL_NEW_SLOT="$(slot_of "$SUB/mv/tol-moved.json")"
   ANS='y
 '
-  run_pinned mv "$SUB/mv/tol.json" "$SUB/mv/tol-moved.json"
+  run_pinned rekey "$SUB/mv/tol.json" "$SUB/mv/tol-moved.json"
   assert_exit "$RC" 0 "drift confined to a declared ignored key still moves"
   assert_contains "$OUT" "not byte-identical" "the ceremony says so loudly"
   assert_contains "$OUT" "model" "and names the key that drifted"
@@ -3718,21 +3718,21 @@ y
   # Refusals first -- they need the record still keyed to the old path.
   mv "$MVR_OLD" "$MVR_NEW"
   ANS=""
-  run_pinned mv "$MVR_OLD" "$MVR_OTHER"
+  run_pinned rekey "$MVR_OLD" "$MVR_OTHER"
   assert_exit "$RC" 1 "a repo record refuses a work tree whose object store lacks the pinned rev"
   assert_contains "$OUT" "not the repository the record names" "the refusal names the reason"
   mkdir -p "$MVR_NEW/subdir"
-  run_pinned mv "$MVR_OLD" "$MVR_NEW/subdir"
+  run_pinned rekey "$MVR_OLD" "$MVR_NEW/subdir"
   assert_exit "$RC" 1 "a repo record refuses a path that is not the work-tree root"
   assert_contains "$OUT" "not the work-tree root" "through the shared resolver"
-  run_pinned mv "$MVR_OLD" "$SUB/mv/live-copy.txt"
+  run_pinned rekey "$MVR_OLD" "$SUB/mv/live-copy.txt"
   assert_exit "$RC" 1 "a repo record refuses a non-directory new path"
   assert_contains "$OUT" "moves to a work tree" "and says what a repo record moves to"
   assert_absent "$MVR_OLD_SLOT/tombstone" "no refusal wrote anything"
 
   ANS='y
 '
-  run_pinned mv "$MVR_OLD" "$MVR_NEW"
+  run_pinned rekey "$MVR_OLD" "$MVR_NEW"
   assert_exit "$RC" 0 "a repo record moves to the work tree that holds its rev"
   assert_eq "$(cat "$MVR_NEW_SLOT/rev.git")" "$MVR_HASH" "the rev travels verbatim"
   assert_eq "$(count_state "$MVR_NEW_SLOT")" 1 "the new slot holds exactly one state file"
