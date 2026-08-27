@@ -825,11 +825,16 @@ sgit() {
 # "-" rather than a fabricated zero; the authoritative diff below covers
 # the merged content regardless.
 #
+# Chronological, oldest first: the listing is read once, top to bottom, and
+# ends at the rev the y/N is about -- the same direction the aggregate diff
+# reads and --step walks. git's newest-first default serves open-ended
+# paging, not a bounded range read in full.
+#
 # $1 = old rev, $2 = new rev, $3 = line prefix (default none).
 print_commit_range() {
   # %x01 delimits the commit blocks: the subject is the last field, so it
   # may hold tabs, and %s never holds a newline (git folds the subject).
-  sgit log --format='%x01%h%x09%s' --numstat "${1}..${2}" | LC_ALL=C awk \
+  sgit log --reverse --format='%x01%h%x09%s' --numstat "${1}..${2}" | LC_ALL=C awk \
     -v pre="${3:-}" -v cyn="$C_CYN" -v dim="$C_DIM" \
     -v grn="$C_GRN" -v red="$C_RED" -v off="$C_OFF" '
     function fit(s,   k) {                      # cap the subject column
@@ -1012,11 +1017,11 @@ _ancestry_hdr() {
   fi
 }
 
-# The commits a move covers, listed in the direction that makes them
-# readable. `<pin>..<candidate>` is EMPTY for a candidate that sits behind
-# the pin, and a review that says nothing about what it is about to
-# un-approve is worse than no review; a diverged move has two ranges and no
-# single one of them is the story.
+# The commits a move covers. Every listing reads chronologically -- the
+# headers, not the order, carry the move's direction. `<pin>..<candidate>`
+# is EMPTY for a candidate that sits behind the pin, and a review that says
+# nothing about what it is about to un-approve is worse than no review; a
+# diverged move has two ranges and no single one of them is the story.
 # $1 = class, $2 = pinned rev, $3 = candidate rev, $4 = merge base (may be
 # empty), $5 = header style, $6 = line prefix.
 print_ancestry_listing() {

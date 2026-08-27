@@ -1413,11 +1413,11 @@ y
   # before the diff; the hash column varies in width, so it is dropped.
   D_LINES="$(awk '/^--- commits since last approval ---$/ { f = 1; next }
                   /^$/ { f = 0 } f' "$OUT" | sed 's/^[0-9a-f]*  //')"
-  assert_eq "$D_LINES" 'd6 binary      1 file   +0 -0
-d5 merge side  -         -  -
-d4 main        1 file   +1 -1
+  assert_eq "$D_LINES" 'd2 two files   2 files  +3 -0
 d3 side        1 file   +4 -0
-d2 two files   2 files  +3 -0' "the ceremony lists aligned per-commit counts, pluralized"
+d4 main        1 file   +1 -1
+d5 merge side  -         -  -
+d6 binary      1 file   +0 -0' "the ceremony lists chronologically, aligned and pluralized"
   # The count right-aligns in its own digit column and the noun left-aligns
   # beside it: the singular "file" must not drag its digit out of the column.
   assert_contains "$OUT" ' 1 file   +0' "singular count sits in the digit column, noun flush left"
