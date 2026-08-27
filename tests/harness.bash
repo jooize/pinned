@@ -682,6 +682,20 @@ assert_exit "$RC" 0 "declining exits 0"
 assert_contains "$OUT" "declined; record unchanged" "decline is reported"
 assert_eq "$(count_state "$DECL_SLOT")" 0 "declining records nothing"
 
+# `s` at the file's gate declines without opening the display at all:
+# record unchanged, counted as declined, and the frozen bytes are never
+# presented as reviewable.
+printf 'unseen\n' > "$SUB/a/skipped.txt"
+SKIP_SLOT="$(slot_of "$SUB/a/skipped.txt")"
+ANS='s
+'
+run_pinned review --file "$SUB/a/skipped.txt"
+assert_exit "$RC" 0 "a gate skip exits 0 like a decline"
+assert_contains "$OUT" "s skips" "the gate line offers the skip"
+assert_contains "$OUT" "skipped; record unchanged" "the skip names its outcome"
+assert_eq "$(count_state "$SKIP_SLOT")" 0 "a gate skip records nothing"
+assert_missing "$OUT" "exactly the bytes being approved" "the display never opened"
+
 # --- the gates before each pager --------------------------------------------
 # Nothing full-screen arrives unannounced: each file's pager sits behind a
 # gate naming WHAT opens and how big it is (which is why every ceremony above
@@ -1130,6 +1144,29 @@ n
   assert_exit "$RC" 2 "a single-repo decline still exits 2"
   assert_contains "$OUT" "aborted; pin unchanged" "single decline keeps its message"
 
+  # `s` at the diff gate declines WITHOUT opening the pager: pin unchanged,
+  # exit as a decline, and the confirm is never reached -- approving a repo
+  # without its diff stays impossible.
+  A_PRE="$(cat "$A_SLOT/rev.git")"
+  ANS='s
+'
+  run_pinned review "$REPO_A"
+  assert_exit "$RC" 2 "a single-repo gate skip exits 2 like a decline"
+  assert_contains "$OUT" "s skips" "the gate line offers the skip"
+  assert_contains "$OUT" "skipped; pin unchanged" "the skip names its outcome"
+  assert_eq "$(cat "$A_SLOT/rev.git")" "$A_PRE" "a gate skip moves no pin"
+  assert_missing "$OUT" "(from object store)" "the diff never opened"
+  assert_missing "$OUT" "? [y/N]" "the confirm was never offered"
+
+  # In a batch the skip is the decline's twin: the skipped repo keeps its
+  # pin and the batch moves on (repo B, already at its pin, still counted).
+  ANS='s
+'
+  run_pinned review "$REPO_A" "$REPO_B"
+  assert_exit "$RC" 0 "a mid-batch gate skip does not abort the batch"
+  assert_eq "$(cat "$A_SLOT/rev.git")" "$A_PRE" "the skipped repo keeps its old pin"
+  assert_contains "$OUT" "0 approved, 1 declined, 1 already pinned" "the skip counts as declined"
+
   # Selector and evidence flags bind to one repo; a batch refuses them.
   ANS=""
   run_pinned review "$REPO_A" "$REPO_B" --tag v1
@@ -1546,6 +1583,23 @@ n
   assert_contains "$OUT" "approved 0 of 3 commits" "the summary reports an empty walk"
   assert_contains "$OUT" "pin unchanged" "the summary says the pin did not move"
   assert_missing  "$OUT" "total:" "no aggregate for a walk that approved nothing"
+
+  # --- `s` at a step's gate: the walk stops before the diff opens ----------
+  # Same stop-the-walk contract as a decline at the confirm -- commits
+  # advance linearly, so there is no skipping past an unreviewed one --
+  # but the skipped step's diff is never shown at all.
+  seed_state "$REPO_E" rev.git "$E_BASE"
+  ANS='
+y
+s
+'
+  run_pinned review "$REPO_E" --step
+  assert_exit "$RC" 0 "a skip after one yes still exits 0 (the pin did advance)"
+  assert_eq "$(cat "$E_SLOT/rev.git")" "$E_C1" "the pin rests at the last approved commit"
+  assert_contains "$OUT" "skipped; the walk stops here" "the skip names its outcome"
+  assert_contains "$OUT" "approved 1 of 3 commits" "the summary counts the walk up to the skip"
+  assert_missing  "$OUT" "E2LINE" "the skipped step's diff never opened"
+  assert_missing  "$OUT" "--- step 3/3 ---" "a gate skip stops the walk like a decline"
 
   # --- a stepped yes clears a declared release name ------------------------
   seed_state "$REPO_E" rev.git "$E_BASE"

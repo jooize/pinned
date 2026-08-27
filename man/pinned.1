@@ -107,6 +107,16 @@ its pin was skipped above and is never promised here.
 Several repos run as sequential ceremonies under one authentication:
 each is displayed and confirmed on its own, a decline skips only that
 repo, and a summary line closes the batch.
+.IP
+Every diff opens behind its own gate line; answering
+.B s
+there declines without opening it \(em the pin is unchanged, the
+outcome is logged as a skip, and a batch counts it as declined and
+moves on.
+Enter and
+.B s
+are the gate's only answers: approving a repo without its review is
+never offered.
 .BR \-\-tag ,
 .BR \-\-signed\-tag ,
 and
@@ -197,6 +207,10 @@ over whatever remains.
 A decline stops the walk rather than skipping the commit \(em trust is
 a tree state, so approving commit N would silently carry N\-1's
 changes in with it.
+An
+.B s
+at a step's diff gate stops the walk the same way, before the diff
+opens.
 .IP
 The walk always closes with a summary: how many commits were approved,
 where the pin came to rest, the per-commit counts for the approved
@@ -343,6 +357,10 @@ The pre-sudo handoff counts the files named on the command line
 .B \-\-yes
 skips that gate and no other, so each file is still displayed and
 confirmed as root.
+Each file's display opens behind its own gate line; answering
+.B s
+there declines without opening it \(em record unchanged, counted as
+declined.
 .IP
 The ceremony re-states
 .B \-\-ignore\-json\-key

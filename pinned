@@ -3715,16 +3715,27 @@ do_approve() {
         echo
         # The gate before the pager: in a batch the next repo's diff would
         # otherwise open unannounced, with no statement of whose bytes or
-        # how much is about to fill the screen. Enter is the only answer --
-        # this is orientation, not a decision. Off-tty the read fails and
-        # set -e aborts: the same fail-closed contract as the confirms.
+        # how much is about to fill the screen. Enter opens the diff; `s`
+        # is the one other answer, and it is fail-closed -- decline without
+        # looking, pin unchanged (logged as skip, counted as declined).
+        # Approving without the diff stays impossible. Off-tty the read
+        # fails and set -e aborts: the same fail-closed contract as the
+        # confirms.
         local n_range
         n_range="$(sgit rev-list --count "${old_hash}..${hash}")"
-        printf '%snext: review %s%s%s %s%.10s..%.10s%s (%s commit%s); Enter opens the diff%s ' \
+        printf '%snext: review %s%s%s %s%.10s..%.10s%s (%s commit%s); Enter opens the diff%s %s· s skips%s ' \
           "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
           "$C_CYN" "$old_hash" "$hash" "$C_OFF$C_B" \
-          "$n_range" "$(plural_s "$n_range")" "$C_OFF"
+          "$n_range" "$(plural_s "$n_range")" "$C_OFF" "$C_DIM" "$C_OFF"
         read -r answer </dev/tty
+        case "$answer" in
+          s|S|skip)
+            printf '%sskipped; pin unchanged%s\n' "$C_YEL" "$C_OFF"
+            log_action approve "$repo" "$hash" skip
+            if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
+            exit 2
+            ;;
+        esac
         printf '%s--- diff %.10s..%.10s (from object store) ---%s\n' "$C_B" "$old_hash" "$hash" "$C_OFF"
         # Capture first so a git failure aborts (set -e) BEFORE anything is
         # shown as reviewable; then page. Early pager quit (SIGPIPE) is the
@@ -3740,11 +3751,20 @@ do_approve() {
       else
         printf '%spinned:%s     (none -- first approval: full tree review)\n' "$C_DIM" "$C_OFF"
         echo
-        # Same gate as the whole-delta pager; no range exists yet.
-        printf '%snext: review %s%s%s full tree at %s%.10s%s; Enter opens the diff%s ' \
+        # Same gate as the whole-delta pager (skip included); no range
+        # exists yet.
+        printf '%snext: review %s%s%s full tree at %s%.10s%s; Enter opens the diff%s %s· s skips%s ' \
           "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
-          "$C_CYN" "$hash" "$C_OFF$C_B" "$C_OFF"
+          "$C_CYN" "$hash" "$C_OFF$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
         read -r answer </dev/tty
+        case "$answer" in
+          s|S|skip)
+            printf '%sskipped; pin unchanged%s\n' "$C_YEL" "$C_OFF"
+            log_action approve "$repo" "$hash" skip
+            if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
+            exit 2
+            ;;
+        esac
         printf '%s--- full tree at %.10s (diff from empty) ---%s\n' "$C_B" "$hash" "$C_OFF"
         # 4b825d... is git's well-known empty tree; this shows every approved byte.
         diff_out="$(sgit_diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
@@ -3875,10 +3895,20 @@ EOF
     print_commit_range "$prev" "$c" || true
     echo
     # Same gate as the whole-delta pager; a step is always one commit.
-    printf '%snext: review %s%s%s %s%.10s..%.10s%s (1 commit); Enter opens the diff%s ' \
+    # `s` here stops the walk, exactly as a decline at the confirm does:
+    # commits advance linearly, so there is no "skip this one and review
+    # the next" -- the pin can never move past an unreviewed commit.
+    printf '%snext: review %s%s%s %s%.10s..%.10s%s (1 commit); Enter opens the diff%s %s· s skips%s ' \
       "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
-      "$C_CYN" "$prev" "$c" "$C_OFF$C_B" "$C_OFF"
+      "$C_CYN" "$prev" "$c" "$C_OFF$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
     read -r answer </dev/tty
+    case "$answer" in
+      s|S|skip)
+        printf '%sskipped; the walk stops here%s\n' "$C_YEL" "$C_OFF"
+        log_action approve "$repo" "$c" skip
+        break
+        ;;
+    esac
     # Capture first so a git failure aborts (set -e) BEFORE anything is shown
     # as reviewable; then page. Early pager quit (SIGPIPE) is the reviewer's
     # own act -- the diff itself already succeeded.
@@ -4287,19 +4317,28 @@ EOF
     fi
     # THE GATE BEFORE THE PAGER, as the repo ceremony has it: nothing
     # full-screen arrives unannounced, and what arrives is named with its
-    # size first. Enter is the only answer -- this is orientation, not a
-    # decision. Off-tty the read fails and set -e aborts the ceremony: the
-    # same fail-closed contract as the confirm below.
+    # size first. Enter opens it; `s` declines without looking -- record
+    # unchanged, logged as skip, counted as declined. Approving without
+    # the bytes stays impossible. Off-tty the read fails and set -e aborts
+    # the ceremony: the same fail-closed contract as the confirm below.
     if [ "$base_ok" -eq 1 ]; then
       # Colour the magnitude the diff's own way -- additions green, deletions
       # red -- matching the keys summary and the diff body below it. gate_shape
       # is always "+A -D" (diff_shape prints both counts, either may be 0), so
       # the first word is the add count and the rest the delete count.
       gate_disp="${C_GRN}${gate_shape%% *}${C_OFF} ${C_RED}${gate_shape#* }${C_OFF}${C_B}"
-      printf '%snext: review %s%s%s %s; Enter opens the diff%s ' \
+      printf '%snext: review %s%s%s %s; Enter opens the diff%s %s· s skips%s ' \
         "$C_B" "$C_B$C_MAG" "${path##*/}" "$C_OFF$C_B" \
-        "$gate_disp" "$C_OFF"
+        "$gate_disp" "$C_OFF" "$C_DIM" "$C_OFF"
       read -r answer </dev/tty
+      case "$answer" in
+        s|S|skip)
+          printf '%sskipped; record unchanged%s\n' "$C_YEL" "$C_OFF"
+          log_action approve-file "$path" "$new_digest" skip
+          declined=$((declined + 1))
+          continue
+          ;;
+      esac
       printf '%s--- diff vs the approved baseline (exactly the bytes being approved) ---%s\n' "$C_B" "$C_OFF"
       printf '%scontext trimmed to 1 line; every changed line is always shown; @@ section labels are orientation, not authority.%s\n' "$C_DIM" "$C_OFF"
       printf '%s%s%s\n' "$C_DIM" "$shape" "$C_OFF"
@@ -4319,10 +4358,18 @@ EOF
       [ "$(tail -c1 -- "$fro" | wc -l)" -eq 1 ] && nl=1
       n_lines="$(LC_ALL=C wc -l <"$fro" | tr -d ' ')"
       [ -n "$nl" ] || [ ! -s "$fro" ] || n_lines=$((n_lines + 1))
-      printf '%snext: review %s%s%s full content %s%s line%s%s; Enter opens it%s ' \
+      printf '%snext: review %s%s%s full content %s%s line%s%s; Enter opens it%s %s· s skips%s ' \
         "$C_B" "$C_B$C_MAG" "${path##*/}" "$C_OFF$C_B" \
-        "$C_CYN" "$n_lines" "$(plural_s "$n_lines")" "$C_OFF$C_B" "$C_OFF"
+        "$C_CYN" "$n_lines" "$(plural_s "$n_lines")" "$C_OFF$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
       read -r answer </dev/tty
+      case "$answer" in
+        s|S|skip)
+          printf '%sskipped; record unchanged%s\n' "$C_YEL" "$C_OFF"
+          log_action approve-file "$path" "$new_digest" skip
+          declined=$((declined + 1))
+          continue
+          ;;
+      esac
       printf '%s--- %s (exactly the bytes being approved) ---%s\n' "$C_B" "$path" "$C_OFF"
       # Syntax colour only when the frozen copy is JSON that awk can carry
       # through unchanged; the digest above came from the file, not from
