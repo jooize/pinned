@@ -229,7 +229,12 @@ PINNED_CLONES_GROUP=_pinned-clones
 # tolerates. The harness rewrites this exact line too.
 PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json
 
-# Colour only when stdout is a terminal (piping/redirecting stays clean).
+# Colour per stream, gated on the fd being written: this stdout palette on
+# [ -t 1 ], the stderr palette below on [ -t 2 ]. A single stdout gate would
+# strip colour from a refusal a human is watching whenever stdout is piped,
+# and write escape bytes into a log whenever stderr is redirected while
+# stdout stays a terminal. Piping/redirecting a stream keeps THAT stream
+# clean without muting the other.
 if [ -t 1 ]; then
   C_OFF=$'\033[0m' C_B=$'\033[1m' C_DIM=$'\033[2m'
   C_RED=$'\033[31m' C_GRN=$'\033[32m' C_YEL=$'\033[33m' C_CYN=$'\033[36m'
@@ -245,6 +250,17 @@ if [ -t 1 ]; then
 else
   C_OFF='' C_B='' C_DIM='' C_RED='' C_GRN='' C_YEL='' C_CYN='' C_MAG='' C_BLU=''
   DIFF_COLOR=never
+fi
+
+# The stderr palette. Stderr speaks only the alarm/attention/meta subset of
+# the roles: red for refusals and errors, yellow for warnings and notes, dim
+# for meta, bold for weight. Extend here if a new stderr message needs
+# another role; never reach for a C_* name in a string bound for stderr.
+if [ -t 2 ]; then
+  C2_OFF=$'\033[0m' C2_B=$'\033[1m' C2_DIM=$'\033[2m'
+  C2_RED=$'\033[31m' C2_YEL=$'\033[33m'
+else
+  C2_OFF='' C2_B='' C2_DIM='' C2_RED='' C2_YEL=''
 fi
 NL=$'\n' TAB=$'\t'
 
@@ -979,7 +995,7 @@ ancestry_gate() {
     equal|forward)
       [ -n "$declared" ] || return 0
       printf '%sREFUSE: nothing to override -- the candidate is a descendant of the pin%s\n' \
-        "$C_RED$C_B" "$C_OFF" >&2
+        "$C2_RED$C2_B" "$C2_OFF" >&2
       echo "        pinned:    $old" >&2
       echo "        candidate: $new" >&2
       echo "        drop --$declared" >&2
@@ -988,10 +1004,10 @@ ancestry_gate() {
     *)        phrase="has diverged from the pin" ;;
   esac
   if [ -z "$declared" ]; then
-    printf '%sREFUSE: the candidate %s%s\n' "$C_RED$C_B" "$phrase" "$C_OFF" >&2
+    printf '%sREFUSE: the candidate %s%s\n' "$C2_RED$C2_B" "$phrase" "$C2_OFF" >&2
   elif [ "$declared" != "$actual" ]; then
     printf '%sREFUSE: --%s declared, but the candidate %s%s\n' \
-      "$C_RED$C_B" "$declared" "$phrase" "$C_OFF" >&2
+      "$C2_RED$C2_B" "$declared" "$phrase" "$C2_OFF" >&2
   else
     return 0
   fi
@@ -1211,7 +1227,7 @@ ensure_tree() {
     TREE_GRP="$grp" TREE_DMODE=750 TREE_FMODE=640
   else
     printf '%swarning: group %s does not exist -- %s stays root-only (0700) until it does%s\n' \
-      "$C_YEL" "$grp" "$udir" "$C_OFF" >&2
+      "$C2_YEL" "$grp" "$udir" "$C2_OFF" >&2
     TREE_GRP=wheel TREE_DMODE=700 TREE_FMODE=600
   fi
   install -d -m "$TREE_DMODE" -o root -g "$TREE_GRP" \
@@ -1229,12 +1245,12 @@ ensure_tree() {
   if [ -f "$old_signers/allowed_signers" ]; then
     if [ -e "$udir/policy/allowed_signers" ]; then
       printf '%swarning: both %s/allowed_signers and %s/policy/allowed_signers exist;\n' \
-        "$C_YEL" "$old_signers" "$udir" >&2
+        "$C2_YEL" "$old_signers" "$udir" >&2
       printf '         policy/ is the one that is read -- inspect and remove the old file by hand%s\n' \
-        "$C_OFF" >&2
+        "$C2_OFF" >&2
     else
       mv -f "$old_signers/allowed_signers" "$udir/policy/allowed_signers"
-      printf '%snote: moved allowed_signers into the policy dir:%s\n' "$C_YEL" "$C_OFF" >&2
+      printf '%snote: moved allowed_signers into the policy dir:%s\n' "$C2_YEL" "$C2_OFF" >&2
       printf '      %s/allowed_signers -> %s/policy/allowed_signers\n' "$old_signers" "$udir" >&2
       moved=1
     fi
@@ -1247,13 +1263,13 @@ ensure_tree() {
       # An earlier run's move leaves the empty dir behind, and an indented
       # continuation under nothing reads as a lost line.
       if [ "$moved" -eq 1 ]; then
-        printf '%s      removed the now-empty %s%s\n' "$C_YEL" "$old_signers" "$C_OFF" >&2
+        printf '%s      removed the now-empty %s%s\n' "$C2_YEL" "$old_signers" "$C2_OFF" >&2
       else
-        printf '%snote: removed the now-empty legacy dir %s%s\n' "$C_YEL" "$old_signers" "$C_OFF" >&2
+        printf '%snote: removed the now-empty legacy dir %s%s\n' "$C2_YEL" "$old_signers" "$C2_OFF" >&2
       fi
     else
       printf '%swarning: %s is not empty; left in place (nothing reads it any more)%s\n' \
-        "$C_YEL" "$old_signers" "$C_OFF" >&2
+        "$C2_YEL" "$old_signers" "$C2_OFF" >&2
     fi
   fi
   # Deterministic sweep so a group arriving (or leaving) heals the whole
@@ -1879,7 +1895,7 @@ policy_check_declaration() { # $1 effective policy  $2 declared paths  $3 abs pa
   esac
   names="$(policy_ungranted "$1" "$2" "$3")"
   printf '%sREFUSE: the ignorable policy does not grant these keys for%s %s\n' \
-    "$C_RED$C_B" "$C_OFF" "$3" >&2
+    "$C2_RED$C2_B" "$C2_OFF" "$3" >&2
   while IFS= read -r k; do
     [ -n "$k" ] && printf '          %s\n' "$k" >&2
   done <<EOF
@@ -2320,7 +2336,7 @@ elevation_gate() { # <what-the-root-side-does> argv...
   done
   if [ ! -t 0 ]; then
     printf '%serror: no tty for confirmation -- pass --yes to proceed non-interactively%s\n' \
-      "$C_RED" "$C_OFF" >&2
+      "$C2_RED" "$C2_OFF" >&2
     exit 2
   fi
   printf '%snext: %s as root (sudo); Enter continues%s %s· Ctrl-C stops%s ' \
@@ -2841,7 +2857,7 @@ case "$action" in
         [ "$upg_next" -eq 0 ] || { echo "--flake needs a path" >&2; exit 1; }
         [ -n "$upg_flake" ] || upg_flake="$(default_flake_file)"
         [ -r "$upg_flake" ] || {
-          printf '%serror: cannot read %s -- pass --flake%s\n' "$C_RED" "$upg_flake" "$C_OFF" >&2
+          printf '%serror: cannot read %s -- pass --flake%s\n' "$C2_RED" "$upg_flake" "$C2_OFF" >&2
           exit 1
         }
         print_upgrade_plan "$(scan_flake_inputs "$upg_flake")" "$(tier_user)" "$upg_flake"
@@ -3095,7 +3111,7 @@ case "$action" in
         }
         [ -n "$add_flake" ] || add_flake="$(default_flake_file)"
         [ -r "$add_flake" ] || {
-          printf '%serror: cannot read %s -- pass --flake%s\n' "$C_RED" "$add_flake" "$C_OFF" >&2
+          printf '%serror: cannot read %s -- pass --flake%s\n' "$C2_RED" "$add_flake" "$C2_OFF" >&2
           exit 1
         }
         if [ "$add_kind" = path ]; then
@@ -3588,7 +3604,7 @@ do_approve() {
       hash=""
       for t in "${tag_args[@]}"; do
         if ! sgit -c gpg.ssh.allowedSignersFile="$signers" verify-tag "$t"; then
-          printf '%sERROR: signature verification failed for tag %s; pin unchanged%s\n' "$C_RED$C_B" "$t" "$C_OFF" >&2
+          printf '%sERROR: signature verification failed for tag %s; pin unchanged%s\n' "$C2_RED$C2_B" "$t" "$C2_OFF" >&2
           log_action approve "$repo" "$t" verify-failed
           exit 1
         fi
@@ -3597,7 +3613,7 @@ do_approve() {
           hash="$t_hash"
         elif [ "$hash" != "$t_hash" ]; then
           printf '%sERROR: tags disagree: %s is at %s, expected %s; pin unchanged%s\n' \
-            "$C_RED$C_B" "$t" "$t_hash" "$hash" "$C_OFF" >&2
+            "$C2_RED$C2_B" "$t" "$t_hash" "$hash" "$C2_OFF" >&2
           log_action approve "$repo" "$t" tags-disagree
           exit 1
         fi
@@ -3608,7 +3624,7 @@ do_approve() {
         t_hash="$(sgit rev-parse "refs/tags/${sel_tag}"'^{commit}')"
         if [ "$t_hash" != "$hash" ]; then
           printf '%sERROR: tags disagree: %s is at %s, expected %s; pin unchanged%s\n' \
-            "$C_RED$C_B" "$sel_tag" "$t_hash" "$hash" "$C_OFF" >&2
+            "$C2_RED$C2_B" "$sel_tag" "$t_hash" "$hash" "$C2_OFF" >&2
           log_action approve "$repo" "$sel_tag" tags-disagree
           exit 1
         fi
@@ -3843,7 +3859,7 @@ EOF
   # that found nothing to show must never continue on that basis.
   if [ "$m" -eq 0 ]; then
     printf '%sERROR: no commits from the pin to %.10s -- the pin is not behind HEAD%s\n' \
-      "$C_RED$C_B" "$hash" "$C_OFF" >&2
+      "$C2_RED$C2_B" "$hash" "$C2_OFF" >&2
     echo "       (reversed or diverged history); review --backward or --diverged" >&2
     echo "       without --step: the whole-delta diff shows what actually changes" >&2
     return 1
@@ -4434,7 +4450,7 @@ do_tombstone() {
 # without this line reads as a verdict about the wrong file.
 rekey_verify_said() { # $1 old  $2 new  $3 captured output
   printf '%sverify, on the record for %s and the bytes now at %s:%s\n' \
-    "$C_DIM" "$1" "$2" "$C_OFF" >&2
+    "$C2_DIM" "$1" "$2" "$C2_OFF" >&2
   cat -- "$3" >&2
 }
 
@@ -4725,7 +4741,7 @@ do_rekey() {
     # state a trust tool must not delete on a hunch (ensure_tree's rule).
     rmdir "$old_slot/signers" 2>/dev/null \
       || printf '%swarning: %s is not empty; left in place%s\n' \
-           "$C_YEL" "$old_slot/signers" "$C_OFF" >&2
+           "$C2_YEL" "$old_slot/signers" "$C2_OFF" >&2
   fi
   printf '%s✓ tombstoned:%s %s %s(moved to %s)%s\n' \
     "$C_GRN$C_B" "$C_OFF" "$old" "$C_DIM" "$new" "$C_OFF"
@@ -4820,12 +4836,12 @@ do_declare() {
     t_hash="$(sgit rev-parse -q --verify "refs/tags/${name}"'^{commit}' 2>/dev/null || true)"
     if [ -z "$t_hash" ]; then
       printf '%sREFUSE: tag %s is missing from this checkout%s\n' \
-        "$C_RED$C_B" "$name" "$C_OFF" >&2
+        "$C2_RED$C2_B" "$name" "$C2_OFF" >&2
       exit 1
     fi
     if [ "$t_hash" != "$rev" ]; then
       printf '%sREFUSE: tag %s names %.10s, not the pinned %.10s%s\n' \
-        "$C_RED$C_B" "$name" "$t_hash" "$rev" "$C_OFF" >&2
+        "$C2_RED$C2_B" "$name" "$t_hash" "$rev" "$C2_OFF" >&2
       exit 1
     fi
     if [ "$old_tag" = "$name" ]; then
@@ -6348,7 +6364,7 @@ do_deploy() {
   fi
   [ -x "$REBUILD" ] || {
     printf '%serror: %s not found -- is this a nix-darwin/NixOS system?%s\n' \
-      "$C_RED" "$REBUILD" "$C_OFF" >&2
+      "$C2_RED" "$REBUILD" "$C2_OFF" >&2
     exit 1
   }
   # --flake is the ONLY override: an env knob would not survive sudo's
@@ -6356,7 +6372,7 @@ do_deploy() {
   # could silently read DIFFERENT flakes. Argv crosses the boundary.
   FLAKE="${FLAKE_ARG:-$DEFAULT_FLAKE}"
   [ -r "$FLAKE" ] || {
-    printf '%serror: cannot read %s -- pass --flake%s\n' "$C_RED" "$FLAKE" "$C_OFF" >&2
+    printf '%serror: cannot read %s -- pass --flake%s\n' "$C2_RED" "$FLAKE" "$C2_OFF" >&2
     exit 1
   }
 
@@ -6372,7 +6388,7 @@ do_deploy() {
   done || true)"
   [ -n "$inputs" ] || {
     printf '%serror: no git+file inputs with rev= in %s -- nothing deploy manages%s\n' \
-      "$C_RED" "$FLAKE" "$C_OFF" >&2
+      "$C2_RED" "$FLAKE" "$C2_OFF" >&2
     exit 1
   }
 
@@ -6426,14 +6442,14 @@ EOF
       IFS= read -r decl_tag <"$slot/tag" || decl_tag=""
       validate_tag_name "$decl_tag" || {
         printf '%serror: %s declares an invalid tag name; refusing%s\n' \
-          "$C_RED$C_B" "$slot/tag" "$C_OFF" >&2
+          "$C2_RED$C2_B" "$slot/tag" "$C2_OFF" >&2
         exit 1
       }
       live_tag="$(git -C "$path" rev-parse -q --verify "refs/tags/${decl_tag}^{commit}" 2>/dev/null || true)"
       if [ "$live_tag" != "$approved" ]; then
         if [ -z "$live_tag" ]; then tag_detail="is missing from the checkout"; else tag_detail="names ${live_tag:0:10}, not the approved ${approved:0:10}"; fi
         printf '%serror: slot for %s declares tag %s, but the live tag %s -- refusing (moved or deleted tags do not deploy)%s\n' \
-          "$C_RED$C_B" "$name" "$decl_tag" "$tag_detail" "$C_OFF" >&2
+          "$C2_RED$C2_B" "$name" "$decl_tag" "$tag_detail" "$C2_OFF" >&2
         exit 1
       fi
       want_ref="refs/tags/$decl_tag"
@@ -6592,7 +6608,7 @@ EOF
   if [ "$YES" -eq 0 ]; then
     if [ ! -t 0 ]; then
       printf '%serror: no tty for confirmation -- pass --yes to proceed non-interactively%s\n' \
-        "$C_RED" "$C_OFF" >&2
+        "$C2_RED" "$C2_OFF" >&2
       exit 2
     fi
     printf '%srebuild? [y/N]%s ' "$C_B" "$C_OFF"
@@ -6643,7 +6659,7 @@ do_upgrade() {
   local FLAKE
   FLAKE="${FLAKE_ARG:-$(default_flake_file)}"
   [ -r "$FLAKE" ] || {
-    printf '%serror: cannot read %s -- pass --flake%s\n' "$C_RED" "$FLAKE" "$C_OFF" >&2
+    printf '%serror: cannot read %s -- pass --flake%s\n' "$C2_RED" "$FLAKE" "$C2_OFF" >&2
     exit 1
   }
 
@@ -6767,9 +6783,9 @@ add_clone() { # <url> <name>
     install -d -m 2775 -o root -g "$PINNED_CLONES_GROUP" "$CLONE_DIR"
   else
     printf '%swarning: group %s does not exist -- %s will be owned by %s alone%s\n' \
-      "$C_YEL" "$PINNED_CLONES_GROUP" "$CLONE_DIR" "$inv" "$C_OFF" >&2
-    printf '%s         sharing the clone with other operators needs that group; the system\n' "$C_YEL" >&2
-    printf '         configuration declares it (nix: security.pinned)%s\n' "$C_OFF" >&2
+      "$C2_YEL" "$PINNED_CLONES_GROUP" "$CLONE_DIR" "$inv" "$C2_OFF" >&2
+    printf '%s         sharing the clone with other operators needs that group; the system\n' "$C2_YEL" >&2
+    printf '         configuration declares it (nix: security.pinned)%s\n' "$C2_OFF" >&2
     install -d -m 755 -o "$inv" "$CLONE_DIR"
   fi
   printf '%scloning:%s    %s\n' "$C_DIM" "$C_OFF" "$1"
@@ -6858,7 +6874,7 @@ do_add() {
   local FLAKE
   FLAKE="${flake_arg:-$(default_flake_file)}"
   [ -r "$FLAKE" ] || {
-    printf '%serror: cannot read %s -- pass --flake%s\n' "$C_RED" "$FLAKE" "$C_OFF" >&2
+    printf '%serror: cannot read %s -- pass --flake%s\n' "$C2_RED" "$FLAKE" "$C2_OFF" >&2
     exit 1
   }
   ensure_tree "$inv"
@@ -6898,7 +6914,7 @@ do_add() {
       "$C_GRN" "$C_OFF" "$C_CYN" "$pin" "$C_OFF" "$C_DIM" "$C_OFF"
     if [ "${#tag_args[@]}" -gt 0 ]; then
       printf '%snote: --signed-tag has nothing to gate here; the repo is already pinned%s\n' \
-        "$C_YEL" "$C_OFF" >&2
+        "$C2_YEL" "$C2_OFF" >&2
     fi
   else
     echo
