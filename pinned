@@ -189,7 +189,7 @@ set -euo pipefail
 
 # The release this file IS. Bumped in the release commit the tag points at,
 # so a checkout between releases reports the release it descends from.
-PINNED_VERSION="0.6.0"
+PINNED_VERSION="0.6.1"
 
 # Where this script installs itself. Override-friendly (handy for testing);
 # a packaging that owns its own prefix rewrites this line at build time.
