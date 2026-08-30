@@ -108,6 +108,15 @@ Several repos run as sequential ceremonies under one authentication:
 each is displayed and confirmed on its own, a decline skips only that
 repo, and a summary line closes the batch.
 .IP
+A repo record names its path only through the slot directory's name.
+When the ceremony finds that directory still wearing a former spelling
+of the path (a case\-only rename on a case\-insensitive volume), it
+renames it at entry \(em announced on screen, logged as
+.BR respell ,
+and not gated behind the y/N, because the record travels verbatim and
+the filesystem already resolves both spellings to this slot; the gate
+guards record content, and this restores an invariant.
+.IP
 Every diff opens behind its own gate line; answering
 .B s
 there declines without opening it \(em the pin is unchanged, the
@@ -368,6 +377,24 @@ and
 .B \-\-store
 every time: an approval without them clears the declaration and drops
 the stored copy, loudly.
+.IP
+This ceremony is also the repair for a record left behind by a
+respelled path.  On a case\-insensitive volume a case\-only rename
+(staticdrop \(-> StaticDrop) leaves both spellings resolving to one
+slot, whose record still names the old spelling \(em
+.B verify
+refuses it with exit 17, and
+.B rekey
+cannot express the move because old and new are one directory.
+Reviewing the file re\-states the record for the path as it is now
+spelled; identical bytes do not short\-circuit to \(lqalready
+approved\(rq while the recorded path disagrees.  When the slot
+directory itself still wears the old spelling, approving also renames
+it to match (announced before the confirm, logged as
+.BR respell ),
+so listings decode the path the record names.  Nothing here folds
+case: on a case\-sensitive filesystem two spellings are two files, two
+slots, two records, exactly as before.
 .RS
 .TP
 .BI \-\-baseline " copy"
@@ -458,6 +485,15 @@ An interrupted
 .B rekey
 therefore leaves the old record live beside the new one, both naming the
 same bytes, and re-running finishes the job.
+.IP
+A rename the filesystem does not consider a move is not a
+.B rekey
+matter: after a case\-only rename on a case\-insensitive volume both
+spellings resolve to one path and one slot, so there is no \(lqold\(rq
+to leave and no free slot to move into \(em the ceremony refuses, and
+the repair is a review (see
+.B review \-\-file
+and exit 17 under EXIT STATUS).
 .IP
 The pre-sudo gate reads
 .RB \(dq "next: re-key the record as root (sudo)" \(dq;
@@ -881,6 +917,7 @@ l l.
 10	no slot
 11	mismatch
 13	tombstoned-but-present
+17	record names another path (repair: review \-\-file)
 20	pinned-but-missing
 30	mode/owner violation
 .TE

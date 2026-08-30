@@ -4146,11 +4146,16 @@ say "S16: the frozen syslog vocabulary"
 # from the source's call sites: a new or renamed tag fails HERE, and the fix
 # for a legitimate addition is editing the list below, a diff that says out
 # loud that the log's vocabulary is changing.
+#
+# ADDED 2026-08-30: respell, when a review renames a slot directory whose
+# name no longer encodes the path its record names. It is a structural change
+# to root-owned state that the operator did not ask for, so it earns an entry
+# a later query can find without anyone having watched the screen.
 LOG_TAGS="$(grep -v '^[[:space:]]*#' "$SRC" \
   | grep -o 'log_action "\{0,1\}[A-Za-z][A-Za-z0-9$_-]*' \
   | sed 's/^log_action "\{0,1\}//' | LC_ALL=C sort -u | tr '\n' ' ')"
 assert_eq "$LOG_TAGS" \
-  'add approve approve-file declare ignorable-$sub mv setup show sign signer-add signer-remove tombstone ' \
+  'add approve approve-file declare ignorable-$sub mv respell setup show sign signer-add signer-remove tombstone ' \
   "the syslog action tags are exactly the frozen set (see log_action's comment)"
 
 # ---------------------------------------------------------------------------
@@ -4275,6 +4280,203 @@ ANS=""
 run_pinned
 assert_exit "$RC" 1 "no argv is usage"
 assert_contains "$OUT" "--version" "usage lists the flag"
+
+# ---------------------------------------------------------------------------
+say "S19: respelled paths (the case-only rename repair)"
+# ---------------------------------------------------------------------------
+# On a case-insensitive volume a case-only rename (staticdrop -> StaticDrop)
+# leaves both spellings resolving to ONE file and ONE slot directory, whose
+# record still names the old spelling. verify must refuse (byte-exact path
+# identity is load-bearing) but with its own exit and a named way out;
+# review --file is that way out, and it also renames the slot directory so
+# listings decode the path the record names. rekey cannot express this move
+# (old and new canonicalize to one path) and is deliberately untouched.
+#
+# The alias-dependent cases only exist on a case-insensitive filesystem, so
+# they are gated on a probe of the fixture volume; the record-vs-path
+# contract itself is filesystem-independent and always runs.
+CASEFOLD_OK=0
+mkdir -p "$FIX/casefold"
+printf 'x\n' > "$FIX/casefold/lower"
+[ -e "$FIX/casefold/LOWER" ] && CASEFOLD_OK=1
+
+# read_pin_record's two refusal codes, driven directly: 2 is "well-formed
+# record, another path" (reviewable), 1 is corruption (hand-repair). Callers
+# that only test nonzero keep refusing both.
+mkdir -p "$SUB/rp"
+printf 'record probe\n' > "$SUB/rp/subject.txt"
+RP_DIGEST="$(digest_of "$SUB/rp/subject.txt")"
+printf '%s  %s\n' "$RP_DIGEST" "$SUB/rp/subject.txt" > "$FIX/recfile"
+RC=0; "$PROBE" read_pin_record "$FIX/recfile" sha256 "$SUB/rp/subject.txt" >"$OUT" 2>&1 || RC=$?
+assert_exit "$RC" 0 "read_pin_record: a record naming the asked path passes"
+RC=0; "$PROBE" read_pin_record "$FIX/recfile" sha256 "$SUB/rp/other.txt" >"$OUT" 2>&1 || RC=$?
+assert_exit "$RC" 2 "read_pin_record: a record naming another path returns 2, not 1"
+printf 'zzzz  %s\n' "$SUB/rp/subject.txt" > "$FIX/recfile"
+RC=0; "$PROBE" read_pin_record "$FIX/recfile" sha256 "$SUB/rp/subject.txt" >"$OUT" 2>&1 || RC=$?
+assert_exit "$RC" 1 "read_pin_record: a corrupt digest still returns 1"
+
+# slot_name_actual: the narrow detector. It only ever reports a directory
+# the filesystem ALREADY resolves onto the asked-about name, same parent --
+# it never decides that two names are one file.
+mkdir -p "$SUB/sna/parent/inner"
+assert_eq "$("$PROBE" slot_name_actual "$SUB/sna/parent/inner")" "" \
+  "slot_name_actual: the on-disk spelling reports nothing"
+assert_eq "$("$PROBE" slot_name_actual "$SUB/sna/parent/absent")" "" \
+  "slot_name_actual: a missing directory reports nothing"
+if [ "$CASEFOLD_OK" -eq 1 ]; then
+  assert_eq "$("$PROBE" slot_name_actual "$SUB/sna/parent/INNER")" "$SUB/sna/parent/inner" \
+    "slot_name_actual: an aliased spelling reports the on-disk one"
+  assert_eq "$("$PROBE" slot_name_actual "$SUB/sna/PARENT/inner")" "" \
+    "slot_name_actual: a respelled parent is out of scope (a different slot, rekey territory)"
+fi
+
+# verify: a record naming another path is exit 17 with the ceremony named --
+# refused either way (nothing widens), but no longer a dead end. This half
+# of the contract is filesystem-independent.
+mkdir -p "$SUB/rs"
+printf 'unrelated record\n' > "$SUB/rs/other.txt"
+seed_state "$SUB/rs/other.txt" pin.sha256 "$(digest_of "$SUB/rs/other.txt")  $SUB/rs/somewhere-else.txt"
+run_pinned verify "$SUB/rs/other.txt"
+assert_exit "$RC" 17 "verify: a record naming another path -> 17"
+assert_contains "$OUT" "names path" "the refusal states both paths"
+assert_contains "$OUT" "review --file" "the refusal names the ceremony out"
+
+# ... and review --file is the repair: the record is re-stated for the path
+# as it is now spelled, through the full ceremony.
+ANS='
+y
+'
+run_pinned review --file "$SUB/rs/other.txt"
+assert_exit "$RC" 0 "review --file repairs a record naming another path"
+assert_contains "$OUT" "record names $SUB/rs/somewhere-else.txt" \
+  "the note states the stale path before the confirm"
+assert_missing "$OUT" "already approved" \
+  "identical bytes do not short-circuit while the recorded path disagrees"
+assert_eq "$(cat "$(slot_file_of "$SUB/rs/other.txt" pin.sha256)")" \
+          "$(digest_of "$SUB/rs/other.txt")  $SUB/rs/other.txt" \
+          "the repaired record names the live path"
+run_pinned verify "$SUB/rs/other.txt"
+assert_exit "$RC" 0 "the repaired record verifies"
+ANS=""
+run_pinned review --file "$SUB/rs/other.txt"
+assert_contains "$OUT" "already approved" "a clean slot short-circuits again"
+
+if [ "$CASEFOLD_OK" -eq 1 ]; then
+  # The live incident's exact shape: file on disk respelled, slot seeded
+  # under the former spelling (the fs aliases both encodings onto one dir),
+  # record naming the former spelling.
+  printf 'renamed content\n' > "$SUB/rs/Renamed.txt"
+  seed_state "$SUB/rs/renamed.txt" pin.sha256 \
+    "$(digest_of "$SUB/rs/Renamed.txt")  $SUB/rs/renamed.txt"
+  run_pinned verify "$SUB/rs/Renamed.txt"
+  assert_exit "$RC" 17 "verify: a case-respelled record -> 17"
+  assert_contains "$OUT" "case changed on disk" "the refusal diagnoses the respelling"
+
+  ANS='
+y
+'
+  run_pinned review --file "$SUB/rs/Renamed.txt"
+  assert_exit "$RC" 0 "review --file repairs the case-respelled record"
+  assert_contains "$OUT" "record names $SUB/rs/renamed.txt" "the note names the stale spelling"
+  assert_contains "$OUT" "slot renamed:" "the slot directory rename is announced"
+  assert_eq "$(cat "$(slot_file_of "$SUB/rs/Renamed.txt" pin.sha256)")" \
+            "$(digest_of "$SUB/rs/Renamed.txt")  $SUB/rs/Renamed.txt" \
+            "the record now names the on-disk spelling"
+  RS_SLOT="$(slot_of "$SUB/rs/Renamed.txt")"
+  assert_eq "$(basename "$(readlink -f "$RS_SLOT")")" "$(basename "$RS_SLOT")" \
+    "the slot directory wears the recorded spelling"
+  run_pinned verify "$SUB/rs/Renamed.txt"
+  assert_exit "$RC" 0 "the repaired pin verifies"
+  ANS=""
+  run_pinned review --file "$SUB/rs/Renamed.txt"
+  assert_contains "$OUT" "already approved" "the repaired slot short-circuits again"
+
+  # A decline leaves EVERYTHING as it was: record bytes and directory name.
+  printf 'kept content\n' > "$SUB/rs/Keep.txt"
+  seed_state "$SUB/rs/keep.txt" pin.sha256 \
+    "$(digest_of "$SUB/rs/Keep.txt")  $SUB/rs/keep.txt"
+  ANS='
+n
+'
+  run_pinned review --file "$SUB/rs/Keep.txt"
+  assert_contains "$OUT" "declined; record unchanged" "a decline is a normal outcome"
+  assert_missing "$OUT" "slot renamed:" "a decline renames nothing"
+  assert_eq "$(cat "$(slot_file_of "$SUB/rs/Keep.txt" pin.sha256)")" \
+            "$(digest_of "$SUB/rs/Keep.txt")  $SUB/rs/keep.txt" \
+            "a decline leaves the stale record byte-identical"
+  assert_eq "$(basename "$(readlink -f "$(slot_of "$SUB/rs/Keep.txt")")")" \
+            "$(basename "$(slot_of "$SUB/rs/keep.txt")")" \
+            "a decline leaves the directory under its old name"
+
+  # Record already repaired but the DIRECTORY still stale (a hand-fixed
+  # record leaves exactly this): verify passes, and review still offers the
+  # rename rather than short-circuiting past it.
+  printf 'dirfix\n' > "$SUB/rs/Dirfix.txt"
+  seed_state "$SUB/rs/dirfix.txt" pin.sha256 \
+    "$(digest_of "$SUB/rs/Dirfix.txt")  $SUB/rs/Dirfix.txt"
+  run_pinned verify "$SUB/rs/Dirfix.txt"
+  assert_exit "$RC" 0 "a correct record verifies through a stale-named slot"
+  ANS='
+y
+'
+  run_pinned review --file "$SUB/rs/Dirfix.txt"
+  assert_missing "$OUT" "already approved" "a stale directory name defeats the short-circuit"
+  assert_contains "$OUT" "renames it to match" "the note names the rename before the confirm"
+  assert_contains "$OUT" "slot renamed:" "and the rename is announced"
+  DF_SLOT="$(slot_of "$SUB/rs/Dirfix.txt")"
+  assert_eq "$(basename "$(readlink -f "$DF_SLOT")")" "$(basename "$DF_SLOT")" \
+    "the directory now wears the recorded spelling"
+
+  # REPO slots: a rev record names no path, so the directory name is the
+  # only record of what the pin covers -- and "already pinned" must not
+  # hide the repair, in the preview OR the ceremony.
+  CSREPO="$FIX/csfix/Repo"
+  mkdir -p "$CSREPO"
+  csgit() { # scrubbed git against this fixture repo ONLY (never cwd)
+    env -i PATH="$PATH" HOME=/var/empty \
+      GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+      git -C "$CSREPO" -c init.defaultBranch=main -c user.name=harness \
+      -c user.email=harness@example.invalid -c commit.gpgsign=false \
+      -c core.hooksPath=/dev/null "$@"
+  }
+  if csgit init -q >/dev/null 2>&1 \
+     && [ "$(csgit rev-parse --show-toplevel 2>/dev/null)" = "$CSREPO" ]; then
+    printf 'fixture\n' > "$CSREPO/f.txt"
+    csgit add f.txt >/dev/null
+    csgit commit -q -m "fixture commit" >/dev/null
+    CS_HASH="$(csgit rev-parse 'HEAD^{commit}')"
+    seed_state "$FIX/csfix/repo" rev.git "$CS_HASH"
+    # The PREVIEW must not short-circuit past the repair: an already-pinned
+    # repo whose slot wears a former spelling still needs its ceremony, and
+    # the preview says why before asking for authentication.
+    ANS='
+'
+    run_preview review "$CSREPO"
+    assert_exit "$RC" 97 "the stale-named repo reaches the elevation despite being at its pin"
+    assert_missing "$OUT" "nothing to approve" \
+      "an already-pinned repo with a stale slot name is not a no-op"
+    assert_contains "$OUT" "former spelling" \
+      "the preview says why this repo still needs its ceremony"
+    ANS=""
+    run_pinned review "$CSREPO"
+    assert_exit "$RC" 0 "review of an already-pinned repo with a stale slot name succeeds"
+    assert_contains "$OUT" "slot renamed:" "the ceremony renames the slot at entry"
+    assert_contains "$OUT" "already pinned" "and still reports the pin as the no-op it is"
+    CS_SLOT="$(slot_of "$CSREPO")"
+    assert_eq "$(basename "$(readlink -f "$CS_SLOT")")" "$(basename "$CS_SLOT")" \
+      "the repo slot wears the current spelling"
+    assert_eq "$(cat "$CS_SLOT/rev.git")" "$CS_HASH" "the rev record traveled verbatim"
+    ANS=""
+    run_preview review "$CSREPO"
+    assert_exit "$RC" 0 "a repaired repo slot is an ordinary pre-auth no-op again"
+    assert_contains "$OUT" "nothing to approve" "costing no authentication"
+    assert_missing "$OUT" "former spelling" "with nothing left to repair"
+  else
+    fail "case-respell git fixture init failed -- run this harness with the sandbox OFF"
+  fi
+else
+  say "  (case-sensitive fixture volume: alias-dependent cases skipped)"
+fi
 
 # ---------------------------------------------------------------------------
 say ""

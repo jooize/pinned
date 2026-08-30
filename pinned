@@ -1326,6 +1326,29 @@ write_slot_state() {
   mv -f "$tmp" "$d/$name"
 }
 
+# The slot DIRECTORY NAME is not decoration. `pinned list` decodes it to
+# report which path a pin covers ("slot names never leave this function:
+# consumers get decoded paths"), and for a REPO slot it is the only record of
+# that path at all -- a rev record holds the hash alone. On a case-insensitive
+# volume a respelled path encodes to a name the filesystem resolves straight
+# back to the directory still wearing the old spelling, so the record can say
+# StaticDrop while every listing says staticdrop. This reports that gap so a
+# ceremony can close it, restoring `slot name == encode(record path)`.
+#
+# Deliberately NARROW: it only ever reports a directory the filesystem ALREADY
+# aliases onto this slot, in the same parent. A different parent, or a name
+# that does not already resolve here, is a different slot -- rekey's job,
+# under rekey's own ceremony. Nothing here decides that two names are one
+# file; it asks the filesystem what it already decided.
+slot_name_actual() { # $1 = canonical slot dir; echoes the on-disk spelling, else nothing
+  local want="$1" real
+  [ -d "$want" ] || return 0
+  real="$(readlink -f "$want" 2>/dev/null)" || return 0
+  [ -n "$real" ] && [ "$real" != "$want" ] || return 0
+  [ "${real%/*}" = "${want%/*}" ] || return 0
+  printf '%s\n' "$real"
+}
+
 # The ANNOTATION writers (tag / ignored.json / approved) -- and, with the
 # same discipline, the policy files. Same atomic stage-chown-chmod-rename
 # and the same ownership as the state file, but annotations take no part in
@@ -2098,11 +2121,24 @@ read_rev() {
   printf '%s\n' "$rev"
 }
 
+# ASCII-only case fold, used SOLELY to describe a mismatch (never to decide
+# one): it lets the message below separate "the path was respelled" from
+# "this record is corrupt". Trust decisions stay byte-exact -- see the
+# no-folding rule above encode(), which this must never be recruited into
+# violating.
+ascii_fold() { printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z'; }
+
 # The file-pin counterpart of read_rev: read and VALIDATE a slot's pin
-# record, setting REC_LABEL / REC_HEXLEN / REC_DIGEST. Refuses -- loudly,
-# return 1 -- an undeclared algorithm, a digest that is not hex or not the
+# record, setting REC_LABEL / REC_HEXLEN / REC_DIGEST / REC_PATH. Refuses --
+# loudly -- an undeclared algorithm, a digest that is not hex or not the
 # declared function's LENGTH (declare-then-validate makes length a checkable
 # invariant), and a record naming a path other than the one asked about.
+#
+# TWO refusal codes, because they are two different states and only one of
+# them has a way out: return 1 is corruption, return 2 is a well-formed
+# record naming another path -- which on a case-insensitive volume is what a
+# case-only rename leaves behind, since both spellings encode onto ONE slot
+# directory. Callers that only test nonzero keep refusing exactly as before.
 # ONE reader for every verb that answers about a file record, so verify and
 # cat can never drift apart on what a valid record is.
 #
@@ -2111,7 +2147,7 @@ read_rev() {
 # violated invariant (see do_cat's contract), so it stays at the call site.
 read_pin_record() { # $1 = state file, $2 = declared label, $3 = the path asked about
   local f="$1" line rec_path
-  REC_LABEL="$2"
+  REC_LABEL="$2" REC_PATH=""
   algo_hash_cmd "$REC_LABEL" >/dev/null 2>&1 || {
     echo "ERROR: $f declares unknown algorithm '$REC_LABEL'; refusing" >&2
     return 1
@@ -2120,6 +2156,7 @@ read_pin_record() { # $1 = state file, $2 = declared label, $3 = the path asked 
   IFS= read -r line <"$f" || line=""
   REC_DIGEST="${line%%  *}"
   rec_path="${line#*  }"
+  REC_PATH="$rec_path"
   case "$REC_DIGEST" in
     *[!0-9a-f]*|'')
       echo "ERROR: record $f is corrupt" >&2
@@ -2130,8 +2167,16 @@ read_pin_record() { # $1 = state file, $2 = declared label, $3 = the path asked 
     return 1
   }
   [ "$rec_path" = "$3" ] || {
-    echo "ERROR: record $f names path '$rec_path', not '$3'; malformed record" >&2
-    return 1
+    # A record naming another path is NOT corrupt: it was correct when it was
+    # written and the path has been respelled since. Say which it is, because
+    # the two have different exits -- corruption is hand-repair territory, a
+    # respelling is a re-approval away.
+    if [ "$(ascii_fold "$rec_path")" = "$(ascii_fold "$3")" ]; then
+      echo "ERROR: record $f names path '$rec_path', not '$3' -- the path's case changed on disk" >&2
+    else
+      echo "ERROR: record $f names path '$rec_path', not '$3'; malformed record" >&2
+    fi
+    return 2
   }
 }
 
@@ -3001,8 +3046,20 @@ case "$action" in
             # Same short-circuit the privileged side would take -- but here it
             # costs no authentication. The pin is root-owned; HEAD is the
             # repo the caller is looking at.
+            #
+            # EXCEPT when the slot directory wears a former spelling of this
+            # path: the rename is root's (the ceremony repairs it at entry),
+            # so this repo still needs its ceremony even at its pin --
+            # skipping here would leave listings decoding a path this record
+            # no longer covers, with no verb that ever fixes it.
             if [ -n "$preview_pin" ] && [ "$preview_pin" = "$preview_head" ]; then
               printf '%salready pinned:%s %s  %s%s%s\n' "$C_GRN" "$C_OFF" "$repo" "$C_DIM" "$preview_head" "$C_OFF"
+              if [ -n "$(slot_name_actual "$default_slot")" ]; then
+                printf '%snote: the slot directory wears a former spelling of this path; the ceremony renames it%s\n' \
+                  "$C_YEL" "$C_OFF"
+                all_pinned=0
+                preview_todo=$((preview_todo + 1))
+              fi
               continue
             fi
             all_pinned=0
@@ -3570,6 +3627,23 @@ do_approve() {
 
     ceremony_banner
 
+    # A slot directory still wearing a former spelling of this repo's path is
+    # repaired at ENTRY, not behind the y/N: a rev record names no path, so
+    # the directory name is the only record of what this pin covers, and
+    # renaming a name the filesystem already resolves here changes no trust
+    # -- the same class as ensure_tree re-asserting modes. The gate below
+    # guards record CONTENT; this restores an invariant, and it must not
+    # hide behind the already-pinned short-circuit the way the file
+    # ceremony's stale record once hid behind "already approved".
+    slot_respell="$(slot_name_actual "$slot")"
+    if [ -n "$slot_respell" ]; then
+      mv -f "$slot_respell" "$slot"
+      log_action respell "$repo" "" ok
+      printf '%s✓ slot renamed:%s %s%s%s -> %s%s%s\n' \
+        "$C_GRN$C_B" "$C_OFF" "$C_CYN" "${slot_respell##*/}" "$C_OFF" \
+        "$C_CYN" "${slot##*/}" "$C_OFF"
+    fi
+
     if [ "${#tag_args[@]}" -gt 0 ]; then
       # Signature gate: verify normally-signed release tags (git tag -s;
       # nothing pinned-specific in the repo) against ROOT-OWNED allowed
@@ -4089,7 +4163,13 @@ do_approve_files() {
     fi
 
     old_digest="" old_label="" state_note="" ign_note="" cust_note="" decl_changed=0
-    old_ign=""; old_bad=0; had_copy=0; copy_bad=0
+    old_ign=""; old_bad=0; had_copy=0; copy_bad=0; path_restated=0; slot_note=""
+    # Asked before the record is read, because a stale directory name is
+    # state this ceremony repairs whether or not the record itself is stale.
+    slot_respell="$(slot_name_actual "$slot")"
+    if [ -n "$slot_respell" ]; then
+      slot_note="slot directory is still named ${slot_respell##*/} -- this approval renames it to match"
+    fi
     if slot_declares_ignore "$slot"; then
       # Quiet read: a broken declaration is reported by the note below and
       # replaced by this ceremony, so read_ignored_paths' own refusal text
@@ -4109,8 +4189,20 @@ do_approve_files() {
       case "$slot_state" in
         pin)
           verify_record_file "$slot_file" || exit 1
-          IFS= read -r line <"$slot_file" || line=""
-          old_digest="${line%%  *}"; old_label="$slot_kind" ;;
+          # THE ONE READER, restored. Reading the record raw here is what made
+          # a stale spelling invisible to this ceremony: the digest matched,
+          # the declaration matched, and the short-circuit below answered
+          # "already approved" without ever re-stating the path -- leaving the
+          # one state verify refuses with no ceremony that clears it.
+          rec_rc=0
+          read_pin_record "$slot_file" "$slot_kind" "$path" || rec_rc=$?
+          case "$rec_rc" in
+            0) old_digest="$REC_DIGEST"; old_label="$REC_LABEL" ;;
+            2) old_digest="$REC_DIGEST"; old_label="$REC_LABEL"
+               path_restated=1
+               state_note="record names $REC_PATH -- this approval re-states it for this path" ;;
+            *) state_note="the slot's record is unreadable -- this approval replaces it" ;;
+          esac ;;
         tombstone)
           IFS= read -r line <"$slot_file" || line=""
           state_note="tombstoned ($line) -- approving reinstates this path" ;;
@@ -4169,8 +4261,11 @@ do_approve_files() {
       cust_note="the slot's stored copy does not re-hash to its record -- this approval replaces it"
     fi
 
+    # Identical bytes are not enough to skip when the RECORD names another
+    # path: re-stating that binding is the whole point of this pass, and it
+    # is the one repair for a slot verify refuses.
     if [ -n "$old_digest" ] && [ "$old_label" = "$file_algo" ] && [ "$new_digest" = "$old_digest" ] \
-       && [ "$decl_changed" -eq 0 ]; then
+       && [ "$decl_changed" -eq 0 ] && [ "$path_restated" -eq 0 ] && [ -z "$slot_respell" ]; then
       printf '%salready approved:%s %s\n' "$C_GRN" "$C_OFF" "$path"
       continue
     fi
@@ -4185,6 +4280,7 @@ do_approve_files() {
     [ -n "$state_note" ] && printf '%snote:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_YEL" "$state_note" "$C_OFF"
     [ -n "$ign_note" ] && printf '%snote:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_YEL" "$ign_note" "$C_OFF"
     [ -n "$cust_note" ] && printf '%snote:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_YEL" "$cust_note" "$C_OFF"
+    [ -n "$slot_note" ] && printf '%snote:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_YEL" "$slot_note" "$C_OFF"
     if [ -n "$old_digest" ]; then
       printf '%sapproved:%s   %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$old_digest" "$C_OFF" "$C_DIM" "$old_label" "$C_OFF"
     else
@@ -4387,6 +4483,18 @@ EOF
     read -r answer </dev/tty
     case "$answer" in
       y|Y|yes)
+        # BEFORE the record is written, so the record lands in the directory
+        # whose name already decodes back to the path it names -- no window
+        # in which a listing and a record disagree. Its own log line: a
+        # structural change nobody asked for must be auditable after the
+        # fact, not only visible to whoever was watching the screen.
+        if [ -n "$slot_respell" ]; then
+          mv -f "$slot_respell" "$slot"
+          log_action respell "$path" "" ok
+          printf '%s✓ slot renamed:%s %s%s%s -> %s%s%s\n' \
+            "$C_GRN$C_B" "$C_OFF" "$C_CYN" "${slot_respell##*/}" "$C_OFF" \
+            "$C_CYN" "${slot##*/}" "$C_OFF"
+        fi
         write_slot_state "$slot" "pin.$file_algo" "$new_digest  $path"
         # The stored witness is the frozen buffer this ceremony displayed and
         # hashed -- the same single read the record binds to, so custody can
@@ -5068,7 +5176,21 @@ do_verify() {
   esac
 
   verify_record_file "$slot_file" || exit 1
-  read_pin_record "$slot_file" "$slot_kind" "$path" || exit 1
+  # A record naming another spelling of this path (rc 2) still REFUSES --
+  # nothing here decides that two names are one file. What changes is that
+  # the refusal names the way out and carries its own code in the review
+  # decade, so a gate can offer the remediation instead of a dead end.
+  # 17, not 14: 12/14/15 are the pre-decade numbers, retired and never
+  # reused (16 is cat's). Corruption (rc 1) keeps exit 1: it has no
+  # ceremony that fixes it.
+  local rec_rc=0
+  read_pin_record "$slot_file" "$slot_kind" "$path" || rec_rc=$?
+  if [ "$rec_rc" -eq 2 ]; then
+    echo "        re-approve to re-state the record for this path:" >&2
+    echo "        pinned review --file $path" >&2
+    exit 17
+  fi
+  [ "$rec_rc" -eq 0 ] || exit 1
   local label="$REC_LABEL" rec_digest="$REC_DIGEST"
 
   # SLOT INVARIANT, checked before anything about the live file: if the
