@@ -2315,7 +2315,27 @@ elevation_quote() { # token
 # (repo/path, which these verbs place before options); each --flag then gets
 # its own continuation line, carrying the value that follows it when the next
 # token is not itself a flag, with flag names padded to a common column so the
-# values align. Role colour as deploy renders commands -- sudo bold, command
+# values align.
+#
+# INDENT. Continuations sit at 4, two past the caller's own 2-space indent:
+# a plain hanging indent that aligns with nothing on line 1. The obvious
+# alternative -- 7, putting --file under sudo's `--` -- was rejected: that
+# `--` is sudo's end-of-options marker, not a flag of this program, and a
+# column that starts with it claims the flag list begins one item earlier
+# than it does. (6, the old value, aligned with neither and read as an
+# off-by-one near-miss of exactly that column.)
+#
+# GROUPING. --ignore-json-key is scoped POSITIONALLY to the --file it follows
+# (arg parsing refuses one that precedes any --file), and a flat list of
+# continuation lines renders that scope invisible -- "which file do the
+# ignores apply to" is unanswerable from the display of a command the human
+# is about to authenticate. So for a verb with a group-opening flag, the
+# flags subordinate to it indent one step further. Extra leading whitespace
+# after a backslash continuation is nothing to the shell, so the block stays
+# pasteable; a blank line between groups would NOT be, which is why the
+# separation is indentation.
+#
+# Role colour as deploy renders commands -- sudo bold, command
 # name cyan, verb and flags plain, paths cyan -- plus one refinement: a
 # --baseline value is a slot-digest path nobody typed (machine-derived), so it
 # renders dim to keep the eye on the --file path being approved. The colour
@@ -2352,18 +2372,44 @@ elevation_cmd_disp() { # elev action args...
   done
 
   local out="${C_B}sudo${C_OFF} -- $(prog_disp "$elev") ${act}${lead:+ $lead}"
-  local n="${#fl[@]}" i=0 name padded vcol
+  # The flag that opens a group for this verb, if any. review is the one verb
+  # that takes repeated per-subject groups (--file, then that file's
+  # --baseline and --ignore-json-key); every other verb has a flat flag list
+  # and leaves this empty, so the indent below never moves for them. Flags
+  # BEFORE the first group opener (--store, --yes) are ceremony-wide and
+  # correctly stay at base indent.
+  local group="" grouped=0 ind
+  if [ "$act" = "review" ]; then group="--file"; fi
+  # The two indents must not split the value column in two: a group-opening
+  # row pads its flag 2 wider, exactly absorbing the step its subordinates
+  # take, so every value on the block lands in the same place whichever level
+  # its flag sits at. Without grouping there is one level and one width.
+  local n="${#fl[@]}" i=0 name padded vcol pw
   while [ "$i" -lt "$n" ]; do
     name="${fl[$i]}"
-    printf -v padded '%-*s' "$fw" "$name"       # pad flag (plain) so values align
+    pw="$fw"
+    if [ -n "$group" ] && [ "$name" = "$group" ]; then
+      grouped=1
+      ind="    "
+      pw=$((fw + 2))
+    elif [ "$grouped" -eq 1 ]; then
+      ind="      "
+    else
+      ind="    "
+      if [ -n "$group" ]; then pw=$((fw + 2)); fi
+    fi
+    printf -v padded '%-*s' "$pw" "$name"       # pad flag (plain) so values align
     if [ -n "${fv[$i]}" ]; then
       case "$name" in
         --baseline) vcol="$C_DIM" ;;
         *)          vcol="$C_CYN" ;;
       esac
-      out="$out \\"$'\n'"      ${padded}  ${vcol}$(elevation_quote "${fv[$i]}")${C_OFF}"
+      out="$out \\"$'\n'"${ind}${padded}  ${vcol}$(elevation_quote "${fv[$i]}")${C_OFF}"
     else
-      out="$out \\"$'\n'"      ${padded}"
+      # No value: emit the bare flag. Padding it would leave trailing blanks
+      # before the ` \`, which survive a copy-paste and read as a truncated
+      # value on the line the human is auditing.
+      out="$out \\"$'\n'"${ind}${name}"
     fi
     i=$((i + 1))
   done

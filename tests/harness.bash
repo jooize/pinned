@@ -2386,6 +2386,52 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_exit "$RC" 97 "two files reach the elevation too"
   assert_contains "$OUT" "next: review 2 files as root (sudo)" "the gate counts both files"
 
+  # --- the display GROUPS each --file with the flags scoped to it -----------
+  # --ignore-json-key binds POSITIONALLY to the --file it follows (arg parsing
+  # refuses one that precedes any --file). A flat column of continuation lines
+  # renders that scope invisible, so "which file do these ignores apply to" is
+  # unanswerable from the very command the human is about to authenticate --
+  # the whole point of disclosing the argv. assert_shows_cmd strips indentation
+  # to keep the argv checks layout-free, so the grouping needs its own,
+  # layout-pinning assertion here.
+  ANS='
+'
+  run_preview review --file "$SUB/real.txt" --ignore-json-key model \
+                     --file "$SUB/link.txt"
+  assert_exit "$RC" 97 "a grouped --file/--ignore-json-key gate reaches the elevation"
+  # Both --file rows at 4; the subordinate --ignore-json-key one step in at 6.
+  if grep -qE '^    --file .*real\.txt' "$OUT" \
+     && grep -qE '^      --ignore-json-key +model' "$OUT" \
+     && grep -qE '^    --file .*link\.txt' "$OUT"; then
+    ok "the ignore indents under its own --file (scope is visible)"
+  else
+    fail "the display does not group --ignore-json-key under its --file"
+  fi
+  # And the values still share ONE column across the two indent levels: the
+  # group opener pads its flag 2 wider to absorb its subordinates' step.
+  if awk '
+      /^ *--(file|ignore-json-key|baseline) / {
+        # column of the value = length of everything before it
+        match($0, /^ *--[a-z-]+ +/); c = RLENGTH
+        if (seen && c != col) { bad = 1 }
+        seen = 1; col = c
+      }
+      END { exit bad }' "$OUT"; then
+    ok "values share one column across both indent levels"
+  else
+    fail "the two indent levels split the value column"
+  fi
+  # A verb with no group-opening flag keeps a single, flat level.
+  ANS='
+'
+  run_preview review "$EV_STALE" --yes
+  assert_exit "$RC" 97 "a repo review reaches the elevation"
+  if grep -qE '^      --' "$OUT"; then
+    fail "a verb with no --file groups must not indent a second level"
+  else
+    ok "no --file groups -> one flat flag level"
+  fi
+
   # --- add ------------------------------------------------------------------
   ANS='
 '
