@@ -750,8 +750,20 @@ highlight_json_ok() {
 # The ONLY way to diff in this script. Always carries the hardening flags, so
 # a future edit cannot reintroduce a falsifiable review by writing the obvious
 # thing; `sgit diff` itself is refused below.
+#
+# color.diff.meta paints git's per-file header block -- `diff --git`, `index`,
+# `---`, `+++`, mode lines -- which defaults to plain bold and so dissolves
+# into the bold ceremony chrome around it. Magenta is the repo-identity accent
+# (see the palette above), spent a second time here on purpose: a file header
+# answers the same question the gate line does, one level down -- what am I
+# looking at. Git treats the whole block as one class, so this is all four
+# lines or none; splitting them would mean post-processing git's own colored
+# output, which is not worth doing to a display a trust decision rests on.
+# Decoration only: git applies it to header lines it generates itself, never
+# to reviewed content, and it is inert when DIFF_COLOR=never.
 sgit_diff() {
-  _sgit_diff_ok=1 sgit -c color.diff="$DIFF_COLOR" diff --no-ext-diff --no-textconv "$@"
+  _sgit_diff_ok=1 sgit -c color.diff="$DIFF_COLOR" -c color.diff.meta='magenta bold' \
+    diff --no-ext-diff --no-textconv "$@"
 }
 
 sgit() {
