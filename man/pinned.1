@@ -922,10 +922,15 @@ commit under that name \(em the release-at-HEAD rule, the same commit a
 plain review would cover; otherwise (no tag at HEAD, several, or an
 out-of-grammar name) the repo is listed for a manual
 .B review \-\-tag
-instead.
-There is deliberately no latest-tag search: version sort is a
-convention, and the tag namespace is repo content \(em content must
-never choose what a ceremony reviews.
+instead, and the plan names the newest release past the pin \(em by
+ancestry on the checkout's own line of history, unverified \(em so the
+command has a name to copy, and says how far HEAD stands past it.
+Naming is not choosing: there is deliberately no latest-tag search that
+routes anything, because version sort is a convention and the tag
+namespace is repo content \(em content must never choose what a
+ceremony reviews.
+Several names on that commit are all shown and none is put in the
+command.
 .IP
 A stale repo carrying a newer signed release, and an installed signer
 key that verifies it, is offered the signature gate instead: the plan

@@ -196,7 +196,10 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       carries exactly one release tag
                                       (approved under that name), else it
                                       is listed for a manual review
-                                      --tag; only forward checkouts join
+                                      --tag with the newest release past
+                                      the pin named (by ancestry,
+                                      unverified) as the name to copy;
+                                      only forward checkouts join
                                       a ceremony, backward and diverged
                                       ones are listed as refused with the
                                       flag that would declare them

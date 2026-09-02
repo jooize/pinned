@@ -1292,14 +1292,33 @@ y
   assert_eq "$(rev_in "$B_SLOT/rev.git")" "$(bgit "$REPO_B" rev-parse 'HEAD^{commit}')" "the tagged repo pinned at its release"
   assert_eq "$(cat "$B_SLOT/tag")" "v10" "the declaration followed the release"
 
-  # Several tags at HEAD is ambiguity, never a guess.
+  # A release behind HEAD is the common shape (tag, then keep committing).
+  # It never routes: the row is skipped, but names the newest release past
+  # the pin as the thing to type by hand, with the HEAD gap for orientation.
   printf 'b4\n' > "$REPO_B/f"; bgit "$REPO_B" commit -q -am b4
+  bgit "$REPO_B" tag v11
+  printf 'b5\n' > "$REPO_B/f"; bgit "$REPO_B" commit -q -am b5
+  ANS=""
+  run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
+  assert_exit "$RC" 0 "a release behind HEAD does not break upgrade"
+  assert_contains "$OUT" "newest release past the pin is v11, unverified -- review --tag v11 by hand" \
+    "the by-hand hint names the release behind HEAD"
+  assert_contains "$OUT" "HEAD is 1 commit past that release" "and how far HEAD stands past it"
+  assert_missing "$OUT" "review:" "naming is not routing: nothing joins the batch"
+  assert_eq "$(rev_in "$B_SLOT/rev.git")" "$(bgit "$REPO_B" rev-parse 'v10^{commit}')" \
+    "the plan records nothing"
+
+  # Several tags at HEAD is ambiguity, never a guess: all are named, none is
+  # put in the command.
   bgit "$REPO_B" tag v12; bgit "$REPO_B" tag v13
   ANS=""
   run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
   assert_exit "$RC" 0 "ambiguous HEAD tags do not break upgrade"
-  assert_contains "$OUT" "no single release tag at HEAD" "several tags at HEAD route to manual"
-  bgit "$REPO_B" tag -d v12 >/dev/null; bgit "$REPO_B" tag -d v13 >/dev/null
+  assert_contains "$OUT" "newest releases past the pin are v12, v13, unverified -- review --tag by hand" \
+    "several tags at HEAD route to manual, all named, none chosen"
+  assert_missing "$OUT" "review --tag v12" "no name is picked for the command"
+  assert_missing "$OUT" "v11" "the ancestry maximum hides the older release"
+  bgit "$REPO_B" tag -d v11 >/dev/null; bgit "$REPO_B" tag -d v12 >/dev/null; bgit "$REPO_B" tag -d v13 >/dev/null
 
   # THE ANCESTRY FLOOR (S8f) is upgrade's admission rule: an automatic
   # ceremony only ever covers a FORWARD checkout. A checkout sitting behind
@@ -2037,8 +2056,8 @@ EOF
   run_pinned upgrade --flake "$FIX/flake-signed.nix" --dry-run
   assert_exit "$RC" 0 "the plan without a signers file exits 0"
   assert_missing "$OUT" "signed release" "no signers file means no offer"
-  assert_contains "$OUT" "no single release tag at HEAD" \
-    "and the tag-declared repo falls back to by-hand approval"
+  assert_contains "$OUT" "newest release past the pin is t2, unverified -- review --tag t2 by hand" \
+    "and the tag-declared repo falls back to by-hand approval, the unverified name as orientation"
 
   seed_signers_user "$SIGN_KEY.pub"
 
@@ -2055,7 +2074,7 @@ EOF
   assert_missing "$OUT" "v4-plain" "an unsigned tag at HEAD is not a candidate"
   assert_contains "$OUT" "(signed release t2 -- signature-gated)" \
     "the offer outranks the tag-declared route"
-  assert_missing "$OUT" "no single release tag at HEAD" \
+  assert_missing "$OUT" "review --tag t2 by hand" \
     "so the by-hand tag skip no longer applies to it"
   assert_eq "$(rev_in "$S_SLOT/rev.git")" "$S_PIN" "the plan records nothing"
 
@@ -2081,8 +2100,8 @@ y
   run_pinned upgrade --flake "$FIX/flake-signed.nix" --dry-run
   assert_exit "$RC" 0 "the follow-up plan exits 0"
   assert_missing "$OUT" "signed release" "no verified tag above the pin means no offer"
-  assert_contains "$OUT" "no single release tag at HEAD" \
-    "the tag-declared slot is back to by-hand approval"
+  assert_contains "$OUT" "no release tag past the pin -- review --tag by hand" \
+    "the tag-declared slot is back to by-hand approval, with nothing to name"
 
   # A decline is the offer's refusal: the batch contract skips this repo.
   bgit "$REPO_S" tag -d v3-evil >/dev/null

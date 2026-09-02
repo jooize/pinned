@@ -2870,7 +2870,10 @@ scan_flake_inputs() { # <flakefile> [tier-user]
 # offered: version sort is a convention, and the tag namespace is
 # attacker-writable repo content -- an invented v99 or a backward-pointing
 # tag must never CHOOSE what a ceremony reviews. A tag AT HEAD adds only a
-# name to the commit a plain review would already cover.
+# name to the commit a plain review would already cover. When there is no
+# such tag, the plan still NAMES the newest release past the pin (by
+# ancestry, unverified -- see release_tags_past_pin) so the by-hand
+# `review --tag` has something to copy; naming is not choosing.
 head_release_tag() { # <repo-path>
   # Runs as root under `upgrade` over a user-owned checkout, and a tag name
   # is repo content: sgit, like every other git in this file. `repo` is the
@@ -2910,8 +2913,7 @@ head_release_tag() { # <repo-path>
 #
 # $1 = repo path, $2 = tier user.
 signed_upgrade_tags() {
-  local repo="$1" tu="$2" slot signers pin head t c
-  local cand_t cand_c n i j maxc ok
+  local repo="$1" tu="$2" slot signers
   slot="$(slot_dir_for "$tu" "$repo")"
   # Per-slot signers take precedence over the user tier, exactly as the
   # ceremony resolves them: a key trusted to vouch for one repo must not
@@ -2919,6 +2921,37 @@ signed_upgrade_tags() {
   signers="$slot/signers/allowed_signers"
   [ -f "$signers" ] || signers="$(policy_dir_for "$tu")/allowed_signers"
   [ -r "$signers" ] || return 1
+  release_tags_past_pin "$repo" "$tu" "$signers"
+}
+
+# The release names past one stale forward repo's pin, at the unique ancestry
+# MAXIMUM of the candidate commits, one per line. Two callers, one selector:
+#
+#   signed_upgrade_tags   passes a signers file. Every candidate must verify
+#                         against it, and the result is an OFFER -- a ceremony
+#                         upgrade runs by itself.
+#   the plan's notag row  passes none. Nothing is verified, and the result is
+#                         ORIENTATION only: the newest name past the pin,
+#                         printed so the by-hand `review --tag` has a name to
+#                         copy. It routes nothing -- an unverified name is
+#                         repo content, and content never chooses what a
+#                         ceremony reviews. The human types it; the ceremony
+#                         then shows what the name resolves to.
+#
+# Candidates pass the declared-name grammar, sit strictly forward of the pin,
+# and on the checkout's own line of history (equal to or an ancestor of HEAD);
+# a release off to the side is by-hand work, never an offer or a hint.
+#
+#   0  the printed tags all name the unique ancestry-maximum commit
+#   1  no candidate past the pin
+#   2  candidates on lines that do not contain one another: no unique maximum
+#
+# $1 = repo path, $2 = tier user, $3 = allowed_signers path, or '' to skip
+# verification.
+release_tags_past_pin() {
+  local repo="$1" tu="$2" signers="$3" slot pin head t c
+  local cand_t cand_c n i j maxc ok
+  slot="$(slot_dir_for "$tu" "$repo")"
   pin="$(read_rev "$slot" "$repo" 2>/dev/null)" || return 1
   [ -n "$pin" ] || return 1
   head="$(sgit rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null)" || return 1
@@ -2938,7 +2971,9 @@ signed_upgrade_tags() {
       equal|forward) ;;
       *) continue ;;
     esac
-    sgit -c gpg.ssh.allowedSignersFile="$signers" verify-tag "$t" >/dev/null 2>&1 || continue
+    if [ -n "$signers" ]; then
+      sgit -c gpg.ssh.allowedSignersFile="$signers" verify-tag "$t" >/dev/null 2>&1 || continue
+    fi
     cand_t+=("$t"); cand_c+=("$c")
   done <<EOF
 $(sgit tag 2>/dev/null || true)
@@ -3041,7 +3076,7 @@ upgrade_route() {
 print_upgrade_plan() {
   local p tag st tu="${2:-$(id -un)}" flake="${3:-}" upg_route upg_info
   local r_p r_lbl r_lc r_pc r_det r_ex
-  local n i w=0 act=0 quiet=0 lbl lc pc det ex pad t t1 tj lag
+  local n i w=0 act=0 quiet=0 lbl lc pc det ex pad t t1 tj lag nrc nt tn
   plan_reviews=0
   if [ -z "$1" ]; then
     printf '%snothing to approve -- every pinned input is at its approved rev%s\n' "$C_DIM" "$C_OFF"
@@ -3085,7 +3120,37 @@ EOF
             det="(release tag $upg_info)" ;;
           notag)
             lbl="skipped:" lc="$C_YEL" pc=""
-            det="(declared tag $upg_info; no single release tag at HEAD -- review --tag by hand)" ;;
+            # Orientation for the by-hand route: the newest release past the
+            # pin, by ancestry and unverified. Several names on that commit
+            # are all shown and none is put in the command -- picking one is
+            # the choice head_release_tag refused to make.
+            nrc=0
+            nt="$(release_tags_past_pin "$p" "$tu" "")" || nrc=$?
+            case "$nrc" in
+              0)
+                tj=""; t1=""; tn=0
+                while IFS= read -r t; do
+                  [ -n "$t" ] || continue
+                  [ -n "$t1" ] || t1="$t"
+                  tn=$((tn + 1))
+                  if [ -z "$tj" ]; then tj="$t"; else tj="$tj, $t"; fi
+                done <<EOF
+$nt
+EOF
+                if [ "$tn" -eq 1 ]; then
+                  det="(declared tag $upg_info; newest release past the pin is $tj, unverified -- review --tag $tj by hand)"
+                else
+                  det="(declared tag $upg_info; newest releases past the pin are $tj, unverified -- review --tag by hand)"
+                fi
+                lag="$(signed_offer_lag "$p" "$t1")"
+                if [ -n "$lag" ]; then
+                  ex="HEAD is $lag commit$(plural_s "$lag") past that release; review --tag pins the release, not HEAD"
+                fi ;;
+              2)
+                det="(declared tag $upg_info; release tags past the pin sit on separate lines -- review --tag by hand)" ;;
+              *)
+                det="(declared tag $upg_info; no release tag past the pin -- review --tag by hand)" ;;
+            esac ;;
           disagree)
             lbl="skipped:" lc="$C_YEL" pc=""
             det="(verified signed tags disagree -- review --signed-tag by hand)" ;;
