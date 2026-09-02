@@ -149,14 +149,16 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       sync every git+file input of the
                                       system flake to its approved rev
                                       (and declared tag ref), rebuild;
-                                      shows the root commands first,
-                                      never self-elevates. --flake
-                                      defaults to /etc/nix-darwin/flake.nix
-                                      (macOS) or /etc/nixos/flake.nix;
-                                      unprivileged, any readable path is
-                                      allowed, but run as root -- which
-                                      only upgrade reaches -- the flake
-                                      must be root-owned and not group- or
+                                      self-elevates via sudo, then shows
+                                      the root commands and confirms
+                                      before any of them runs. --dry-run
+                                      runs unprivileged and shows those
+                                      commands with their sudo tokens,
+                                      executing nothing. --flake defaults
+                                      to /etc/nix-darwin/flake.nix (macOS)
+                                      or /etc/nixos/flake.nix; on every
+                                      run but --dry-run the flake must be
+                                      root-owned and not group- or
                                       other-writable, and so must every
                                       directory on the way to it
 
@@ -177,11 +179,10 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       activates as root and --yes removes
                                       the last confirm, so neither reaches
                                       the password prompt undisclosed;
-                                      upgrade self-elevates, so its --flake
-                                      obeys deploy's root-side rule and a
-                                      user-owned path is refused before any
-                                      ceremony runs; the
-                                      plan lists every input, one row
+                                      upgrade's --flake obeys deploy's
+                                      root-side rule and a user-owned path
+                                      is refused before any ceremony runs;
+                                      the plan lists every input, one row
                                       each, and highlights only the ones
                                       a ceremony will cover -- the rest
                                       stay visible but quiet (at pin, no
@@ -202,9 +203,10 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
 
     pinned --version                  print the release version
 
-review, add, setup, tombstone, rekey, declare, upgrade, signer add/remove
-and ignorable add/remove self-elevate via sudo (re-exec of the
-installed root-owned binary).
+review, add, setup, tombstone, rekey, declare, deploy, upgrade, signer
+add/remove and ignorable add/remove self-elevate via sudo (re-exec of
+the installed root-owned binary); `deploy --dry-run` is the exception --
+it runs nothing, so it stays unprivileged.
 sign, show and cat
 run as you: sign needs your SSH agent, show and cat write nothing. The
 verb triple: `show` rehearses (no record), `review` records, `verify`
@@ -480,12 +482,15 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   the one acting subcommand -- the bundled consumer for a nix system
   (a machine has exactly one configuration mechanism; any other
   consumer is the same primitive: read the pin, act on exactly that
-  rev) -- and it acts only by composing and showing the commands that
-  run as root, then running them under ordinary sudo -- it never
-  self-elevates. It scans the system flake for `git+file://` inputs,
-  syncs each stale `rev=` to its approved hash, and rebuilds -- the
-  rebuild runs even when every rev is already in sync, because the
-  flake matching the pins says nothing about what the system runs. A
+  rev) -- and it acts by composing and showing the commands that change
+  the system, self-elevating to do it. Composing them unprivileged was
+  honest only for as long as the invoking process was: every input is
+  root-owned, so it rested on the invoker's environment and on a human
+  checking a 40-hex rev by eye. It scans the system flake for
+  `git+file://` inputs, syncs each stale `rev=` to its approved hash,
+  and rebuilds -- the rebuild runs even when every rev is already in
+  sync, because the flake matching the pins says nothing about what the
+  system runs. A
   slot that declares a release tag also gets its `ref=` synced to
   `refs/tags/<tag>` -- after cross-checking that the live tag still
   names the approved rev; a moved or deleted tag is a clean fail-closed
@@ -495,9 +500,9 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   surfaced loudly (they deploy as hand-edited); non-local inputs are
   not pinned's to speak for. One binary for gate and consumer is
   deliberate: one file to hand-read at bootstrap, and the sudoers
-  digest attests the deployer too. Run the installed root-owned copy --
-  deploy composes the exact commands that run as root, so a
-  user-writable copy is a user-writable root command line.
+  digest attests the deployer too. The elevation re-execs the installed
+  root-owned copy, which is what makes the composition root's own work
+  rather than a user-writable command line handed to sudo.
 - **`add` composes; it decides nothing.** One verb carries a repo from
   "it exists somewhere" to "pinned and wired in as a flake input", in
   three idempotent parts -- checkout, pin, wired input -- each skipped

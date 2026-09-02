@@ -27,6 +27,8 @@ run as root.
 .BR tombstone ,
 .BR rekey ,
 .BR declare ,
+.BR deploy ,
+.B upgrade
 and
 .B setup
 self-elevate when invoked unprivileged: they re-exec the installed,
@@ -35,6 +37,9 @@ root-owned binary under
 whose sudoers entry is digest-pinned to the installed bytes (a swapped
 binary makes sudo refuse).
 There is no NOPASSWD \(em sudo authenticates every invocation.
+.B deploy \-\-dry\-run
+is the one carve\-out: it displays and runs nothing, so it stays
+unprivileged and costs no authentication.
 The
 .B signer
 and
@@ -70,16 +75,19 @@ refuses with exit 2 rather than elevate unasked.
 The gate applies to
 .BR review ,
 .BR add ,
+.BR deploy ,
 .BR upgrade ,
 and the
 .B signer
 and
 .B ignorable
 add/remove ceremonies;
-.B deploy
-and
 .B setup
-take their own confirmation instead, before any authentication.
+takes its own confirmation instead, before any authentication.
+.B deploy
+takes both: the gate before sudo, and its
+.RB \(dq rebuild? " [y/N]" \(dq
+after it, over the commands root is about to run.
 .SH COMMANDS
 .SS Repository approval
 .TP
@@ -796,8 +804,15 @@ recorded by part 2 stays, because the trust it records is real.
 .SS Deployment
 .TP
 .B deploy [\-\-dry\-run] [\-\-yes] [\-\-flake \fIpath\fP]
+(sudo)
 Sync every git+file input of the system flake to its approved rev and
-rebuild; always shows the root commands first (never self-elevates).
+rebuild.
+deploy self\-elevates like the ceremonies above, then shows the exact
+root commands and confirms with
+.B rebuild? [y/N]
+before any of them runs \(em composing those commands unprivileged
+would rest the display on the invoker's environment, when every input
+they are built from is root\-owned.
 Inputs whose git HEAD has moved past the pin are reported unapproved,
 and one pasteable
 .B pinned review
@@ -811,16 +826,20 @@ names the flake file to sync, defaulting to
 on macOS and
 .I /etc/nixos/flake.nix
 elsewhere.
-Run unprivileged, any readable path is allowed: deploy displays the root
-commands and runs them under a fresh
+Under
+.B \-\-dry\-run
+\(em which runs unprivileged, executes nothing, and displays the commands
+with the
 .BR sudo (8)
-the operator answers.
-Run as root \(em which only
-.B upgrade
-reaches \(em the flake must be root\-owned and not group\- or
+tokens a root run drops \(em any readable path is allowed.
+On every other run the flake must be root\-owned and not group\- or
 other\-writable, and every directory on the way to it must be root\-owned
 with mode 755 or stricter; anything else is refused before a rebuild
 starts.
+Malformed argv, and a
+.B \-\-flake
+nobody can read, are refused before the authentication rather than after
+it.
 .TP
 .B upgrade [\-\-dry\-run] [\-\-yes] [\-\-flake \fIpath\fP]
 (sudo)
@@ -851,7 +870,7 @@ decides what the rebuild activates as root, and
 removes the last confirm before it, so neither may reach the password
 prompt undisclosed.
 .IP
-Because upgrade self\-elevates, its
+Like deploy's, upgrade's
 .B \-\-flake
 is subject to the root\-side rule described under
 .BR deploy :

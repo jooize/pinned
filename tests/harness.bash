@@ -42,8 +42,9 @@
 #     as is any deploy that actually rebuilds. The one piece of setup that is
 #     covered is its interpreter guard (S17), reached through the PROBE as a
 #     function plus a source-level check of where do_setup calls it
-#   - the self-elevation preview is covered for `upgrade` only (S8h, via the
-#     preview stub): the no-op exit, the Enter-gate and their refusals. The
+#   - the self-elevation preview is covered for `upgrade` and `deploy` (S8h,
+#     via the preview stub): the no-op exit, the Enter-gate and their
+#     refusals, plus deploy's unprivileged --dry-run carve-out. The
 #     review/add previews -- including the preview's mirrored copies of
 #     review --step's refusals -- stay untested (S8e covers the root-side
 #     originals, which are the authoritative half)
@@ -196,9 +197,9 @@ need '-o root -g "\$TREE_GRP" '                             4 'slot-tree install
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
-need '</dev/tty'                                            24 'tty reads (20 gates + 4 inside drain_tty)'
-need '^ *read -r answer </dev/tty$'                         20 'ceremony tty reads'
-need '^ *drain_tty$'                                        20 'a drain before every ceremony tty read'
+need '</dev/tty'                                            25 'tty reads (21 gates + 4 inside drain_tty)'
+need '^ *read -r answer </dev/tty$'                         21 'ceremony tty reads'
+need '^ *drain_tty$'                                        21 'a drain before every ceremony tty read'
 need '^  saved="\$(stty -g </dev/tty 2>/dev/null)" || return 0$' 1 'drain_tty entry'
 need '^# ---- setup ---'                                    1 'library cut marker'
 need '^#!/bin/bash$'                                        1 'pinned shebang'
@@ -208,6 +209,7 @@ need 'verify_ancestry "\$elev" || exit 1'                   2 'elevation-target 
 need '^  verify_ancestry "\$INSTALL_TARGET" || exit 1$'     1 'install-target ancestry walk'
 need 'if \[ ! -t 0 \]; then'                                2 'no-tty refusals'
 need '^  if \[ "\$EUID" -eq 0 \]; then SUDO_ARGV=(); sudo_disp=""; fi$' 1 "deploy's sudo drop"
+need '^elev_action="\$action"$'                             1 "deploy's elevation carve-out"
 
 # ...one of them being line 1. The script pins /bin/bash because sudo hands
 # root the caller's PATH (see the comment above its PATH export), but a
@@ -314,11 +316,17 @@ fi
 #      the owner/mode check on the target ITSELF stays live (allowlist seam)
 #   9. the two no-tty refusals -> $PINNED_TEST_NOTTY, so both branches of a
 #      gate are drivable from one stub
-#  10. deploy's EUID==0 sudo drop -> $PINNED_TEST_ROOT: the only way to see
-#      the root-context command display from an unprivileged harness
+#  10. deploy's two EUID==0 questions -> $PINNED_TEST_ROOT: the sudo drop in
+#      the command display, and the elevation carve-out that a root deploy
+#      takes by never entering the arm. Both are what "deploy is already
+#      root" means, and seaming only one of them would stub a half-root
+#      deploy that exists nowhere. It is the only way to reach the
+#      root-context display -- and, since deploy now self-elevates, the only
+#      way to reach its rebuild confirm -- from an unprivileged harness
 PREVIEW="$FIX/pinned-preview"
 sed "${STUB_SED[@]}" \
     -e 's/exec sudo -- "\$elev" "\$action" "\$@"/exit 97/' \
+    -e 's/^elev_action="\$action"$/elev_action="$action"; [ -n "${PINNED_TEST_ROOT:-}" ] \&\& [ "$action" = deploy ] \&\& elev_action=""/' \
     -e 's/verify_ancestry "\$elev" || exit 1/:/' \
     -e 's/^  verify_ancestry "\$INSTALL_TARGET" || exit 1$/  :/' \
     -e 's/if \[ ! -t 0 \]; then/if [ -n "${PINNED_TEST_NOTTY:-}" ]; then/' \
@@ -338,8 +346,8 @@ fi
 if [ "$(grep -c 'PINNED_TEST_NOTTY' "$PREVIEW")" != 2 ]; then
   say "PREVIEW SED FAILED: no-tty seams"; exit 2
 fi
-if ! grep -q 'PINNED_TEST_ROOT' "$PREVIEW"; then
-  say "PREVIEW SED FAILED: root seam"; exit 2
+if [ "$(grep -c 'PINNED_TEST_ROOT' "$PREVIEW")" != 2 ]; then
+  say "PREVIEW SED FAILED: root seams"; exit 2
 fi
 
 # The pure-function library: everything above the first action.
@@ -2165,12 +2173,24 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-say "S8h: the pre-sudo upgrade preview, and deploy's confirm"
+say "S8h: the pre-sudo upgrade preview, and deploy's elevation"
 # ---------------------------------------------------------------------------
 # The only section driven by the PREVIEW stub, where the elevation gate is
 # live: these are the lines a human meets BEFORE authenticating. `exit 97`
 # stands in for the sudo that would follow, so "would have elevated" and
 # "exited first" are two different exit codes.
+#
+# Two source-level checks first: the stub can show that deploy elevates, but
+# not that the two halves of the decision agree. The case list is what routes
+# the verb into the elevation; require_root is what refuses if it somehow
+# arrives unprivileged anyway, and it must be reached on exactly the runs the
+# case list elevates -- everything but --dry-run.
+assert_eq "$(sed -n '/^case "\$elev_action" in$/{n;p;}' "$SRC")" \
+  "  review|add|setup|tombstone|upgrade|rekey|declare|deploy)" \
+  "deploy is in the self-elevation case list"
+assert_eq "$(grep -c '^  if \[ "\$DRY" -eq 0 \]; then require_root deploy; fi$' "$SRC")" 1 \
+  "and do_deploy requires root on every run that is not --dry-run"
+
 if [ "$GIT_OK" -eq 1 ]; then
   PV_PIN="$FIX/pv-pin"; PV_S1="$FIX/pv-stale1"; PV_S2="$FIX/pv-stale2"
   PV_NS="$FIX/pv-noslot"
@@ -2282,34 +2302,76 @@ EOF
   NOTTY=""
 
   if [ -x "$REBUILD_TOOL" ]; then
-    # deploy's own gate, reachable here because the preview stub seams its
-    # no-tty refusal: the confirm asks for the act it performs.
+    # deploy self-elevates like every other root verb: the table and the
+    # rebuild confirm are the ROOT side's, so what an unprivileged deploy
+    # meets is the argv and the gate, nothing else. Composing the sed
+    # expressions that rewrite rev= in a process the invoker's environment
+    # can steer was the thing this removed.
     ANS='n
 '
     run_preview deploy --flake "$FIX/flake-pv-quiet.nix"
-    assert_exit "$RC" 2 "declining deploy's confirm exits 2"
+    assert_exit "$RC" 97 "deploy reaches the elevation"
+    assert_shows_cmd "$OUT" "sudo -- $PREVIEW deploy --flake $FIX/flake-pv-quiet.nix" \
+      "deploy discloses its exact argv pre-sudo, --flake included"
+    assert_contains "$OUT" "next: sync the flake + rebuild as root (sudo); Enter continues" \
+      "the gate names what the authentication buys"
+    assert_missing "$OUT" "The preview above was orientation only." \
+      "and claims no preview, having printed none"
+    assert_missing "$OUT" "Will run:" "the command table belongs to the root side now"
+
+    ANS=""
+    run_preview deploy --flake "$FIX/flake-pv-quiet.nix" --yes
+    assert_exit "$RC" 97 "--yes elevates without a gate"
+    assert_missing "$OUT" "Enter continues" "no gate is printed under --yes"
+    assert_shows_cmd "$OUT" "sudo -- $PREVIEW deploy --flake $FIX/flake-pv-quiet.nix --yes" \
+      "--yes is on the page even when it is the flag that skipped the gate"
+
+    NOTTY=1
+    ANS=""
+    run_preview deploy --flake "$FIX/flake-pv-quiet.nix"
+    assert_exit "$RC" 2 "off-tty without --yes refuses"
+    assert_contains "$OUT" "no tty for confirmation -- pass --yes to proceed non-interactively" \
+      "the refusal names the flag that proceeds"
+    NOTTY=""
+
+    # Malformed argv, and a flake nobody can read, die BEFORE the
+    # authentication -- neither can ever reach anything but the same refusal
+    # on the root side.
+    ANS=""
+    run_preview deploy --bogus
+    assert_exit "$RC" 1 "an unknown deploy option is a usage error"
+    assert_contains "$OUT" "usage: pinned" "and says so as a usage error"
+    assert_missing "$OUT" "Enter continues" "with no gate offered"
+    ANS=""
+    run_preview deploy --flake "$FIX/no-such-flake.nix"
+    assert_exit "$RC" 1 "an unreadable --flake dies pre-sudo"
+    assert_contains "$OUT" "cannot read $FIX/no-such-flake.nix -- pass --flake" \
+      "naming the file and the flag"
+    assert_missing "$OUT" "Enter continues" "and never reaches the gate"
+
+    ANS=""
+    run_preview deploy --flake "$FIX/flake-pv-unpinned.nix" --dry-run
+    assert_exit "$RC" 0 "a dry run with an unpinned input exits 0"
+    assert_missing "$OUT" "Enter continues" "--dry-run runs nothing, so it authenticates nothing"
+    assert_contains "$OUT" "pinned inputs all at their approved revs" \
+      "the mixed verdict is lowercase too"
+    assert_contains "$OUT" "sudo $REBUILD_TOOL switch --flake" \
+      "and the unprivileged preview keeps the sudo tokens the root run drops"
+
+    # The root context: deploy's own elevation and `pinned upgrade` both land
+    # here, where sudo is an admitted no-op, so the displayed command and the
+    # argv stay the same line. The confirm is reachable only here now.
+    TESTROOT=1
+    ANS='n
+'
+    run_preview deploy --flake "$FIX/flake-pv-quiet.nix"
+    assert_exit "$RC" 2 "declining the root-context confirm exits 2"
     assert_contains "$OUT" "rebuild? [y/N]" "the confirm names what a yes does"
     assert_missing "$OUT" "proceed? [y/N]" "the old wording is gone"
     assert_contains "$OUT" "all inputs at their approved revs" "the verdict is a label, not a sentence"
     assert_contains "$OUT" "(converges the running system to the flake -- changes nothing if already current)" \
       "the unconditional rebuild carries its reason on the command"
     assert_missing "$OUT" "Rebuilding anyway" "the paragraph that used to carry it is gone"
-    assert_contains "$OUT" "sudo $REBUILD_TOOL switch --flake" \
-      "an unprivileged deploy rebuilds under sudo"
-
-    ANS=""
-    run_preview deploy --flake "$FIX/flake-pv-unpinned.nix" --dry-run
-    assert_exit "$RC" 0 "a dry run with an unpinned input exits 0"
-    assert_contains "$OUT" "pinned inputs all at their approved revs" \
-      "the mixed verdict is lowercase too"
-
-    # The root context (what `pinned upgrade` reaches): sudo is an admitted
-    # no-op there, so it leaves the displayed command and the argv together.
-    TESTROOT=1
-    ANS='n
-'
-    run_preview deploy --flake "$FIX/flake-pv-quiet.nix"
-    assert_exit "$RC" 2 "the root-context deploy still confirms"
     assert_contains "$OUT" "Will run:" "the label stays in the root context"
     assert_contains "$OUT" "$REBUILD_TOOL switch --flake" "the rebuild command is unchanged"
     assert_missing "$OUT" "sudo $REBUILD_TOOL" "but sudo is dropped from the displayed line"

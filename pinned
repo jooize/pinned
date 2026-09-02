@@ -52,9 +52,11 @@
 #   pinned deploy [--dry-run]                 sync flake inputs to approved revs, rebuild
 #   pinned setup [--yes]                      provision sudoers digest pin; self-install
 #
-# review, add, setup, tombstone, rekey, declare, signer add/remove and
-# ignorable add/remove self-elevate via sudo (re-exec of the installed
-# root-owned binary); sign runs as the user because it needs the SSH agent.
+# review, add, setup, tombstone, rekey, declare, deploy, upgrade, signer
+# add/remove and ignorable add/remove self-elevate via sudo (re-exec of the
+# installed root-owned binary); sign runs as the user because it needs the SSH
+# agent. deploy --dry-run is the one exception: it displays and runs nothing,
+# so it stays unprivileged.
 #
 # review runs root-owned code end to end: it resolves the rev to a hash, shows
 # the diff from the OBJECT STORE (scrubbed env, no user git config, no pager,
@@ -317,7 +319,7 @@ usage: pinned <action> [args]
   list [--under <dir>]           live pins in your tier
   slot <path>                    print the slot directory for a path
   add <repo|url> [options]       (sudo) clone if needed, review, wire as a flake input
-  deploy [--dry-run] [--yes]     sync system flake inputs to approved revs, rebuild
+  deploy [--dry-run] [--yes]     (sudo) sync system flake inputs to approved revs, rebuild
   upgrade [--dry-run] [--yes]    (sudo) review every stale flake input, then deploy
   setup [--yes]                  (sudo) provision sudoers digest pin; self-install
   --version                      print the release version
@@ -2989,8 +2991,20 @@ EOF
 # invoker could have modified. Pre-install (setup from a checkout) falls
 # back to this script's own path. Sits after the helper definitions so the
 # review preview below can reuse them.
-case "$action" in
-  review|add|setup|tombstone|upgrade|rekey|declare)
+#
+# deploy is in the list with one exception carved out below: --dry-run
+# displays the commands and runs none of them, so it needs no root and must
+# not cost an authentication. Blanking the action for that one case is how it
+# leaves the arm -- a second `exec sudo` site, or a copy of the EUID gate,
+# would be one more place to keep in step with this one.
+elev_action="$action"
+if [ "$action" = deploy ]; then
+  for a in "$@"; do
+    case "$a" in --dry-run) elev_action="" ;; esac
+  done
+fi
+case "$elev_action" in
+  review|add|setup|tombstone|upgrade|rekey|declare|deploy)
     if [ "$EUID" -ne 0 ]; then
       # tombstone without exactly its <path> can only ever reach usage --
       # fail here, before authentication costs a sudo prompt. (--yes answers
@@ -3109,6 +3123,30 @@ case "$action" in
         # The plan owns the separator on the path that continues; what
         # follows it belongs to the elevation, not to the table.
         printf '\n'
+      fi
+      # deploy: no preview -- the table it prints is the root side's, read
+      # from root-owned inputs after sudo. What DOES belong here is upgrade's
+      # argv check: malformed argv, or a --flake nobody can read, can only
+      # ever reach the same refusal on the root side, so it dies before
+      # authentication costs a prompt. (--dry-run never reaches this arm; it
+      # skipped the elevation above. Accepted anyway so the two flake verbs
+      # validate the same argv.)
+      if [ "$action" = "deploy" ]; then
+        dep_flake="" dep_next=0
+        for a in "$@"; do
+          if [ "$dep_next" -eq 1 ]; then dep_flake="$a"; dep_next=0; continue; fi
+          case "$a" in
+            --flake) dep_next=1 ;;
+            --dry-run|--yes) ;;
+            *) usage ;;
+          esac
+        done
+        [ "$dep_next" -eq 0 ] || { echo "--flake needs a path" >&2; exit 1; }
+        [ -n "$dep_flake" ] || dep_flake="$(default_flake_file)"
+        [ -r "$dep_flake" ] || {
+          printf '%serror: cannot read %s -- pass --flake%s\n' "$C2_RED" "$dep_flake" "$C2_OFF" >&2
+          exit 1
+        }
       fi
       # setup: show the plan and confirm BEFORE sudo, so reading what it
       # will do never costs an authentication.
@@ -3465,9 +3503,13 @@ case "$action" in
       # before the password prompt. Every self-elevating verb now discloses
       # its exact argv, upgrade included; the gate below still counts the
       # round, which is a different sentence about a different thing.
-      if { [ "$action" = "review" ] || [ "$action" = "upgrade" ] || [ "$action" = "add" ]; } \
+      if { [ "$action" = "review" ] || [ "$action" = "upgrade" ] || [ "$action" = "add" ] \
+           || [ "$action" = "deploy" ]; } \
         && [ "$elev" = "$INSTALL_TARGET" ]; then
-        if [ "${file_mode:-0}" -eq 0 ]; then
+        # deploy is the one verb here with nothing above it: its table is
+        # composed as root, from root-owned inputs, and printed after sudo.
+        # Claiming a preview it never printed would point at nothing.
+        if [ "${file_mode:-0}" -eq 0 ] && [ "$action" != "deploy" ]; then
           printf '%sThe preview above was orientation only. The sudo ceremony re-derives\n' "$C_DIM"
           printf 'everything it displays, and nothing is pinned until you confirm there.%s\n\n' "$C_OFF"
         fi
@@ -3478,6 +3520,8 @@ case "$action" in
         case "$action" in
           upgrade)
             elevation_gate "review $upg_reviews repo$(plural_s "$upg_reviews") + rebuild" "$@" ;;
+          deploy)
+            elevation_gate "sync the flake + rebuild" "$@" ;;
           review)
             if [ "${file_mode:-0}" -eq 1 ]; then
               elevation_gate "review $preview_files file$(plural_s "$preview_files")" "$@"
@@ -6701,8 +6745,21 @@ do_ignorable_list() {
 # The acting consumer, merged into this binary (user decision 2026-07-28):
 # one file to hand-read at bootstrap, and the sudoers digest attests the
 # deployer too. The pin-stating paths never execute what they approve;
-# deploy acts only by composing and SHOWING the commands that run as root,
-# then running them under ordinary sudo -- it never self-elevates.
+# deploy acts by composing and SHOWING the commands that change the system,
+# and it SELF-ELEVATES to do it (--dry-run, which runs nothing, is the one
+# unprivileged path).
+#
+# It used to compose those commands unprivileged and hand the argv to sudo.
+# Every input it reads is root-owned, so that composition was honest only for
+# as long as the unprivileged process was: it rested on trusting the
+# invoker's environment (BASH_ENV, PATH, a debugger on the same uid) and on a
+# human checking a 40-hex rev by eye. `upgrade` already ran this identical
+# loop self-elevated, so root gains no code it did not already run -- and
+# under sudo's env reset, behind the sudoers digest on the installed binary,
+# reading root-owned inputs, the composition is ENFORCED rather than assumed.
+# The human loses nothing: the table and the `rebuild? [y/N]` confirm move to
+# the root side, where the exact commands are still shown before any of them
+# runs.
 #
 # Scans the system flake for git+file:// inputs, looks each repo up in the
 # pin files, syncs every stale rev= to its APPROVED hash in one perl
@@ -6729,6 +6786,10 @@ do_deploy() {
       *) echo "unknown deploy option: $1" >&2; usage ;;
     esac
   done
+  # A run that executes anything is a root run: the elevation above brought us
+  # here, and this is the check that says so rather than assuming it. --dry-run
+  # executes nothing, so it is the one shape that stays unprivileged.
+  if [ "$DRY" -eq 0 ]; then require_root deploy; fi
 
   # Per-OS flake root and rebuild command. The rebuild tool is named by
   # ABSOLUTE path: it lives only in the system profile, which the trusted
@@ -6756,11 +6817,11 @@ do_deploy() {
     printf '%serror: cannot read %s -- pass --flake%s\n' "$C2_RED" "$FLAKE" "$C2_OFF" >&2
     exit 1
   }
-  # As root -- reached only through `upgrade`, which self-elevates -- the
-  # flake is about to be ACTIVATED by the rebuild, so it must be root-owned
-  # all the way up. Unprivileged deploy keeps every path it ever had: it
-  # displays its root commands and runs them under a fresh sudo the human
-  # answers, which is a different trust decision from this one.
+  # As root -- every run that executes anything, whether reached through
+  # deploy's own elevation or through `upgrade` -- the flake is about to be
+  # ACTIVATED by the rebuild, so it must be root-owned all the way up.
+  # --dry-run skips the check because it activates nothing: it may be pointed
+  # at any readable flake to read what a deploy of it would do.
   if [ "$EUID" -eq 0 ]; then
     verify_root_flake "$FLAKE" || exit 1
   fi
@@ -6810,7 +6871,8 @@ EOF
     # self-elevated ROOT process, where id -un names a tier that does not
     # exist (/var/db/pinned/root) -- every input then read "no pin slot"
     # and deploy synced nothing (live-fired 2026-08-03, first root-context
-    # deploy). Standalone unprivileged deploy never hit it.
+    # deploy). Only --dry-run reads this line unprivileged now, and it wants
+    # the same tier: it previews a round root would run.
     slot="$(slot_dir_for "$(tier_user)" "$path")"
     # read_rev refuses tombstoned/malformed/unknown-VCS slots -- a
     # deploy through a retired or undeclared record must not proceed.
@@ -6950,10 +7012,11 @@ EOF
   # keeps the escaping identical in the single- and double-quoted formats below.
   local PIN_CMD=() REBUILD_CMD=() e bs='\'
   # Whether sudo belongs on these lines is ONE decision, taken here and used
-  # by both the display and the exec: under `pinned upgrade` the whole verb
-  # already runs self-elevated, where sudo would be an admitted no-op, and a
-  # displayed command that is not the argv that runs is the one thing this
-  # display must never be. Unprivileged standalone deploy keeps it.
+  # by both the display and the exec: every deploy that RUNS anything is
+  # already root (its own elevation, or `upgrade`'s), where sudo would be an
+  # admitted no-op, and a displayed command that is not the argv that runs is
+  # the one thing this display must never be. --dry-run is the unprivileged
+  # path that keeps the tokens: it shows what the root run would execute.
   local SUDO_ARGV sudo_disp
   SUDO_ARGV=(sudo)
   sudo_disp="${C_B}sudo${C_OFF} "
@@ -7011,7 +7074,8 @@ EOF
       exit 2
     fi
     printf '%srebuild? [y/N]%s ' "$C_B" "$C_OFF"
-    IFS= read -r answer
+    drain_tty
+    read -r answer </dev/tty
     case "$answer" in
       y|Y|yes|YES) ;;
       *) printf '%saborted%s\n' "$C_YEL" "$C_OFF"; exit 2 ;;
