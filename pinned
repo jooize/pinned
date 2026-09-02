@@ -1452,13 +1452,30 @@ write_slot_state() {
 # that does not already resolve here, is a different slot -- rekey's job,
 # under rekey's own ceremony. Nothing here decides that two names are one
 # file; it asks the filesystem what it already decided.
+# COMPARE LIKE WITH LIKE. readlink -f canonicalizes the WHOLE path, not just
+# the last component, and on macOS the state tree lives under /var, which is a
+# symlink to /private/var. So the resolved path and the asked-about one differ
+# in their PREFIX for every slot on the machine, always -- an unconditional
+# `real != want` reads that as a respelling, and a raw parent comparison then
+# throws it away, which is why this repair was dead on the platform it was
+# written for (the harness missed it only because it builds its fixture root
+# with `pwd -P`). Canonicalize BOTH parents, then let the BASENAME alone
+# decide: it is the only component this function is about.
+#
+# The echoed path keeps the CALLER's prefix and takes only the on-disk
+# basename, because the caller renames with it (`mv -f "$actual" "$slot"`) and
+# a mv between two spellings of one directory across two spellings of one
+# parent is not a rename anybody should have to reason about.
 slot_name_actual() { # $1 = canonical slot dir; echoes the on-disk spelling, else nothing
-  local want="$1" real
+  local want="$1" real want_parent real_parent
   [ -d "$want" ] || return 0
   real="$(readlink -f "$want" 2>/dev/null)" || return 0
-  [ -n "$real" ] && [ "$real" != "$want" ] || return 0
-  [ "${real%/*}" = "${want%/*}" ] || return 0
-  printf '%s\n' "$real"
+  [ -n "$real" ] || return 0
+  [ "${real##*/}" != "${want##*/}" ] || return 0
+  want_parent="$(readlink -f "${want%/*}" 2>/dev/null)" || return 0
+  real_parent="${real%/*}"
+  [ -n "$want_parent" ] && [ "$want_parent" = "$real_parent" ] || return 0
+  printf '%s/%s\n' "${want%/*}" "${real##*/}"
 }
 
 # The ANNOTATION writers (tag / ignored.json / approved) -- and, with the

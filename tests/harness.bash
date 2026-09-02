@@ -4514,6 +4514,22 @@ if [ "$CASEFOLD_OK" -eq 1 ]; then
     "slot_name_actual: an aliased spelling reports the on-disk one"
   assert_eq "$("$PROBE" slot_name_actual "$SUB/sna/PARENT/inner")" "" \
     "slot_name_actual: a respelled parent is out of scope (a different slot, rekey territory)"
+
+  # ...AND THROUGH A SYMLINKED STATE ROOT, which is the shape the live tree
+  # actually has: PINNED_ROOT is under /var, and /var is a symlink to
+  # /private/var on macOS. readlink -f canonicalizes the whole path, so the
+  # resolved slot and the asked-about one differ in their PREFIX for every
+  # slot on the machine -- the repair used to compare raw parents and threw
+  # every case away. The rest of this section passes with or without that
+  # bug, because the fixture root is built with `pwd -P`; this pair is the
+  # only thing that sees it.
+  mkdir -p "$SUB/snareal/parent/inner"
+  ln -s "$SUB/snareal" "$SUB/snalink"
+  assert_eq "$("$PROBE" slot_name_actual "$SUB/snalink/parent/INNER")" \
+    "$SUB/snalink/parent/inner" \
+    "slot_name_actual: an aliased spelling is found through a symlinked root"
+  assert_eq "$("$PROBE" slot_name_actual "$SUB/snalink/parent/inner")" "" \
+    "slot_name_actual: a symlinked prefix alone is not a respelling"
 fi
 
 # verify: a record naming another path is exit 17 with the ceremony named --
