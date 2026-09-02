@@ -2269,6 +2269,45 @@ EOF
     assert_contains "$OUT" "$REBUILD_TOOL switch --flake" "the rebuild command is unchanged"
     assert_missing "$OUT" "sudo $REBUILD_TOOL" "but sudo is dropped from the displayed line"
     TESTROOT=""
+
+    # A pinned repo's OWN .git/config must never choose code that deploy
+    # runs. `git diff` refreshes the index, and refreshing executes the
+    # core.fsmonitor hook named in the repo-local config -- which is
+    # attacker-writable in this tool's threat model, and which `pinned
+    # upgrade` would run AS ROOT (upgrade self-elevates, then calls the same
+    # deploy loop). The canary proves the hook was REACHED, not merely
+    # configured, so the assertion cannot pass by the fixture being inert:
+    # the control below fires it through a plain git first.
+    FSM_CANARY="$FIX/fsmonitor-fired"
+    FSM_HOOK="$FIX/fsmonitor-hook"
+    cat > "$FSM_HOOK" <<HOOKEOF
+#!/bin/sh
+: > "$FSM_CANARY"
+printf '/'
+exit 0
+HOOKEOF
+    chmod 755 "$FSM_HOOK"
+    bgit "$PV_PIN" config core.fsmonitor "$FSM_HOOK"
+    printf 'dirty\n' > "$PV_PIN/f"
+    FSM_CONTROL=0
+    git -C "$PV_PIN" -c safe.directory="$PV_PIN" diff --quiet >/dev/null 2>&1 || true
+    if [ -e "$FSM_CANARY" ]; then
+      FSM_CONTROL=1
+      ok "control: the fixture's core.fsmonitor fires under a plain git diff"
+      rm -f "$FSM_CANARY"
+    else
+      say "  (this git does not run core.fsmonitor hooks -- the control is inert,"
+      say "   so the assertion below proves only that deploy created no canary)"
+    fi
+    ANS=""
+    run_preview deploy --flake "$FIX/flake-pv-quiet.nix" --dry-run
+    assert_exit "$RC" 0 "a dry run over an fsmonitor-planted repo still exits 0"
+    assert_contains "$OUT" "work tree is dirty" "and the dirty check still answers"
+    assert_absent "$FSM_CANARY" \
+      "the repo's core.fsmonitor never executes during deploy"
+    [ "$FSM_CONTROL" -eq 1 ] || say "   (canary assertion above was unfalsifiable on this git)"
+    bgit "$PV_PIN" config --unset core.fsmonitor
+    bgit "$PV_PIN" checkout -q -- f
   fi
 else
   say "S8h: SKIPPED (no git fixture)"

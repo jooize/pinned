@@ -6563,7 +6563,12 @@ do_ignorable_list() {
 # Inputs with no pin slot deploy as hand-edited and are surfaced loudly,
 # not blocked; non-local inputs (github:...) are not pinned's to speak for.
 do_deploy() {
-  local DRY=0 YES=0 FLAKE_ARG="" stale_repos upd_cmd p
+  # `repo` is sgit's contract, not a local convenience: sgit builds
+  # `git -C "$repo" -c safe.directory="$repo"` from a variable of that name in
+  # the caller's scope, so the loop below sets it for each input before any
+  # git runs. Declared local so a deploy nested inside another resolved-repo
+  # context (upgrade) cannot leak its value back out.
+  local DRY=0 YES=0 FLAKE_ARG="" stale_repos upd_cmd p repo=""
   stale_repos=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -6643,6 +6648,7 @@ EOF
   printf '%sgit+file inputs%s %s(%s)%s\n' "$C_B" "$C_OFF" "$C_DIM" "$FLAKE" "$C_OFF"
   while IFS='|' read -r path flake_rev flake_ref; do
     name="${path##*/}"
+    repo="$path"   # every git below goes through sgit, which reads $repo
     # tier_user, not id -un: under `pinned upgrade` this scan runs in the
     # self-elevated ROOT process, where id -un names a tier that does not
     # exist (/var/db/pinned/root) -- every input then read "no pin slot"
@@ -6672,7 +6678,7 @@ EOF
           "$C2_RED$C2_B" "$slot/tag" "$C2_OFF" >&2
         exit 1
       }
-      live_tag="$(git -C "$path" rev-parse -q --verify "refs/tags/${decl_tag}^{commit}" 2>/dev/null || true)"
+      live_tag="$(sgit rev-parse -q --verify "refs/tags/${decl_tag}^{commit}" 2>/dev/null || true)"
       if [ "$live_tag" != "$approved" ]; then
         if [ -z "$live_tag" ]; then tag_detail="is missing from the checkout"; else tag_detail="names ${live_tag:0:10}, not the approved ${approved:0:10}"; fi
         printf '%serror: slot for %s declares tag %s, but the live tag %s -- refusing (moved or deleted tags do not deploy)%s\n' \
@@ -6716,28 +6722,37 @@ EOF
       fi
     fi
     # Context only -- approvals gate the build, the checkout gates nothing.
-    # Direct git (not sgit: that is bound to one resolved repo), rendering
-    # nothing; the dirty checks still carry the driver-proof flags, and
-    # safe.directory keeps the answers honest when upgrade runs this as
-    # root on user-owned checkouts.
-    if [ -d "$path" ] && git -C "$path" -c safe.directory="$path" rev-parse --git-dir >/dev/null 2>&1; then
+    # Every call goes through sgit / sgit_diff, the same hardened path the
+    # review ceremony uses: env -i, no global/system config, attr.tree=<empty
+    # tree>, core.fsmonitor=false, safe.directory for the root-on-user-repo
+    # case. `upgrade` runs this whole loop AS ROOT over checkouts the user
+    # owns, and `git diff` refreshes the index -- which EXECUTES the
+    # core.fsmonitor hook named in the repo's own .git/config. Plain git here
+    # was root running a script the attacker writes (measured on git 2.54.0;
+    # -c core.fsmonitor=false blocks it). The diff-driver flags that used to
+    # be the whole story ride along inside sgit_diff.
+    if [ -d "$path" ] && sgit rev-parse --git-dir >/dev/null 2>&1; then
       # Availability probe: a pin the checkout no longer holds (rewritten
       # history, gc) surfaces here as a warning, not as a nix fetch error
       # mid-rebuild. A warning and not a refusal: nix may still hold the
       # input in its store cache, in which case the rebuild succeeds
       # without touching the repo.
-      if ! git -C "$path" -c safe.directory="$path" cat-file -e "${approved}^{commit}" 2>/dev/null; then
+      if ! sgit cat-file -e "${approved}^{commit}" 2>/dev/null; then
         printf '  %-*s  %s! pinned rev is missing from the checkout -- a rebuild that needs to re-fetch it will fail; restore the commit or re-approve%s\n' \
           "$width" '' "$C_YEL" "$C_OFF"
       fi
-      ahead="$(git -C "$path" -c safe.directory="$path" rev-list --count "${approved}..HEAD" 2>/dev/null || echo '?')"
+      ahead="$(sgit rev-list --count "${approved}..HEAD" 2>/dev/null || echo '?')"
       if [ "$ahead" != 0 ]; then
         printf '  %-*s  %sgit HEAD is %s commit%s past the pin (unapproved)%s\n' \
           "$width" '' "$C_DIM" "$ahead" "$(plural_s "$ahead")" "$C_OFF"
         stale_repos+=("$path")
       fi
-      if ! git -C "$path" -c safe.directory="$path" diff --no-ext-diff --no-textconv --quiet 2>/dev/null \
-        || ! git -C "$path" -c safe.directory="$path" diff --no-ext-diff --no-textconv --cached --quiet 2>/dev/null; then
+      # sgit_diff, not sgit: the render guard refuses a bare `diff`, and
+      # --quiet renders nothing anyway -- but routing it here is what makes
+      # the guard's rule ("no diff without the hardened helper") hold for
+      # every diff in the file, exit-code-only ones included.
+      if ! sgit_diff --quiet 2>/dev/null \
+        || ! sgit_diff --cached --quiet 2>/dev/null; then
         printf '  %-*s  %swork tree is dirty (uncommitted changes never deploy)%s\n' \
           "$width" '' "$C_DIM" "$C_OFF"
       fi
