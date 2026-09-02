@@ -2620,9 +2620,12 @@ default_flake_file() {
 # BEHIND its pin, so a rolled-back working copy read as "nothing to do" and
 # never appeared anywhere; classifying makes that state visible.
 scan_flake_inputs() { # <flakefile> [tier-user]
-  local flake="$1" tu="${2:-$(id -un)}" url p r slot approved head tag st
+  # `repo` is sgit's contract: it builds `git -C "$repo"` from a variable of
+  # that name in the caller's scope, so the loop sets it for each input.
+  local flake="$1" tu="${2:-$(id -un)}" url p r slot approved head tag st repo=""
   grep -oE 'git\+file:///[^"]+' "$flake" | while IFS= read -r url; do
     p="${url#git+file://}"; p="${p%%\?*}"
+    repo="$p"
     r="$(printf '%s' "$url" | grep -oE '[?&]rev=[0-9a-f]{40,128}' | head -n1 | cut -d= -f2 || true)"
     slot="$(slot_dir_for "$tu" "$p")"
     # First line only: the record is one name, and a stray second line must
@@ -2639,22 +2642,27 @@ scan_flake_inputs() { # <flakefile> [tier-user]
       st=malformed
     elif [ -z "$approved" ]; then
       st=noslot
-    # safe.directory: upgrade runs this as root on user-owned checkouts;
-    # without it git's dubious-ownership refusal would silently read every
-    # repo as not-a-repo (same fix sgit carries).
-    elif ! { [ -d "$p" ] && git -C "$p" -c safe.directory="$p" rev-parse --git-dir >/dev/null 2>&1; }; then
+    # sgit, not plain git: `upgrade` runs this scan AS ROOT over checkouts
+    # the user owns, so every call here reads a .git/config the attacker may
+    # write. None of these subcommands refreshes the index, so none reaches
+    # core.fsmonitor the way deploy's `diff` did -- but repo-local and global
+    # config still steer them, and one hardened git path beats an argument
+    # about which subcommands are safe. safe.directory (which sgit carries)
+    # is what keeps git's dubious-ownership refusal from silently reading
+    # every repo as not-a-repo under root.
+    elif ! { [ -d "$p" ] && sgit rev-parse --git-dir >/dev/null 2>&1; }; then
       st=nocheckout
     # A pin the checkout no longer holds cannot be classified against
     # anything, so it gets its own state rather than a guessed class: a
     # remediation built on a guess is one the human cannot act on.
-    elif ! git -C "$p" -c safe.directory="$p" cat-file -e "${approved}^{commit}" 2>/dev/null; then
+    elif ! sgit cat-file -e "${approved}^{commit}" 2>/dev/null; then
       st=missing-pin
     else
       # --verify --quiet, not a bare rev-parse: a bare one ECHOES its
       # argument on failure, so an unborn HEAD handed the literal
       # 'HEAD^{commit}' to the classifier, which could relate it to nothing
       # and answered "diverged" -- a refused row for a repo with no commit.
-      head="$(git -C "$p" -c safe.directory="$p" rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null || true)"
+      head="$(sgit rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null || true)"
       if [ -z "$head" ]; then
         st=nohead
       else
@@ -2675,8 +2683,11 @@ scan_flake_inputs() { # <flakefile> [tier-user]
 # tag must never CHOOSE what a ceremony reviews. A tag AT HEAD adds only a
 # name to the commit a plain review would already cover.
 head_release_tag() { # <repo-path>
-  local t n
-  t="$(git -C "$1" -c safe.directory="$1" tag --points-at HEAD 2>/dev/null || true)"
+  # Runs as root under `upgrade` over a user-owned checkout, and a tag name
+  # is repo content: sgit, like every other git in this file. `repo` is the
+  # variable sgit reads for -C and safe.directory.
+  local t n repo="$1"
+  t="$(sgit tag --points-at HEAD 2>/dev/null || true)"
   [ -n "$t" ] || return 0
   n="$(printf '%s\n' "$t" | grep -c . || true)"
   [ "$n" = 1 ] || return 0
