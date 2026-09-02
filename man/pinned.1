@@ -116,14 +116,24 @@ Several repos run as sequential ceremonies under one authentication:
 each is displayed and confirmed on its own, a decline skips only that
 repo, and a summary line closes the batch.
 .IP
-A repo record names its path only through the slot directory's name.
-When the ceremony finds that directory still wearing a former spelling
-of the path (a case\-only rename on a case\-insensitive volume), it
-renames it at entry \(em announced on screen, logged as
+A repo record names its path exactly as a file record does (see
+.BR FILES ).
+When the ceremony finds the slot stale for the path as it is now
+spelled \(em the record naming a former spelling, or the slot
+directory still wearing one (a case\-only rename on a
+case\-insensitive volume) \(em it repairs both at entry: the record is
+re\-stated with the same rev and the directory renamed, announced on
+screen, logged as
 .BR respell ,
-and not gated behind the y/N, because the record travels verbatim and
-the filesystem already resolves both spellings to this slot; the gate
-guards record content, and this restores an invariant.
+and not gated behind the y/N, because the rev is unchanged and the
+filesystem already resolves both spellings to this slot; the gate
+guards
+.I which
+rev is trusted, and this restores the slot\-name invariant.
+An already\-pinned repo with a stale slot still gets its ceremony (the
+preview says why), then reports the pin as the no\-op it is.
+.B status
+reports either half of the staleness before any ceremony.
 .IP
 Every diff opens behind its own gate line; answering
 .B s
@@ -605,6 +615,11 @@ longer names the pin, so deploy will refuse), dirty-tree warning, and
 an early warning when the checkout no longer holds the pinned rev
 (rewritten history or gc \(em a deploy that needs to re-fetch it would
 fail).
+A record naming a former spelling of the path, or a slot directory
+still wearing one, is reported as its own row rather than refused:
+status is the repo's answer surface (verify covers files only), and
+.B review
+is the repair.
 File: record vs live state.
 .TP
 .B show \fIfile\fP|\fIrepo\fP [\-\-algo \fIname\fP] [\-\-length \fIbits\fP]
@@ -663,6 +678,18 @@ line, so a path holding spaces, tabs or glob metacharacters needs no
 un\-quoting; every other non\-blank line begins with two spaces.
 Digests are never abbreviated \(em the listing is meant to be read and
 copied from, not re\-run.
+.IP
+A slot that violates the slot\-name invariant (see
+.BR FILES )
+carries a
+.B note:
+field naming the drift (a record naming another path than the
+directory encodes) and the review that repairs it.
+The note is one more indented field, so the grammar above holds.
+A directory the volume aliases onto a former spelling of the live path
+is not visible from a listing, which never asks about a live path;
+.B status
+reports that one.
 .TP
 .B slot \fIpath\fP
 Print the slot directory for any path \(em repo or file, existing or
@@ -997,6 +1024,46 @@ Each user's tier lives at
 readable to that user through the
 .I _<user>\-pinned
 group.
+.TP
+.I /var/db/pinned/<user>/slots/<enc>/
+One slot per approved path;
+.I <enc>
+is the path's percent\-encoding (print it with
+.BR "pinned slot" ).
+A slot holds exactly one state file:
+.IR rev.git ,
+.I pin.<algo>
+or
+.IR tombstone ;
+more than one is a malformed slot that every verb refuses.
+Both record kinds share one grammar, one line:
+.IP
+.EX
+<hex>  <path>
+.EE
+.IP
+the revision or digest, two spaces, the absolute path the record
+covers \(em the line
+.BR shasum (1)
+.B \-c
+reads, so a file record is also a check file.
+The filename declares what the hex is, and a record whose hex is not
+the declared length, or that names no path, is malformed.
+.IP
+The slot\-name invariant:
+.I <enc>
+is always the encoding of the path the record names.
+The two are one fact spelled twice, and they drift only when a path is
+respelled on a case\-insensitive volume (both spellings encode onto the
+one directory).
+.B review
+maintains the invariant, repairing the record and the directory name at
+entry (logged as
+.BR respell );
+.B status
+and
+.B list
+report a violation wherever they find one.
 .TP
 .I /var/db/pinned/<user>/slots/<enc>/tag
 The slot's declared release name.

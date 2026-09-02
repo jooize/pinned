@@ -412,7 +412,11 @@ seed_state() { # path state-file content
   chmod 640 "$d/$2"
 }
 seed_pin()       { seed_state "$1" pin.sha256 "$2  $1"; }
+seed_rev()       { seed_state "$1" rev.git "$2  $1"; }
 seed_tombstone() { seed_state "$1" tombstone "1970-01-01T00:00:00Z retired by $USERNAME"; }
+# The hex field of a record (`<hex>  <path>` is the one grammar for both
+# kinds); assertions about WHICH rev a slot holds read through this.
+rev_in() { local l; IFS= read -r l <"$1" || l=""; printf '%s\n' "${l%%  *}"; }
 
 slot_file_of() { # subject-path slot-file-name -> absolute path inside the slot
   printf '%s/%s\n' "$(slot_of "$1")" "$2"
@@ -1038,7 +1042,7 @@ y
   # candidate, not a bare "commit".
   assert_contains "$OUT" "git HEAD:" "an untagged ceremony states whose fact the revision is"
   assert_file "$REPO_SLOT/rev.git" "rev.git written"
-  assert_eq "$(cat "$REPO_SLOT/rev.git")" "$HEAD_HASH" "rev.git holds the approved commit"
+  assert_eq "$(rev_in "$REPO_SLOT/rev.git")" "$HEAD_HASH" "rev.git holds the approved commit"
   assert_eq "$(count_state "$REPO_SLOT")" 1 "repo slot holds exactly one state file"
 
   # The generic resolver (S11) and the repo ceremony must key the SAME dir:
@@ -1070,22 +1074,22 @@ y
   assert_contains "$OUT" "$REPO_FIX" "list shows the repo path"
 
   # read_rev's length invariant, on the repo slot itself (last: it wrecks it).
-  printf 'deadbeef\n' > "$REPO_SLOT/rev.git"
+  printf 'deadbeef  %s\n' "$REPO_FIX" > "$REPO_SLOT/rev.git"
   ANS=""
   run_pinned status "$REPO_FIX"
   assert_exit "$RC" 1 "a short rev.git is refused by read_rev"
-  assert_contains "$OUT" "bad hash length" "the refusal names the length invariant"
+  assert_contains "$OUT" "does not match rev.git (40 or 64 hex)" "the refusal names the length invariant"
 fi
 
 # Slot parsing without git: hand-written rev.git slots at non-repo paths.
-seed_state "$SUB/handwritten.conf" rev.git "1234567890abcdef1234567890abcdef12345678"
+seed_rev "$SUB/handwritten.conf" "1234567890abcdef1234567890abcdef12345678"
 ANS=""
 run_pinned status "$SUB/handwritten.conf"
 assert_exit "$RC" 0 "a well-formed hand-written rev.git slot parses"
 assert_contains "$OUT" "1234567890abcdef1234567890abcdef12345678" "status prints the recorded rev"
 assert_contains "$OUT" "a repo pin at a non-directory path" "status flags the shape mismatch"
 
-seed_state "$SUB/corruptrev.conf" rev.git "nothex"
+seed_rev "$SUB/corruptrev.conf" "nothex"
 ANS=""
 run_pinned list
 assert_exit "$RC" 0 "list survives a corrupt rev slot"
@@ -1120,13 +1124,13 @@ y
   assert_exit "$RC" 0 "batch review of two repos exits 0"
   assert_file "$A_SLOT/rev.git" "first repo's rev.git written"
   assert_file "$B_SLOT/rev.git" "second repo's rev.git written"
-  assert_eq "$(cat "$A_SLOT/rev.git")" "$(bgit "$REPO_A" rev-parse 'HEAD^{commit}')" "first pin holds repo A's HEAD"
-  assert_eq "$(cat "$B_SLOT/rev.git")" "$(bgit "$REPO_B" rev-parse 'HEAD^{commit}')" "second pin holds repo B's HEAD"
+  assert_eq "$(rev_in "$A_SLOT/rev.git")" "$(bgit "$REPO_A" rev-parse 'HEAD^{commit}')" "first pin holds repo A's HEAD"
+  assert_eq "$(rev_in "$B_SLOT/rev.git")" "$(bgit "$REPO_B" rev-parse 'HEAD^{commit}')" "second pin holds repo B's HEAD"
   assert_contains "$OUT" "2 approved, 0 declined, 0 already pinned" "batch summary counts both"
 
   # A decline skips ONLY that repo (the file ceremony's contract): repo A
   # declined keeps its old pin, repo B is approved, exit stays 0.
-  A_OLD="$(cat "$A_SLOT/rev.git")"
+  A_OLD="$(rev_in "$A_SLOT/rev.git")"
   printf 'a2\n' > "$REPO_A/f"; bgit "$REPO_A" commit -q -am a2
   printf 'b2\n' > "$REPO_B/f"; bgit "$REPO_B" commit -q -am b2
   ANS='
@@ -1136,8 +1140,8 @@ y
 '
   run_pinned review "$REPO_A" "$REPO_B"
   assert_exit "$RC" 0 "a mid-batch decline does not abort the batch"
-  assert_eq "$(cat "$A_SLOT/rev.git")" "$A_OLD" "declined repo keeps its old pin"
-  assert_eq "$(cat "$B_SLOT/rev.git")" "$(bgit "$REPO_B" rev-parse 'HEAD^{commit}')" "later repo still approved"
+  assert_eq "$(rev_in "$A_SLOT/rev.git")" "$A_OLD" "declined repo keeps its old pin"
+  assert_eq "$(rev_in "$B_SLOT/rev.git")" "$(bgit "$REPO_B" rev-parse 'HEAD^{commit}')" "later repo still approved"
   assert_contains "$OUT" "1 approved, 1 declined, 0 already pinned" "summary counts the decline"
 
   # Already-pinned repos are counted, never re-asked: catch repo A up, then
@@ -1169,14 +1173,14 @@ n
   # `s` at the diff gate declines WITHOUT opening the pager: pin unchanged,
   # exit as a decline, and the confirm is never reached -- approving a repo
   # without its diff stays impossible.
-  A_PRE="$(cat "$A_SLOT/rev.git")"
+  A_PRE="$(rev_in "$A_SLOT/rev.git")"
   ANS='s
 '
   run_pinned review "$REPO_A"
   assert_exit "$RC" 2 "a single-repo gate skip exits 2 like a decline"
   assert_contains "$OUT" "s skips" "the gate line offers the skip"
   assert_contains "$OUT" "skipped; pin unchanged" "the skip names its outcome"
-  assert_eq "$(cat "$A_SLOT/rev.git")" "$A_PRE" "a gate skip moves no pin"
+  assert_eq "$(rev_in "$A_SLOT/rev.git")" "$A_PRE" "a gate skip moves no pin"
   assert_missing "$OUT" "(from object store)" "the diff never opened"
   assert_missing "$OUT" "? [y/N]" "the confirm was never offered"
 
@@ -1186,7 +1190,7 @@ n
 '
   run_pinned review "$REPO_A" "$REPO_B"
   assert_exit "$RC" 0 "a mid-batch gate skip does not abort the batch"
-  assert_eq "$(cat "$A_SLOT/rev.git")" "$A_PRE" "the skipped repo keeps its old pin"
+  assert_eq "$(rev_in "$A_SLOT/rev.git")" "$A_PRE" "the skipped repo keeps its old pin"
   assert_contains "$OUT" "0 approved, 1 declined, 1 already pinned" "the skip counts as declined"
 
   # Selector and evidence flags bind to one repo; a batch refuses them.
@@ -1209,8 +1213,8 @@ say "S8c: upgrade (review stale flake inputs, then deploy)"
 REBUILD_TOOL="/run/current-system/sw/bin/darwin-rebuild"
 [ -x "$REBUILD_TOOL" ] || REBUILD_TOOL="/run/current-system/sw/bin/nixos-rebuild"
 if [ "$GIT_OK" -eq 1 ] && [ -x "$REBUILD_TOOL" ]; then
-  A_PIN="$(cat "$A_SLOT/rev.git")"
-  B_PIN="$(cat "$B_SLOT/rev.git")"
+  A_PIN="$(rev_in "$A_SLOT/rev.git")"
+  B_PIN="$(rev_in "$B_SLOT/rev.git")"
   cat > "$FIX/flake.nix" <<EOF
 {
   inputs.batch-a.url = "git+file://$REPO_A?ref=refs/heads/main&rev=$A_PIN";
@@ -1228,7 +1232,7 @@ EOF
   assert_row "$OUT" "at pin:" "$REPO_B" "the input at its pin is a quiet row, not an omission"
   assert_contains "$OUT" "Dry run: no ceremonies" "no ceremony in a dry run"
   assert_contains "$OUT" "Dry run -- nothing executed" "deploy stays a preview"
-  assert_eq "$(cat "$A_SLOT/rev.git")" "$A_PIN" "dry run records nothing"
+  assert_eq "$(rev_in "$A_SLOT/rev.git")" "$A_PIN" "dry run records nothing"
 
   # Full run: the ceremony approves the stale repo (forced batch contract:
   # a summary even for one repo, so a decline could fall through to
@@ -1240,7 +1244,7 @@ y
 '
   run_pinned upgrade --flake "$FIX/flake.nix"
   assert_exit "$RC" 2 "deploy's confirmation gate aborts with 2"
-  assert_eq "$(cat "$A_SLOT/rev.git")" "$(bgit "$REPO_A" rev-parse 'HEAD^{commit}')" "the ceremony pinned the stale repo"
+  assert_eq "$(rev_in "$A_SLOT/rev.git")" "$(bgit "$REPO_A" rev-parse 'HEAD^{commit}')" "the ceremony pinned the stale repo"
   assert_contains "$OUT" "1 approved, 0 declined, 0 already pinned" "upgrade forces the batch contract for one repo"
   assert_contains "$OUT" "no tty for confirmation" "deploy stops at its confirmation gate"
   assert_contains "$FIX/flake.nix" "rev=$A_PIN" "the flake file was not rewritten"
@@ -1285,7 +1289,7 @@ y
   run_pinned upgrade --flake "$FIX/flake.nix"
   assert_exit "$RC" 2 "tagged upgrade reaches deploy's confirmation gate"
   assert_contains "$OUT" "(release tag v10)" "the plan names the HEAD release"
-  assert_eq "$(cat "$B_SLOT/rev.git")" "$(bgit "$REPO_B" rev-parse 'HEAD^{commit}')" "the tagged repo pinned at its release"
+  assert_eq "$(rev_in "$B_SLOT/rev.git")" "$(bgit "$REPO_B" rev-parse 'HEAD^{commit}')" "the tagged repo pinned at its release"
   assert_eq "$(cat "$B_SLOT/tag")" "v10" "the declaration followed the release"
 
   # Several tags at HEAD is ambiguity, never a guess.
@@ -1313,9 +1317,9 @@ y
   BK_PIN="$(bgit "$REPO_BK" rev-parse 'HEAD^{commit}')"
   DV_PIN="$(bgit "$REPO_DV" rev-parse 'HEAD^{commit}')"
   FW_PIN="$(bgit "$REPO_FW" rev-parse 'HEAD~1^{commit}')"
-  seed_state "$REPO_BK" rev.git "$BK_PIN"
-  seed_state "$REPO_DV" rev.git "$DV_PIN"
-  seed_state "$REPO_FW" rev.git "$FW_PIN"
+  seed_rev "$REPO_BK" "$BK_PIN"
+  seed_rev "$REPO_DV" "$DV_PIN"
+  seed_rev "$REPO_FW" "$FW_PIN"
   bgit "$REPO_BK" reset --hard -q HEAD~1
   bgit "$REPO_DV" checkout -q -b side HEAD~1
   printf 'u3\n' > "$REPO_DV/f"; bgit "$REPO_DV" commit -q -am u3
@@ -1344,10 +1348,10 @@ y
   assert_exit "$RC" 2 "the mixed upgrade reaches deploy's confirmation gate"
   assert_contains "$OUT" "1 approved, 0 declined, 0 already pinned" \
     "only the forward repo got a ceremony"
-  assert_eq "$(cat "$(slot_of "$REPO_FW")/rev.git")" "$(bgit "$REPO_FW" rev-parse 'HEAD^{commit}')" \
+  assert_eq "$(rev_in "$(slot_of "$REPO_FW")/rev.git")" "$(bgit "$REPO_FW" rev-parse 'HEAD^{commit}')" \
     "the forward repo was approved"
-  assert_eq "$(cat "$(slot_of "$REPO_BK")/rev.git")" "$BK_PIN" "the backward repo's pin is untouched"
-  assert_eq "$(cat "$(slot_of "$REPO_DV")/rev.git")" "$DV_PIN" "the diverged repo's pin is untouched"
+  assert_eq "$(rev_in "$(slot_of "$REPO_BK")/rev.git")" "$BK_PIN" "the backward repo's pin is untouched"
+  assert_eq "$(rev_in "$(slot_of "$REPO_DV")/rev.git")" "$DV_PIN" "the diverged repo's pin is untouched"
 
   # The round done, the forward repo is a quiet at-pin row BESIDE the two
   # refused ones -- and a plan with nothing to approve but something refused
@@ -1370,7 +1374,7 @@ y
   mkdir -p "$REPO_C"
   bgit "$REPO_C" init -q; printf 'c1\n' > "$REPO_C/f"; bgit "$REPO_C" add f; bgit "$REPO_C" commit -q -m c1
   FAKE_REV="1234567890abcdef1234567890abcdef12345678"
-  seed_state "$REPO_C" rev.git "$FAKE_REV"
+  seed_rev "$REPO_C" "$FAKE_REV"
   ANS=""
   run_pinned status "$REPO_C"
   assert_exit "$RC" 0 "status on a repo whose pin is gone still reports"
@@ -1398,8 +1402,8 @@ EOF
   done
   NR_REV="$(bgit "$REPO_NR" rev-parse 'HEAD^{commit}')"
   NS_REV="$(bgit "$REPO_NS" rev-parse 'HEAD^{commit}')"
-  seed_state "$REPO_NR" rev.git "$NR_REV"
-  seed_state "$REPO_GONE" rev.git "$NS_REV"
+  seed_rev "$REPO_NR" "$NR_REV"
+  seed_rev "$REPO_GONE" "$NS_REV"
   cat > "$FIX/flake4.nix" <<EOF
 {
   inputs.upg-norev.url = "git+file://$REPO_NR?ref=refs/heads/main";
@@ -1442,7 +1446,7 @@ y
 '
   run_pinned review "$REPO_D"
   assert_exit "$RC" 0 "diffstat fixture pins its base commit"
-  D_PIN="$(cat "$D_SLOT/rev.git")"
+  D_PIN="$(rev_in "$D_SLOT/rev.git")"
 
   # Known counts, newest last: 2 files/+3/-0, then a side branch (1/+4/-0),
   # a rewrite on main (1/+1/-1), the merge (no per-commit diff), and a
@@ -1466,7 +1470,7 @@ y
 '
   run_pinned review "$REPO_D"
   assert_exit "$RC" 0 "review over the diffstat range exits 0"
-  assert_eq "$(cat "$D_SLOT/rev.git")" "$D_HEAD" "the range was approved"
+  assert_eq "$(rev_in "$D_SLOT/rev.git")" "$D_HEAD" "the range was approved"
 
   # The block is everything between the listing header and the blank line
   # before the diff; the hash column varies in width, so it is dropped.
@@ -1558,7 +1562,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   E_HEAD="$(bgit "$REPO_E" rev-parse 'HEAD^{commit}')"
 
   # --- three yeses: the pin lands on HEAD, one step per commit -------------
-  seed_state "$REPO_E" rev.git "$E_BASE"
+  seed_rev "$REPO_E" "$E_BASE"
   ANS='
 y
 
@@ -1568,7 +1572,7 @@ y
 '
   run_pinned review "$REPO_E" --step
   assert_exit "$RC" 0 "a fully approved walk exits 0"
-  assert_eq "$(cat "$E_SLOT/rev.git")" "$E_HEAD" "three yeses walk the pin to HEAD"
+  assert_eq "$(rev_in "$E_SLOT/rev.git")" "$E_HEAD" "three yeses walk the pin to HEAD"
   assert_contains "$OUT" "--- step 1/3 ---" "the walk numbers its steps"
   assert_contains "$OUT" "--- step 3/3 ---" "the walk reaches the last step"
   assert_contains "$OUT" "approved 3 of 3 commits" "the summary counts every step"
@@ -1590,7 +1594,7 @@ y
   assert_missing  "$OUT" "✓ approved:" "the walk replaces the single-approval line"
 
   # --- yes then no: the pin rests where reading stopped --------------------
-  seed_state "$REPO_E" rev.git "$E_BASE"
+  seed_rev "$REPO_E" "$E_BASE"
   ANS='
 y
 
@@ -1598,14 +1602,14 @@ n
 '
   run_pinned review "$REPO_E" --step
   assert_exit "$RC" 0 "a partial walk still exits 0 (the pin did advance)"
-  assert_eq "$(cat "$E_SLOT/rev.git")" "$E_C1" "the pin rests at the last approved commit"
+  assert_eq "$(rev_in "$E_SLOT/rev.git")" "$E_C1" "the pin rests at the last approved commit"
   assert_contains "$OUT" "approved 1 of 3 commits" "the summary counts the partial walk"
   assert_contains "$OUT" "remaining: 2 commits" "the summary names what is left"
   assert_contains "$OUT" "total: 1 file +1 -0" "the aggregate covers only the approved range, singular"
   assert_missing  "$OUT" "--- step 3/3 ---" "a decline stops the walk instead of skipping"
 
   # --- two yeses then no: the singular remainder reads as one --------------
-  seed_state "$REPO_E" rev.git "$E_BASE"
+  seed_rev "$REPO_E" "$E_BASE"
   ANS='
 y
 
@@ -1620,13 +1624,13 @@ n
   assert_missing  "$OUT" "remaining: 1 commits" "and never plural"
 
   # --- a first no: nothing changes, exit 2 (the single-repo contract) ------
-  seed_state "$REPO_E" rev.git "$E_BASE"
+  seed_rev "$REPO_E" "$E_BASE"
   ANS='
 n
 '
   run_pinned review "$REPO_E" --step
   assert_exit "$RC" 2 "a walk that approves nothing exits 2"
-  assert_eq "$(cat "$E_SLOT/rev.git")" "$E_BASE" "a declined walk leaves the pin alone"
+  assert_eq "$(rev_in "$E_SLOT/rev.git")" "$E_BASE" "a declined walk leaves the pin alone"
   assert_contains "$OUT" "approved 0 of 3 commits" "the summary reports an empty walk"
   assert_contains "$OUT" "pin unchanged" "the summary says the pin did not move"
   assert_missing  "$OUT" "total:" "no aggregate for a walk that approved nothing"
@@ -1635,21 +1639,21 @@ n
   # Same stop-the-walk contract as a decline at the confirm -- commits
   # advance linearly, so there is no skipping past an unreviewed one --
   # but the skipped step's diff is never shown at all.
-  seed_state "$REPO_E" rev.git "$E_BASE"
+  seed_rev "$REPO_E" "$E_BASE"
   ANS='
 y
 s
 '
   run_pinned review "$REPO_E" --step
   assert_exit "$RC" 0 "a skip after one yes still exits 0 (the pin did advance)"
-  assert_eq "$(cat "$E_SLOT/rev.git")" "$E_C1" "the pin rests at the last approved commit"
+  assert_eq "$(rev_in "$E_SLOT/rev.git")" "$E_C1" "the pin rests at the last approved commit"
   assert_contains "$OUT" "skipped; the walk stops here" "the skip names its outcome"
   assert_contains "$OUT" "approved 1 of 3 commits" "the summary counts the walk up to the skip"
   assert_missing  "$OUT" "E2LINE" "the skipped step's diff never opened"
   assert_missing  "$OUT" "--- step 3/3 ---" "a gate skip stops the walk like a decline"
 
   # --- a stepped yes clears a declared release name ------------------------
-  seed_state "$REPO_E" rev.git "$E_BASE"
+  seed_rev "$REPO_E" "$E_BASE"
   printf 'v1\n' > "$E_SLOT/tag"
   ANS='
 y
@@ -1664,7 +1668,7 @@ n
   # The name is declared only when the walk actually approves that commit;
   # the commit past the tag (e3) must never be offered.
   bgit "$REPO_E" tag v9 "$E_C2"
-  seed_state "$REPO_E" rev.git "$E_BASE"
+  seed_rev "$REPO_E" "$E_BASE"
   ANS='
 y
 
@@ -1672,13 +1676,13 @@ y
 '
   run_pinned review "$REPO_E" --step --tag v9
   assert_exit "$RC" 0 "a stepped walk to a tag exits 0"
-  assert_eq "$(cat "$E_SLOT/rev.git")" "$E_C2" "the pin rests at the tag's commit, not HEAD"
+  assert_eq "$(rev_in "$E_SLOT/rev.git")" "$E_C2" "the pin rests at the tag's commit, not HEAD"
   assert_eq "$(cat "$E_SLOT/tag")" "v9" "reaching the endpoint declares the name"
   assert_contains "$OUT" "approved 2 of 2 commits" "the walk is exactly pin..tag"
   assert_missing  "$OUT" "E3LINE" "the commit past the tag is never offered"
 
   # Stopping early leaves the slot rev-only and says so.
-  seed_state "$REPO_E" rev.git "$E_BASE"
+  seed_rev "$REPO_E" "$E_BASE"
   ANS='
 y
 
@@ -1686,13 +1690,13 @@ n
 '
   run_pinned review "$REPO_E" --step --tag v9
   assert_exit "$RC" 0 "an early stop below the tag still exits 0"
-  assert_eq "$(cat "$E_SLOT/rev.git")" "$E_C1" "the pin rests where reading stopped"
+  assert_eq "$(rev_in "$E_SLOT/rev.git")" "$E_C1" "the pin rests where reading stopped"
   assert_absent "$E_SLOT/tag" "an unreached name is not declared"
   assert_contains "$OUT" "declared name v9 not reached; the slot stays rev-only" \
     "the summary says the name was not declared"
 
   # --- refusals (root-side: the authoritative half) ------------------------
-  seed_state "$REPO_E" rev.git "$E_BASE"
+  seed_rev "$REPO_E" "$E_BASE"
   ANS=""
   run_pinned review "$REPO_E" --step --trust
   assert_exit "$RC" 1 "--step with --trust is refused"
@@ -1733,14 +1737,14 @@ n
   # entered, so the refusal a reviewer meets is the lattice's -- naming the
   # class and the flag that would declare it. --step's own "not behind HEAD"
   # message stays in the script as the walk's internal belt-and-braces.
-  seed_state "$REPO_E" rev.git "$E_HEAD"
+  seed_rev "$REPO_E" "$E_HEAD"
   bgit "$REPO_E" branch -q back "$E_C2"
   bgit "$REPO_E" checkout -q back
   ANS=""
   run_pinned review "$REPO_E" --step
   assert_exit "$RC" 1 "a pin that is not behind HEAD refuses the walk"
   assert_contains "$OUT" "is backward of the pin" "the refusal names the class"
-  assert_eq "$(cat "$E_SLOT/rev.git")" "$E_HEAD" "the refused walk left the pin alone"
+  assert_eq "$(rev_in "$E_SLOT/rev.git")" "$E_HEAD" "the refused walk left the pin alone"
   bgit "$REPO_E" checkout -q main
 else
   say "S8e: SKIPPED (no git fixture)"
@@ -1792,27 +1796,27 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_eq "$POUT" equal "the same rev is equal"
 
   # --- forward is untouched: no alarm, the ordinary listing -----------------
-  seed_state "$REPO_G" rev.git "$G_BASE"
+  seed_rev "$REPO_G" "$G_BASE"
   ANS='
 y
 '
   run_pinned review "$REPO_G"
   assert_exit "$RC" 0 "a forward review is unchanged by the lattice"
-  assert_eq "$(cat "$G_SLOT/rev.git")" "$G_C2" "the forward pin moved to HEAD"
+  assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_C2" "the forward pin moved to HEAD"
   assert_contains "$OUT" "--- commits since last approval ---" "forward keeps the ordinary listing"
   assert_missing "$OUT" "!!!" "a forward move raises no alarm"
 
   # A declaration on a forward candidate overrides nothing.
-  seed_state "$REPO_G" rev.git "$G_BASE"
+  seed_rev "$REPO_G" "$G_BASE"
   ANS=""
   run_pinned review "$REPO_G" --backward
   assert_exit "$RC" 1 "--backward on a forward candidate is refused"
   assert_contains "$OUT" "nothing to override" "the refusal says there is nothing to override"
-  assert_eq "$(cat "$G_SLOT/rev.git")" "$G_BASE" "the refused ceremony left the pin alone"
+  assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_BASE" "the refused ceremony left the pin alone"
 
   # An already-pinned repo short-circuits BEFORE the lattice: equal is a
   # no-op, and a declaration cannot make a no-op into a ceremony.
-  seed_state "$REPO_G" rev.git "$G_C2"
+  seed_rev "$REPO_G" "$G_C2"
   ANS=""
   run_pinned review "$REPO_G" --backward
   assert_exit "$RC" 0 "an equal candidate still short-circuits"
@@ -1820,7 +1824,7 @@ y
 
   # --- backward: the checkout sits behind its pin ---------------------------
   bgit "$REPO_G" reset --hard -q "$G_C1"
-  seed_state "$REPO_G" rev.git "$G_C2"
+  seed_rev "$REPO_G" "$G_C2"
   ANS='y
 '
   run_pinned review "$REPO_G"
@@ -1828,7 +1832,7 @@ y
   assert_contains "$OUT" "is backward of the pin" "the refusal names the class"
   assert_contains "$OUT" "un-approved" "the refusal says what a backward move does"
   assert_contains "$OUT" "--backward" "the refusal names the flag that declares it"
-  assert_eq "$(cat "$G_SLOT/rev.git")" "$G_C2" "an undeclared backward move records nothing"
+  assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_C2" "an undeclared backward move records nothing"
 
   ANS=""
   run_pinned review "$REPO_G" --diverged
@@ -1841,32 +1845,32 @@ y
 '
   run_pinned review "$REPO_G" --backward
   assert_exit "$RC" 0 "a declared backward move proceeds"
-  assert_eq "$(cat "$G_SLOT/rev.git")" "$G_C1" "the declared backward move recorded the pin"
+  assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_C1" "the declared backward move recorded the pin"
   assert_contains "$OUT" "!!! BACKWARD:" "the ceremony raises the backward alarm"
   assert_contains "$OUT" "--- commits being un-approved ---" "the display names the reversed range"
   assert_contains "$OUT" "g2 second" "the un-approved commit is listed"
   assert_contains "$OUT" "--- diff " "the honest diff of the move still runs"
 
   # A declined backward ceremony is an ordinary decline.
-  seed_state "$REPO_G" rev.git "$G_C2"
+  seed_rev "$REPO_G" "$G_C2"
   ANS='
 n
 '
   run_pinned review "$REPO_G" --backward
   assert_exit "$RC" 2 "a declined backward ceremony exits 2"
-  assert_eq "$(cat "$G_SLOT/rev.git")" "$G_C2" "the declined ceremony left the pin alone"
+  assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_C2" "the declined ceremony left the pin alone"
 
   # --- diverged: the checkout left the pinned line --------------------------
   bgit "$REPO_G" reset --hard -q "$G_C2"
   bgit "$REPO_G" checkout -q side
-  seed_state "$REPO_G" rev.git "$G_C2"
+  seed_rev "$REPO_G" "$G_C2"
   ANS='y
 '
   run_pinned review "$REPO_G"
   assert_exit "$RC" 1 "an undeclared diverged candidate is refused"
   assert_contains "$OUT" "has diverged from the pin" "the refusal names the class"
   assert_contains "$OUT" "--diverged" "the refusal names the flag that declares it"
-  assert_eq "$(cat "$G_SLOT/rev.git")" "$G_C2" "an undeclared diverged move records nothing"
+  assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_C2" "an undeclared diverged move records nothing"
 
   ANS=""
   run_pinned review "$REPO_G" --backward
@@ -1879,7 +1883,7 @@ y
 '
   run_pinned review "$REPO_G" --diverged
   assert_exit "$RC" 0 "a declared diverged move proceeds"
-  assert_eq "$(cat "$G_SLOT/rev.git")" "$G_X" "the declared diverged move recorded the pin"
+  assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_X" "the declared diverged move recorded the pin"
   assert_contains "$OUT" "!!! DIVERGED:" "the ceremony raises the diverged alarm"
   assert_contains "$OUT" "merge base: $G_C1" "the display names the merge base"
   assert_contains "$OUT" "commits being un-approved (leaving the pinned line)" \
@@ -1890,7 +1894,7 @@ y
   bgit "$REPO_G" checkout -q main
 
   # --- the declarations bind to one repo, and to nothing else ---------------
-  seed_state "$REPO_G" rev.git "$G_C2"
+  seed_rev "$REPO_G" "$G_C2"
   ANS=""
   run_pinned review "$REPO_G" --backward --diverged
   assert_exit "$RC" 1 "two declarations at once are refused"
@@ -2001,7 +2005,7 @@ if [ "$GIT_OK" -eq 1 ] && [ -x "$REBUILD_TOOL" ] && [ "$SIGN_OK" -eq 1 ]; then
   sign_tag_outsider "$REPO_S" v3-evil
   bgit "$REPO_S" tag v4-plain
   S_SLOT="$(slot_of "$REPO_S")"
-  seed_state "$REPO_S" rev.git "$S_PIN"
+  seed_rev "$REPO_S" "$S_PIN"
 
   # REPO_T, TAG-DECLARED slot: the offer covers these too, and outranks the
   # head_release_tag rule. HEAD carries no release, so without the offer this
@@ -2017,7 +2021,7 @@ if [ "$GIT_OK" -eq 1 ] && [ -x "$REBUILD_TOOL" ] && [ "$SIGN_OK" -eq 1 ]; then
   sign_tag "$REPO_T" t2
   printf 't3\n' > "$REPO_T/f"; bgit "$REPO_T" commit -q -am t3
   T_SLOT="$(slot_of "$REPO_T")"
-  seed_state "$REPO_T" rev.git "$T_PIN"
+  seed_rev "$REPO_T" "$T_PIN"
   seed_state "$REPO_T" tag t1
 
   cat > "$FIX/flake-signed.nix" <<EOF
@@ -2053,7 +2057,7 @@ EOF
     "the offer outranks the tag-declared route"
   assert_missing "$OUT" "no single release tag at HEAD" \
     "so the by-hand tag skip no longer applies to it"
-  assert_eq "$(cat "$S_SLOT/rev.git")" "$S_PIN" "the plan records nothing"
+  assert_eq "$(rev_in "$S_SLOT/rev.git")" "$S_PIN" "the plan records nothing"
 
   # The ceremony IS review --signed-tag: its y/N is the offer's acceptance.
   ANS='y
@@ -2065,9 +2069,9 @@ y
     "the ceremony verified against the root-owned signers file"
   assert_contains "$OUT" "2/2 tags agree on the commit below" \
     "the agreeing tags are read as k-of-n agreement"
-  assert_eq "$(cat "$S_SLOT/rev.git")" "$S_REL" "the RELEASE is pinned, not HEAD"
+  assert_eq "$(rev_in "$S_SLOT/rev.git")" "$S_REL" "the RELEASE is pinned, not HEAD"
   assert_eq "$(cat "$S_SLOT/tag")" "v2" "the declaration landed in the slot"
-  assert_eq "$(cat "$T_SLOT/rev.git")" "$T_REL" "the tag-declared repo pinned at its signed release"
+  assert_eq "$(rev_in "$T_SLOT/rev.git")" "$T_REL" "the tag-declared repo pinned at its signed release"
   assert_eq "$(cat "$T_SLOT/tag")" "t2" "and its declaration followed the release"
 
   # Nothing verified remains above the new pin: the only newer names are the
@@ -2090,7 +2094,7 @@ y
   assert_exit "$RC" 2 "declining the offer still reaches deploy"
   assert_contains "$OUT" "(signed release v5 -- signature-gated)" "the new release is offered"
   assert_contains "$OUT" "0 approved, 1 declined" "the decline skipped the repo"
-  assert_eq "$(cat "$S_SLOT/rev.git")" "$S_REL" "a declined offer moves no pin"
+  assert_eq "$(rev_in "$S_SLOT/rev.git")" "$S_REL" "a declined offer moves no pin"
 
   # VERIFIED TAGS THAT DO NOT ORDER: two signed releases on branches that
   # merge into HEAD. Both descend from the pin and both are ancestors of
@@ -2111,7 +2115,7 @@ y
   bgit "$REPO_D2" checkout -q main
   bgit "$REPO_D2" merge -q --no-ff -m ma sa
   bgit "$REPO_D2" merge -q --no-ff -m mb sb
-  seed_state "$REPO_D2" rev.git "$D2_PIN"
+  seed_rev "$REPO_D2" "$D2_PIN"
   cat > "$FIX/flake-split.nix" <<EOF
 {
   inputs.signfix-split.url = "git+file://$REPO_D2?rev=$D2_PIN";
@@ -2127,7 +2131,7 @@ EOF
 '
   run_pinned upgrade --flake "$FIX/flake-split.nix"
   assert_exit "$RC" 2 "the run reaches deploy without a ceremony"
-  assert_eq "$(cat "$(slot_of "$REPO_D2")/rev.git")" "$D2_PIN" "the pin is untouched"
+  assert_eq "$(rev_in "$(slot_of "$REPO_D2")/rev.git")" "$D2_PIN" "the pin is untouched"
 
   # A signed release BEHIND the pin is not a candidate: strictly-descends is
   # part of the filter, so a replayed older release cannot be offered. (The
@@ -2141,7 +2145,7 @@ EOF
   printf 'o2\n' > "$REPO_O/f"; bgit "$REPO_O" commit -q -am o2
   O_PIN="$(bgit "$REPO_O" rev-parse 'HEAD^{commit}')"
   printf 'o3\n' > "$REPO_O/f"; bgit "$REPO_O" commit -q -am o3
-  seed_state "$REPO_O" rev.git "$O_PIN"
+  seed_rev "$REPO_O" "$O_PIN"
   cat > "$FIX/flake-old.nix" <<EOF
 {
   inputs.signfix-old.url = "git+file://$REPO_O?rev=$O_PIN";
@@ -2205,9 +2209,9 @@ if [ "$GIT_OK" -eq 1 ]; then
   PV_NS_REV="$(bgit "$PV_NS" rev-parse 'HEAD^{commit}')"
   printf 'p2\n' > "$PV_S1/f"; bgit "$PV_S1" commit -q -am p2
   printf 'p2\n' > "$PV_S2/f"; bgit "$PV_S2" commit -q -am p2
-  seed_state "$PV_PIN" rev.git "$PV_PIN_REV"
-  seed_state "$PV_S1" rev.git "$PV_S1_REV"
-  seed_state "$PV_S2" rev.git "$PV_S2_REV"
+  seed_rev "$PV_PIN" "$PV_PIN_REV"
+  seed_rev "$PV_S1" "$PV_S1_REV"
+  seed_rev "$PV_S2" "$PV_S2_REV"
   cat > "$FIX/flake-pv-quiet.nix" <<EOF
 {
   inputs.pv-pin.url = "git+file://$PV_PIN?rev=$PV_PIN_REV";
@@ -2447,9 +2451,9 @@ if [ "$GIT_OK" -eq 1 ]; then
   done
   # Pinned at the commit they are on; the two stale ones then move past it.
   seed_state "$EV_STALE"  rev.git "$(bgit "$EV_STALE"  rev-parse 'HEAD^{commit}')"
-  seed_state "$EV_STALE2" rev.git "$(bgit "$EV_STALE2" rev-parse 'HEAD^{commit}')"
-  seed_state "$EV_PINNED" rev.git "$(bgit "$EV_PINNED" rev-parse 'HEAD^{commit}')"
-  seed_state "$EV_ADDPIN" rev.git "$(bgit "$EV_ADDPIN" rev-parse 'HEAD^{commit}')"
+  seed_rev "$EV_STALE2" "$(bgit "$EV_STALE2" rev-parse 'HEAD^{commit}')"
+  seed_rev "$EV_PINNED" "$(bgit "$EV_PINNED" rev-parse 'HEAD^{commit}')"
+  seed_rev "$EV_ADDPIN" "$(bgit "$EV_ADDPIN" rev-parse 'HEAD^{commit}')"
   printf 'e2\n' > "$EV_STALE/f";  bgit "$EV_STALE"  commit -q -am e2
   printf 'e2\n' > "$EV_STALE2/f"; bgit "$EV_STALE2" commit -q -am e2
   EV_FLAKE="$FIX/flake-ev.nix"
@@ -2717,7 +2721,7 @@ y
   run_pinned review "$EV_STALE2" --yes
   assert_exit "$RC" 0 "the root side reviews with --yes in its argv"
   assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there"
-  assert_eq "$(cat "$(slot_of "$EV_STALE2")/rev.git")" \
+  assert_eq "$(rev_in "$(slot_of "$EV_STALE2")/rev.git")" \
             "$(bgit "$EV_STALE2" rev-parse 'HEAD^{commit}')" \
             "and the ceremony still wrote the pin it was asked for"
 
@@ -2786,7 +2790,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_contains "$OUT" "nothing is pinned here" "the refusal points at review"
   assert_absent "$DC_SLOT/tag" "and no declaration was written"
 
-  seed_state "$REPO_DC" rev.git "$DC_C2"
+  seed_rev "$REPO_DC" "$DC_C2"
 
   # A tag naming another commit: the invariant refuses, naming the commit
   # the tag actually points at.
@@ -2849,7 +2853,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_contains "$OUT" "pinned deploy" "the follow-up points at deploy"
   assert_file "$DC_SLOT/tag" "the declaration was written"
   assert_eq "$(cat "$DC_SLOT/tag")" "v1" "and holds exactly the name"
-  assert_eq "$(cat "$DC_SLOT/rev.git")" "$DC_C2" "the pin itself is untouched"
+  assert_eq "$(rev_in "$DC_SLOT/rev.git")" "$DC_C2" "the pin itself is untouched"
 
   # Re-declaring the same name is a no-op; no answer is consumed.
   ANS=""
@@ -3638,7 +3642,7 @@ y
 '
   run_pinned review "$REPO_R"
   assert_exit "$RC" 0 "fixture: the repo is pinned at its base commit"
-  R_PIN="$(cat "$R_SLOT/rev.git")"
+  R_PIN="$(rev_in "$R_SLOT/rev.git")"
   R_SNAP="$(slot_snapshot "$R_SLOT")"
 
   ANS=""
@@ -3980,7 +3984,7 @@ y
 '
   run_pinned rekey "$MVR_OLD" "$MVR_NEW"
   assert_exit "$RC" 0 "a repo record moves to the work tree that holds its rev"
-  assert_eq "$(cat "$MVR_NEW_SLOT/rev.git")" "$MVR_HASH" "the rev travels verbatim"
+  assert_eq "$(rev_in "$MVR_NEW_SLOT/rev.git")" "$MVR_HASH" "the rev travels verbatim"
   assert_eq "$(count_state "$MVR_NEW_SLOT")" 1 "the new slot holds exactly one state file"
   assert_eq "$(cat "$MVR_NEW_SLOT/tag")" "v1" "the declared tag travelled"
   assert_file "$MVR_NEW_SLOT/signers/allowed_signers" "the per-slot signers travelled"
@@ -4109,7 +4113,7 @@ y
   assert_exit "$RC" 0 "add on a fresh repo exits 0"
   assert_contains "$OUT" "used in place" "part 1 says the checkout is used as it stands"
   assert_contains "$OUT" "full tree at" "part 2 is do_approve's own first-approval review"
-  assert_eq "$(cat "$(slot_of "$ADD_A")/rev.git")" "$A_REV" "the ceremony pinned the repo"
+  assert_eq "$(rev_in "$(slot_of "$ADD_A")/rev.git")" "$A_REV" "the ceremony pinned the repo"
   assert_contains "$OUT" "inputs.nixpkgs.follows" \
     "the block follows nixpkgs, read from the APPROVED tree (the work tree says otherwise)"
   assert_contains "$FL_A" "add-a = {" "the input landed under its derived name"
@@ -4205,7 +4209,7 @@ n
   bgit "$ADD_T" init -q; printf 't\n' > "$ADD_T/f"; bgit "$ADD_T" add f; bgit "$ADD_T" commit -q -m t
   bgit "$ADD_T" tag v3
   T_REV="$(bgit "$ADD_T" rev-parse 'HEAD^{commit}')"
-  seed_state "$ADD_T" rev.git "$T_REV"
+  seed_rev "$ADD_T" "$T_REV"
   printf 'v3\n' > "$(slot_of "$ADD_T")/tag"
   FL_T="$FIX/add-flake-t.nix"
   new_flake "$FL_T"
@@ -4222,7 +4226,7 @@ n
   bgit "$ADD_D" init -q; printf 'd1\n' > "$ADD_D/f"; bgit "$ADD_D" add f; bgit "$ADD_D" commit -q -m d1
   printf 'd2\n' > "$ADD_D/f"; bgit "$ADD_D" commit -q -am d2
   bgit "$ADD_D" checkout -q --detach HEAD
-  seed_state "$ADD_D" rev.git "$(bgit "$ADD_D" rev-parse 'HEAD^{commit}')"
+  seed_rev "$ADD_D" "$(bgit "$ADD_D" rev-parse 'HEAD^{commit}')"
   FL_D="$FIX/add-flake-d.nix"
   new_flake "$FL_D"
   FL_D_BEFORE="$(digest_of "$FL_D")"
@@ -4277,7 +4281,7 @@ y
   assert_contains "$FL_U" "git+file://$PINNED_CLONES/cloned?ref=" \
     "the input names the clone in the shared tree, not the url"
   assert_missing "$FL_U" "rev=$ZEROS" "the placeholder was synced away"
-  assert_eq "$(cat "$(slot_of "$PINNED_CLONES/cloned")/rev.git")" \
+  assert_eq "$(rev_in "$(slot_of "$PINNED_CLONES/cloned")/rev.git")" \
     "$(bgit "$ADD_SRC" rev-parse 'HEAD^{commit}')" "the clone was pinned at the source's commit"
 
   # Second run: the destination is reused because its origin matches.
@@ -4709,7 +4713,18 @@ y
     csgit add f.txt >/dev/null
     csgit commit -q -m "fixture commit" >/dev/null
     CS_HASH="$(csgit rev-parse 'HEAD^{commit}')"
-    seed_state "$FIX/csfix/repo" rev.git "$CS_HASH"
+    seed_rev "$FIX/csfix/repo" "$CS_HASH"
+    # Both halves of the invariant are stale here (record AND directory
+    # name), and status -- the repo answer surface -- says so for each.
+    ANS=""
+    run_pinned status "$CSREPO"
+    assert_exit "$RC" 0 "status of a case-respelled repo answers rather than refusing"
+    assert_contains "$OUT" "names $FIX/csfix/repo, not this spelling" "status reports the stale record"
+    assert_contains "$OUT" "still named" "status reports the stale directory name"
+    assert_contains "$OUT" "$CS_HASH" "and still shows the pin"
+    # (list cannot see this shape: record and directory still agree with
+    # EACH OTHER on the former spelling, and the listing never asks the
+    # filesystem about the live path -- that is status's and review's job.)
     # The PREVIEW must not short-circuit past the repair: an already-pinned
     # repo whose slot wears a former spelling still needs its ceremony, and
     # the preview says why before asking for authentication.
@@ -4725,11 +4740,17 @@ y
     run_pinned review "$CSREPO"
     assert_exit "$RC" 0 "review of an already-pinned repo with a stale slot name succeeds"
     assert_contains "$OUT" "slot renamed:" "the ceremony renames the slot at entry"
+    assert_contains "$OUT" "record re-stated:" "and re-states the record for the current spelling"
     assert_contains "$OUT" "already pinned" "and still reports the pin as the no-op it is"
     CS_SLOT="$(slot_of "$CSREPO")"
     assert_eq "$(basename "$(readlink -f "$CS_SLOT")")" "$(basename "$CS_SLOT")" \
       "the repo slot wears the current spelling"
-    assert_eq "$(cat "$CS_SLOT/rev.git")" "$CS_HASH" "the rev record traveled verbatim"
+    assert_eq "$(cat "$CS_SLOT/rev.git")" "$CS_HASH  $CSREPO" \
+      "the record keeps its rev and names the current spelling"
+    run_pinned status "$CSREPO"
+    assert_exit "$RC" 0 "status of the repaired repo answers"
+    assert_missing "$OUT" "not this spelling" "and reports no stale record"
+    assert_missing "$OUT" "still named" "and no stale directory name"
     ANS=""
     run_preview review "$CSREPO"
     assert_exit "$RC" 0 "a repaired repo slot is an ordinary pre-auth no-op again"
@@ -4740,6 +4761,85 @@ y
   fi
 else
   say "  (case-sensitive fixture volume: alias-dependent cases skipped)"
+fi
+
+# ONE RECORD GRAMMAR (`<hex>  <path>`), filesystem-independent. rev records
+# name their path like pin records do, through the one reader, so a repo
+# record naming another path is DETECTABLE from the record itself -- status
+# and list report it, review re-states it -- and a bare hash (the former
+# shape, converted one-shot at deploy) is simply malformed: no fallback reader.
+mkdir -p "$SUB/rr"
+RR_HASH=1234567890abcdef1234567890abcdef12345678
+seed_state "$SUB/rr/dir" rev.git "$RR_HASH  $SUB/rr/dir"
+RC=0; POUT="$("$PROBE" read_rev "$(slot_of "$SUB/rr/dir")" "$SUB/rr/dir" 2>"$ERRF")" || RC=$?
+assert_exit "$RC" 0 "read_rev: a record naming the asked path passes"
+assert_eq "$POUT" "$RR_HASH" "and echoes the rev"
+RC=0; POUT="$("$PROBE" read_rev "$(slot_of "$SUB/rr/dir")" "$SUB/rr/other" 2>"$ERRF")" || RC=$?
+assert_exit "$RC" 2 "read_rev: a record naming another path returns 2, not 1"
+assert_eq "$POUT" "$RR_HASH" "and STILL echoes the rev (the ceremony re-states it)"
+assert_contains "$ERRF" "names path '$SUB/rr/dir', not '$SUB/rr/other'" "the refusal states both paths"
+seed_state "$SUB/rr/bare" rev.git "$RR_HASH"
+RC=0; POUT="$("$PROBE" read_rev "$(slot_of "$SUB/rr/bare")" "$SUB/rr/bare" 2>"$ERRF")" || RC=$?
+assert_exit "$RC" 1 "read_rev: a bare hash (no path field) is malformed, not a lenient read"
+assert_eq "$POUT" "" "and echoes nothing"
+assert_contains "$ERRF" "names no path" "the refusal names the missing field"
+seed_state "$SUB/rr/short" rev.git "deadbeef  $SUB/rr/short"
+RC=0; POUT="$("$PROBE" read_rev "$(slot_of "$SUB/rr/short")" "$SUB/rr/short" 2>"$ERRF")" || RC=$?
+assert_exit "$RC" 1 "read_rev: a wrong-length rev is malformed"
+assert_contains "$ERRF" "40 or 64 hex" "and the refusal names git's two lengths"
+
+# A REPO whose record names another path, on any filesystem: status and
+# list report it, deploy-side readers refuse it, and review re-states it at
+# entry -- before the already-pinned short-circuit, which then reports the
+# no-op the pin is.
+RRREPO="$FIX/rrs/repo"
+mkdir -p "$RRREPO"
+rrgit() { # scrubbed git against this fixture repo ONLY (never cwd)
+  env -i PATH="$PATH" HOME=/var/empty \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    git -C "$RRREPO" -c init.defaultBranch=main -c user.name=harness \
+    -c user.email=harness@example.invalid -c commit.gpgsign=false \
+    -c core.hooksPath=/dev/null "$@"
+}
+if rrgit init -q >/dev/null 2>&1 \
+   && [ "$(rrgit rev-parse --show-toplevel 2>/dev/null)" = "$RRREPO" ]; then
+  printf 'fixture\n' > "$RRREPO/f.txt"
+  rrgit add f.txt >/dev/null
+  rrgit commit -q -m "fixture commit" >/dev/null
+  RR_REPO_HASH="$(rrgit rev-parse 'HEAD^{commit}')"
+  seed_state "$RRREPO" rev.git "$RR_REPO_HASH  $FIX/rrs/elsewhere"
+  ANS=""
+  run_pinned status "$RRREPO"
+  assert_exit "$RC" 0 "status of a repo whose record names another path answers"
+  assert_contains "$OUT" "record:     ✗ names $FIX/rrs/elsewhere, not this spelling" \
+    "status reports the stale record as its own row"
+  assert_contains "$OUT" "HEAD is approved" "and still judges HEAD against the pin"
+  run_pinned list --under "$FIX/rrs"
+  assert_exit "$RC" 0 "list survives it"
+  assert_contains "$OUT" "git:      $RR_REPO_HASH" "list shows the rev"
+  assert_contains "$OUT" "note:     record names $FIX/rrs/elsewhere  (review re-states it)" \
+    "list notes the stale record on an indented field line"
+  run_pinned show "$RRREPO"
+  assert_exit "$RC" 1 "show refuses a record naming another path"
+  assert_contains "$OUT" "names path" "and says why"
+  run_pinned rekey "$RRREPO" "$FIX/rrs/moved"
+  assert_exit "$RC" 1 "rekey refuses to move a record naming another path"
+  ANS=""
+  run_pinned review "$RRREPO"
+  assert_exit "$RC" 0 "review of the already-pinned repo succeeds"
+  assert_contains "$OUT" "record re-stated:" "and re-states the record at entry"
+  assert_contains "$OUT" "$FIX/rrs/elsewhere" "naming the path it used to say"
+  assert_missing "$OUT" "slot renamed:" "the directory name was never stale here"
+  assert_contains "$OUT" "already pinned" "and then reports the pin as the no-op it is"
+  RR_SLOT="$(slot_of "$RRREPO")"
+  assert_eq "$(cat "$RR_SLOT/rev.git")" "$RR_REPO_HASH  $RRREPO" \
+    "the record keeps its rev and names this path"
+  run_pinned status "$RRREPO"
+  assert_missing "$OUT" "not this spelling" "status reports nothing stale afterwards"
+  run_pinned list --under "$FIX/rrs"
+  assert_missing "$OUT" "note:" "nor does list"
+else
+  fail "record-path git fixture init failed -- run this harness with the sandbox OFF"
 fi
 
 # ---------------------------------------------------------------------------
