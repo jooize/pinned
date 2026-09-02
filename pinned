@@ -548,6 +548,41 @@ page() {
   fi
 }
 
+# INPUT THAT ARRIVED BEFORE THE QUESTION IS NOT AN ANSWER. Every gate in this
+# script reads ONE line from /dev/tty, and a line read is a line the terminal
+# was already holding: a paste, a stuck key, or a script that wrote into the
+# terminal can queue "\ny\n" before the ceremony has printed a single word,
+# and the gate then consumes it as consent. The pager is what makes this
+# reachable end to end -- `less -RF` quits WITHOUT consuming input when the
+# content already fits one screen, so on a short diff a buffered "\ny\n"
+# walks gate -> pager -> approve with nothing on screen long enough to read.
+#
+# So: discard whatever the terminal is holding, immediately before every read
+# that answers a gate or a confirm. What remains is the property the gates
+# were written for -- only a keystroke made AFTER the question can answer it.
+#
+# HOW, and why not `read -t 0`: bash's non-blocking read arrived in 4.0, and
+# this script's compatibility floor is macOS's sealed /bin/bash 3.2, where
+# both `-t 0` and a fractional timeout fail immediately (measured 2026-09-02)
+# -- a drain that silently does nothing on the platform this tool ships on is
+# worse than no drain, because it reads as coverage. Putting the TERMINAL in
+# min 0 / time 0 instead makes read(2) return 0 bytes when the queue is
+# empty, so a plain `cat` takes what is there and stops at once, on every
+# bash. The saved termios is restored immediately after; a signal inside that
+# window leaves the terminal non-canonical, which `stty sane` repairs -- the
+# same exposure every full-screen program on the machine already carries.
+#
+# No controlling terminal means nothing to drain and nothing to break: stty
+# fails and this returns cleanly, leaving the read to refuse on its own.
+drain_tty() {
+  local saved
+  saved="$(stty -g </dev/tty 2>/dev/null)" || return 0
+  [ -n "$saved" ] || return 0
+  stty -icanon min 0 time 0 </dev/tty 2>/dev/null || return 0
+  cat </dev/tty >/dev/null 2>&1 || true
+  stty "$saved" </dev/tty 2>/dev/null || true
+}
+
 # The root-side ceremony announces itself: everything below this line is
 # pinned's own authoritative display, not a caller's orientation preview.
 # Printed only after the self-elevation, never in the pre-sudo handoff, and
@@ -2243,6 +2278,7 @@ do_setup() {
     setup_plan "$inv"
     local answer
     printf '%sproceed? [y/N]%s ' "$C_B" "$C_OFF"
+    drain_tty
     read -r answer </dev/tty
     case "$answer" in
       y|Y|yes) ;;
@@ -2476,6 +2512,7 @@ elevation_gate() { # <what-the-root-side-does> argv...
   fi
   printf '%snext: %s as root (sudo); Enter continues%s %s· Ctrl-C stops%s ' \
     "$C_B" "$what" "$C_OFF" "$C_DIM" "$C_OFF"
+  drain_tty
   read -r answer </dev/tty
   # THE PROCESS SEAM. The gate line's own newline is the user's Enter echo,
   # so this blank is the one separator between pinned and the root-owned
@@ -3020,6 +3057,7 @@ case "$action" in
         if [ "$want_yes" -eq 0 ]; then
           setup_plan "$(id -un)"
           printf '%sproceed? [y/N]%s ' "$C_B" "$C_OFF"
+          drain_tty
           read -r answer </dev/tty
           case "$answer" in
             y|Y|yes) ;;
@@ -3328,6 +3366,7 @@ case "$action" in
           printf '    sudo mv %s-unverified %s\n' "$INSTALL_TARGET" "$INSTALL_TARGET"
           printf '    sudo chmod 755 %s\n' "$INSTALL_TARGET"
           printf '%scontinue? [y/N]%s ' "$C_B" "$C_OFF"
+          drain_tty
           read -r answer </dev/tty
           case "$answer" in
             y|Y|yes) ;;
@@ -3466,6 +3505,7 @@ case "$action" in
             printf '%swarning: pinned is not installed at %s; about to run the\nuser-writable checkout copy as root (safe only right after a hand-read).%s\n' \
               "$C_YEL" "$INSTALL_TARGET" "$C_OFF"
             printf '%scontinue? [y/N]%s ' "$C_B" "$C_OFF"
+            drain_tty
             read -r answer </dev/tty
             case "$answer" in
               y|Y|yes) ;;
@@ -3891,6 +3931,7 @@ do_approve() {
           "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
           "$C_CYN" "$old_hash" "$hash" "$C_OFF$C_B" \
           "$n_range" "$(plural_s "$n_range")" "$C_OFF" "$C_DIM" "$C_OFF"
+        drain_tty
         read -r answer </dev/tty
         case "$answer" in
           s|S|skip)
@@ -3920,6 +3961,7 @@ do_approve() {
         printf '%snext: review %s%s%s full tree at %s%.10s%s; Enter opens the diff%s %s· s skips%s ' \
           "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
           "$C_CYN" "$hash" "$C_OFF$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
+        drain_tty
         read -r answer </dev/tty
         case "$answer" in
           s|S|skip)
@@ -3940,6 +3982,7 @@ do_approve() {
     local answer
     printf '%sapprove %s%s%s %s%s%s? [y/N]%s ' "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
       "$C_CYN" "$hash" "$C_OFF$C_B" "$C_OFF"
+    drain_tty
     read -r answer </dev/tty
     case "$answer" in
       y|Y|yes) ;;
@@ -4065,6 +4108,7 @@ EOF
     printf '%snext: review %s%s%s %s%.10s..%.10s%s (1 commit); Enter opens the diff%s %s· s skips%s ' \
       "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
       "$C_CYN" "$prev" "$c" "$C_OFF$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
+    drain_tty
     read -r answer </dev/tty
     case "$answer" in
       s|S|skip)
@@ -4081,6 +4125,7 @@ EOF
     echo
     printf '%sapprove %s%s%s %s%s%s? [y/N]%s ' "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
       "$C_CYN" "$c" "$C_OFF$C_B" "$C_OFF"
+    drain_tty
     read -r answer </dev/tty
     case "$answer" in
       y|Y|yes) ;;
@@ -4516,6 +4561,7 @@ EOF
       printf '%snext: review %s%s%s %s; Enter opens the diff%s %s· s skips%s ' \
         "$C_B" "$C_B$C_MAG" "${path##*/}" "$C_OFF$C_B" \
         "$gate_disp" "$C_OFF" "$C_DIM" "$C_OFF"
+      drain_tty
       read -r answer </dev/tty
       case "$answer" in
         s|S|skip)
@@ -4547,6 +4593,7 @@ EOF
       printf '%snext: review %s%s%s full content %s%s line%s%s; Enter opens it%s %s· s skips%s ' \
         "$C_B" "$C_B$C_MAG" "${path##*/}" "$C_OFF$C_B" \
         "$C_CYN" "$n_lines" "$(plural_s "$n_lines")" "$C_OFF$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
+      drain_tty
       read -r answer </dev/tty
       case "$answer" in
         s|S|skip)
@@ -4570,6 +4617,7 @@ EOF
     echo
 
     printf '%sapprove %s%s%s? [y/N]%s ' "$C_B" "$C_B$C_MAG" "$path" "$C_OFF$C_B" "$C_OFF"
+    drain_tty
     read -r answer </dev/tty
     case "$answer" in
       y|Y|yes)
@@ -4676,6 +4724,7 @@ do_tombstone() {
   printf '%sslot:%s       %s state: %s\n' "$C_B" "$C_OFF" "$slot" "$slot_state"
   printf '%stombstone %s%s%s? verify will then refuse it until re-approved [y/N]%s ' \
     "$C_B" "$C_CYN" "$path" "$C_OFF$C_B" "$C_OFF"
+  drain_tty
   read -r answer </dev/tty
   case "$answer" in
     y|Y|yes) ;;
@@ -4945,6 +4994,7 @@ do_rekey() {
   echo
   printf '%srekey %s%s%s -> %s%s%s? [y/N]%s ' \
     "$C_B" "$C_CYN" "$old" "$C_OFF$C_B" "$C_CYN" "$new" "$C_OFF$C_B" "$C_OFF"
+  drain_tty
   read -r answer </dev/tty
   case "$answer" in
     y|Y|yes) ;;
@@ -5126,6 +5176,7 @@ do_declare() {
     echo
     printf '%sdeclare this release name? [y/N]%s ' "$C_B" "$C_OFF"
   fi
+  drain_tty
   read -r answer </dev/tty
   case "$answer" in
     y|Y|yes) ;;
@@ -6326,6 +6377,7 @@ EOF
     printf '%sfingerprint:%s %s\n' "$C_B" "$C_OFF" "$fp"
     printf '%s(obtain the key out of band -- printed card, password manager, existing\ntrusted machine -- never from the repo it will vouch for.)%s\n' "$C_DIM" "$C_OFF"
     printf '%strust this key to vouch? [y/N]%s ' "$C_B" "$C_OFF"
+    drain_tty
     read -r answer </dev/tty
     case "$answer" in
       y|Y|yes) ;;
@@ -6350,6 +6402,7 @@ EOF
     grep -F "$keyblob" "$target" | sed 's/^/  /'
     printf '%sfingerprint:%s %s\n' "$C_B" "$C_OFF" "$fp"
     printf "%sremove this key's entries? [y/N]%s " "$C_B" "$C_OFF"
+    drain_tty
     read -r answer </dev/tty
     case "$answer" in
       y|Y|yes) ;;
@@ -6519,6 +6572,7 @@ do_ignorable() {
   else
     printf '%swithdraw this grant? [y/N]%s ' "$C_B" "$C_OFF"
   fi
+  drain_tty
   read -r answer </dev/tty
   case "$answer" in
     y|Y|yes) ;;
@@ -7304,6 +7358,7 @@ do_add() {
   local answer
   printf '%sadd this input to %s%s%s? [y/N]%s ' \
     "$C_B" "$C_CYN" "$FLAKE" "$C_OFF$C_B" "$C_OFF"
+  drain_tty
   read -r answer </dev/tty
   case "$answer" in
     y|Y|yes) ;;

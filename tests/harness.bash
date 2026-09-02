@@ -196,7 +196,10 @@ need '-o root -g "\$TREE_GRP" '                             4 'slot-tree install
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
-need '</dev/tty'                                            20 'ceremony tty reads'
+need '</dev/tty'                                            24 'tty reads (20 gates + 4 inside drain_tty)'
+need '^ *read -r answer </dev/tty$'                         20 'ceremony tty reads'
+need '^ *drain_tty$'                                        20 'a drain before every ceremony tty read'
+need '^  saved="\$(stty -g </dev/tty 2>/dev/null)" || return 0$' 1 'drain_tty entry'
 need '^# ---- setup ---'                                    1 'library cut marker'
 need '^#!/bin/bash$'                                        1 'pinned shebang'
 # The preview stub's own anchors (see its construction below).
@@ -257,6 +260,14 @@ STUB_SED=(
     -e 's/^\( *\)chown -R "root:\$TREE_GRP".*/\1:/'
     -e 's/^\( *\)chown "root:\$TREE_GRP".*/\1:/'
     -e 's/^  logger -t pinned .*/  :/'
+    # 11. drain_tty -> a no-op, BEFORE the tty strip below. Left to that
+    #     strip the function would still be entered, and its `cat` would then
+    #     read the harness's own stdin -- eating the very $ANS the ceremony
+    #     under test is about to read. Seaming the entry line is also the
+    #     honest thing: the drain is a TERMINAL operation, and there is no
+    #     terminal here, so the stub states that rather than half-running it.
+    #     Its live behaviour is covered separately, under a real pty (S20).
+    -e 's/^  saved="\$(stty -g <\/dev\/tty 2>\/dev\/null)" || return 0$/  return 0/'
     -e 's#</dev/tty##g'
 )
 sed "${STUB_SED[@]}" \
@@ -279,6 +290,9 @@ if grep -q '^  sudo -u "\$inv" env -i ' "$STUB"; then
   say "STUB SED FAILED: the clone still drops to the invoker via sudo"; exit 2
 fi
 if grep -q '</dev/tty' "$STUB"; then say "STUB SED FAILED: /dev/tty survives"; exit 2; fi
+if ! grep -q '^drain_tty() {$' "$STUB" || ! grep -q '^  return 0$' "$STUB"; then
+  say "STUB SED FAILED: drain_tty was not neutralized"; exit 2
+fi
 if [ "$(grep -c 'if false; then' "$STUB")" != 2 ]; then say "STUB SED FAILED: elevation gates"; exit 2; fi
 if grep -q '^  logger -t pinned ' "$STUB"; then say "STUB SED FAILED: logger survives"; exit 2; fi
 if [ "$(head -n1 "$STUB")" != "#!$HARNESS_BASH" ]; then
@@ -4586,6 +4600,81 @@ y
   fi
 else
   say "  (case-sensitive fixture volume: alias-dependent cases skipped)"
+fi
+
+# ---------------------------------------------------------------------------
+say "S20: the tty drain before every gate"
+# ---------------------------------------------------------------------------
+# A gate reads one line from /dev/tty, and a line read is a line the terminal
+# was ALREADY holding. `less -RF` quits without consuming input when a diff
+# fits one screen, so a buffered "\ny\n" used to walk gate -> pager -> approve
+# with nothing displayed long enough to read. drain_tty discards the queue
+# immediately before each read.
+#
+# Two halves, because neither alone is the property:
+#   * ADJACENCY, over the source: a drain that exists but sits one gate away
+#     from the read is not a drain. Counts are pinned by need() above; this
+#     pins the pairing.
+#   * BEHAVIOUR, under a real pty: the stub cannot cover this at all (there
+#     is no terminal, and seam 11 says so), and the mechanism is termios, not
+#     shell logic -- `stty -icanon min 0 time 0` so read(2) returns 0 bytes on
+#     an empty queue. It is driven through script(1) against the function
+#     lifted verbatim out of the script, with a control run that must show
+#     the un-drained behaviour first; if the control does not reproduce it,
+#     the pty rig is unusable here and the section says so instead of
+#     passing quietly.
+DRAIN_GAPS="$(awk '
+  /^[ \t]*read -r answer <\/dev\/tty$/ { if (prev !~ /^[ \t]*drain_tty$/) print NR }
+  { prev = $0 }' "$SRC")"
+assert_eq "$DRAIN_GAPS" "" "every ceremony tty read is preceded by drain_tty"
+
+sed -n '/^drain_tty() {$/,/^}$/p' "$SRC" > "$FIX/drain.bash"
+assert_contains "$FIX/drain.bash" "stty -icanon min 0 time 0" \
+  "drain_tty is liftable out of the script for the pty run"
+
+cat > "$FIX/ptyprobe" <<PEOF
+#!$HARNESS_BASH
+# \$1 is the drain under test: drain_tty for the real thing, : for the
+# control. The sleep lets the piped input reach the pty before either runs.
+set -euo pipefail
+. "$FIX/drain.bash"
+sleep 1
+"\$1"
+if read -r -t 2 answer </dev/tty; then
+  printf 'ANSWERED:%s\n' "\$answer"
+else
+  printf 'NOANSWER\n'
+fi
+PEOF
+chmod 755 "$FIX/ptyprobe"
+
+pty_run() { # drain-fn outfile -- feed a queued "junk\ny\n" through a real pty
+  local a="$1" o="$2"
+  if script --version 2>&1 | grep -qi util-linux; then
+    ( printf 'junk\ny\n'; sleep 3 ) \
+      | script -q -c "$HARNESS_BASH $FIX/ptyprobe $a" /dev/null >"$o" 2>&1 || true
+  else
+    ( printf 'junk\ny\n'; sleep 3 ) \
+      | script -q /dev/null "$HARNESS_BASH" "$FIX/ptyprobe" "$a" >"$o" 2>&1 || true
+  fi
+}
+
+if command -v script >/dev/null 2>&1; then
+  pty_run : "$FIX/pty-control"
+  if grep -q 'ANSWERED:junk' "$FIX/pty-control"; then
+    ok "control: without the drain, queued input answers the gate"
+    pty_run drain_tty "$FIX/pty-drained"
+    assert_contains "$FIX/pty-drained" "NOANSWER" \
+      "drain_tty discards input queued before the prompt"
+    assert_missing "$FIX/pty-drained" "ANSWERED:" \
+      "so nothing queued is read as an answer"
+  else
+    say "  (no usable pty here -- script(1) did not reproduce the un-drained"
+    say "   read, so the behavioural half is SKIPPED; run this harness with the"
+    say "   sandbox off, where openpty is permitted)"
+  fi
+else
+  say "  (no script(1) -- the behavioural half is SKIPPED)"
 fi
 
 # ---------------------------------------------------------------------------
