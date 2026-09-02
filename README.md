@@ -709,8 +709,12 @@ one.
 - **Colour roles** are fixed: red = failure, green = success, yellow =
   attention, cyan = identifiers (paths, hashes, keys, tags), dim =
   secondary detail, bold = structure and authority. Colour is decoration
-  only: with a non-tty stdout (or `NO_COLOR` for the two content
-  highlighters) every display degrades to byte-identical plain text.
+  only: with a non-tty stdout (or `NO_COLOR` for the content highlighters)
+  every display degrades to byte-identical plain text.
+- **Content highlighters** are routed by suffix alone (`.json`, `.bash`
+  and `.sh`, `.md`) and insert escapes only between the original bytes;
+  anything else, and any content awk could not carry through unchanged
+  (no trailing newline, a NUL, malformed JSON), is shown raw.
 - **Glyphs**: `✓` recorded/verified, `✗` refused, `~` matched with a
   declared tolerance.
 - **Paging** is `less -RF` through a fixed trusted path -- never `$PAGER`

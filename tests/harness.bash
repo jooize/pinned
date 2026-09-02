@@ -4818,6 +4818,85 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+say "S21: content highlighters decorate only (routing, guards, byte fidelity)"
+# ---------------------------------------------------------------------------
+# Lifted verbatim out of the script, like drain_tty in S20, and driven with
+# HL_ON forced: the property is about bytes, not about a terminal. Every
+# highlighter must reproduce its input exactly once its SGR codes are
+# stripped -- ASCII, UTF-8 and an INVALID multibyte sequence alike -- and put
+# colour where the suffix says. The guards refuse what awk would not carry
+# through unchanged.
+for fn in highlighter_for highlight_ok highlight_json highlight_bash highlight_md; do
+  sed -n "/^$fn() {\$/,/^}\$/p" "$SRC"
+done > "$FIX/hl.bash"
+assert_contains "$FIX/hl.bash" "highlight_md() {" "the highlighters lift out of the script"
+hl_run() { # HL_ON-value highlighter-or-shell-snippet infile -> $OUT, $RC
+  RC=0
+  "$HARNESS_BASH" -c "HL_ON='$1'; . '$FIX/hl.bash'; $2" <"$3" >"$OUT" 2>&1 || RC=$?
+}
+hl_exact() { # infile label -- the output minus SGR codes is the input, byte for byte
+  if LC_ALL=C sed $'s/\033\\[[0-9;]*m//g' "$OUT" | cmp -s - "$1"; then ok "$2"; else fail "$2 (stripped output differs from input)"; fi
+}
+HLD="$FIX/hl"; mkdir -p "$HLD"
+printf '#!/usr/bin/env bash\n# a comment\nname="$USER" # trailing\nif [ -n "${name}" ]; then exit 0; fi\nx=$1 # \xe2\x96\xa0\n' > "$HLD/hook.bash"
+hl_run 1 highlight_bash "$HLD/hook.bash"
+assert_exit "$RC" 0 "highlight_bash exits 0"
+hl_exact "$HLD/hook.bash" "bash: stripped output is the input"
+assert_contains "$OUT" $'\033[2m#!/usr/bin/env bash' "bash: the shebang is dim"
+assert_contains "$OUT" $'\033[2m# a comment' "bash: a comment line is dim"
+assert_contains "$OUT" $'\033[2m# trailing' "bash: a trailing comment is dim"
+assert_contains "$OUT" $'\033[1;35mif\033[0m' "bash: a keyword is bold magenta"
+assert_contains "$OUT" $'\033[1;36m$USER\033[0m' "bash: an expansion inside a string is cyan"
+assert_contains "$OUT" $'\033[1;36m${name}\033[0m' "bash: a braced expansion is cyan"
+assert_contains "$OUT" $'\033[1;36m$1\033[0m' "bash: a positional is cyan"
+assert_contains "$OUT" $' \xe2\x96\xa0' "bash: a UTF-8 glyph passes with no escape inside it"
+printf '# Title\n\nProse with 3 digits, 2 commas.\n- a `span` and **bold** here\n| \xe2\x96\xa0 | U+25A0 |\n> quoted\n```\ncode 1\n```\n---\n' > "$HLD/style.md"
+hl_run 1 highlight_md "$HLD/style.md"
+assert_exit "$RC" 0 "highlight_md exits 0"
+hl_exact "$HLD/style.md" "md: stripped output is the input"
+assert_contains "$OUT" $'\033[1;36m# Title\033[0m' "md: a heading is cyan"
+assert_contains "$OUT" "Prose with 3 digits, 2 commas." "md: prose stays uncoloured (no digit or comma colouring)"
+assert_contains "$OUT" $'\033[0;32m`span`\033[0m' "md: a code span is green"
+assert_contains "$OUT" $'\033[1m**bold**\033[0m' "md: bold is bold"
+assert_contains "$OUT" $'\033[2m|\033[0m \xe2\x96\xa0 \033[2m|\033[0m' "md: table pipes are dim, the glyph between them intact"
+assert_contains "$OUT" $'\033[2m> \033[0mquoted' "md: a blockquote marker is dim"
+assert_contains "$OUT" $'\033[0;32mcode 1\033[0m' "md: a fenced block body is green"
+assert_contains "$OUT" $'\033[2m---\033[0m' "md: a rule is dim"
+printf 'x \xff\xfe y\n' > "$HLD/bad.md"
+hl_run 1 highlight_md "$HLD/bad.md"
+assert_exit "$RC" 0 "md: an invalid multibyte sequence does not abort awk"
+hl_exact "$HLD/bad.md" "md: an invalid multibyte sequence survives byte-exact"
+printf '{"a": 1}\n' > "$HLD/s.json"
+hl_run 1 highlight_json "$HLD/s.json"
+hl_exact "$HLD/s.json" "json: stripped output is the input"
+assert_contains "$OUT" $'\033[1;36m"a"\033[0m' "json: a key is cyan"
+hl_run "" highlight_bash "$HLD/hook.bash"
+hl_exact "$HLD/hook.bash" "HL_ON off: highlight_bash is a byte-identical passthrough"
+if LC_ALL=C grep -q $'\033' "$OUT"; then fail "HL_ON off: no escape may appear"; else ok "HL_ON off: no escape appears"; fi
+hl_run 1 'highlighter_for a.json; echo; highlighter_for b.bash; echo; highlighter_for c.sh; echo; highlighter_for d.md; echo; highlighter_for .claude-lane; echo; highlighter_for e.json.bak; echo' /dev/null
+assert_eq "$(cat "$OUT")" $'highlight_json\nhighlight_bash\nhighlight_bash\nhighlight_md' \
+  "routing by suffix: json, bash, sh, md"
+assert_eq "$(wc -l <"$OUT" | tr -d ' ')" "6" "routing: nothing for .claude-lane or a .bak (two empty answers)"
+hl_run 1 'highlight_ok highlight_bash 1' "$HLD/hook.bash"
+assert_exit "$RC" 0 "guard: a newline-terminated hook may be highlighted"
+hl_run 1 'highlight_ok highlight_bash ""' "$HLD/hook.bash"
+assert_exit "$RC" 1 "guard: no trailing newline -> raw"
+printf 'a\0b\n' > "$HLD/nul.bash"
+hl_run 1 'highlight_ok highlight_bash 1' "$HLD/nul.bash"
+assert_exit "$RC" 1 "guard: a NUL byte -> raw"
+hl_run 1 'highlight_ok "" 1' "$HLD/hook.bash"
+assert_exit "$RC" 1 "guard: no highlighter for the suffix -> raw"
+hl_run "" 'highlight_ok highlight_bash 1' "$HLD/hook.bash"
+assert_exit "$RC" 1 "guard: HL_ON off -> raw"
+if command -v jq >/dev/null 2>&1; then
+  hl_run 1 'highlight_ok highlight_json 1' "$HLD/s.json"
+  assert_exit "$RC" 0 "guard: valid JSON may be highlighted"
+  printf '{"a": \n' > "$HLD/bad.json"
+  hl_run 1 'highlight_ok highlight_json 1' "$HLD/bad.json"
+  assert_exit "$RC" 1 "guard: malformed JSON -> raw"
+fi
+
+# ---------------------------------------------------------------------------
 say ""
 if [ "$FAIL" -eq 0 ]; then
   rm -rf "$FIX"
