@@ -435,6 +435,39 @@ verify_ancestry() {
   done
 }
 
+# THE FLAKE THE ROOT SIDE BUILDS FROM. `--flake <path>` exists so upgrade's
+# unprivileged plan and its root-side ceremonies read the SAME file across
+# sudo's env_reset (argv crosses the boundary; an env knob would not). But
+# `upgrade` self-elevates through the sudoers digest grant and ends in
+# `<rebuild> switch --flake <dirname>`, which evaluates and then ACTIVATES
+# whatever that directory says -- arbitrary root code, chosen by an argument
+# the invoker typed. One password, taken for a review round, buys the whole
+# machine if that path is user-owned.
+#
+# So the root side re-derives the same rule the rest of this tool lives by:
+# what root executes must be reachable only through root-owned directories.
+# The FILE goes through verify_record_file, not verify_root_owned_path --
+# a flake is data, not a program, and /etc/nix-darwin/flake.nix is 644 on a
+# stock nix-darwin install; what matters is that nothing non-root can rewrite
+# it. The DIRECTORY chain goes through verify_ancestry, which walks the
+# flake's own directory and every parent, so a user-writable link anywhere on
+# the way is refused too.
+#
+# The default flake is unaffected: /etc/nix-darwin and /etc/nixos are
+# root-owned by construction, which is exactly why they are the default.
+verify_root_flake() { # <flake-file>
+  local f="$1"
+  verify_record_file "$f" || {
+    echo "REFUSE: $f is not a root-owned flake; the root side will not build from it" >&2
+    return 1
+  }
+  verify_ancestry "$f" || {
+    echo "REFUSE: $f is reachable through a directory that is not root-owned;" >&2
+    echo "        the root side will not build from it" >&2
+    return 1
+  }
+}
+
 # The interpreter of the installed script must be PINNED in its shebang, not
 # resolved at exec time. sudo passes the caller's PATH through to the root
 # process (probed live 2026-08-06: `sudo printenv PATH` returned the
@@ -3396,19 +3429,21 @@ case "$action" in
       # so pinned saying it too would either double the launcher's line, or
       # point at nothing at all on a direct invocation.
       #
-      # upgrade is the exception to the command display: reaching this line
-      # means its plan found work, and the gate below is both the statement
-      # of what happens next and the place to stop -- a command line nobody
-      # typed would only sit between the two.
+      # upgrade USED to be the exception here, on the reasoning that its plan
+      # plus the gate already said what happens next. That was wrong in the
+      # one way this display exists to prevent: upgrade takes --flake, whose
+      # value decides what the rebuild ACTIVATES as root, and --yes, which
+      # removes the last confirm before it -- and neither appeared anywhere
+      # before the password prompt. Every self-elevating verb now discloses
+      # its exact argv, upgrade included; the gate below still counts the
+      # round, which is a different sentence about a different thing.
       if { [ "$action" = "review" ] || [ "$action" = "upgrade" ] || [ "$action" = "add" ]; } \
         && [ "$elev" = "$INSTALL_TARGET" ]; then
         if [ "${file_mode:-0}" -eq 0 ]; then
           printf '%sThe preview above was orientation only. The sudo ceremony re-derives\n' "$C_DIM"
           printf 'everything it displays, and nothing is pinned until you confirm there.%s\n\n' "$C_OFF"
         fi
-        if [ "$action" != "upgrade" ]; then
-          printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
-        fi
+        printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
         # What the gate counts is what the root side will actually do: the
         # files named on the command line, or the repos that survived the
         # preview's already-pinned skip.
@@ -6693,6 +6728,14 @@ do_deploy() {
     printf '%serror: cannot read %s -- pass --flake%s\n' "$C2_RED" "$FLAKE" "$C2_OFF" >&2
     exit 1
   }
+  # As root -- reached only through `upgrade`, which self-elevates -- the
+  # flake is about to be ACTIVATED by the rebuild, so it must be root-owned
+  # all the way up. Unprivileged deploy keeps every path it ever had: it
+  # displays its root commands and runs them under a fresh sudo the human
+  # answers, which is a different trust decision from this one.
+  if [ "$EUID" -eq 0 ]; then
+    verify_root_flake "$FLAKE" || exit 1
+  fi
 
   # Collect git+file inputs: repo path + current rev= + current ref=,
   # one per line. An input without rev= is skipped (nothing to sync; nix
@@ -6990,6 +7033,12 @@ do_upgrade() {
     printf '%serror: cannot read %s -- pass --flake%s\n' "$C2_RED" "$FLAKE" "$C2_OFF" >&2
     exit 1
   }
+  # Same rule as do_deploy's, applied BEFORE the ceremonies rather than after
+  # them: a flake the rebuild will refuse must not first drive a batch of
+  # review gates chosen by its own input list.
+  if [ "$EUID" -eq 0 ]; then
+    verify_root_flake "$FLAKE" || exit 1
+  fi
 
   # Authoritative re-derivation: the pre-sudo plan was orientation, this
   # is what the ceremonies actually cover. The route each repo takes is

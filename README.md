@@ -150,7 +150,15 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       system flake to its approved rev
                                       (and declared tag ref), rebuild;
                                       shows the root commands first,
-                                      never self-elevates
+                                      never self-elevates. --flake
+                                      defaults to /etc/nix-darwin/flake.nix
+                                      (macOS) or /etc/nixos/flake.nix;
+                                      unprivileged, any readable path is
+                                      allowed, but run as root -- which
+                                      only upgrade reaches -- the flake
+                                      must be root-owned and not group- or
+                                      other-writable, and so must every
+                                      directory on the way to it
 
     pinned upgrade [--dry-run] [--yes] [--flake <path>]
                                       review every stale flake input
@@ -163,7 +171,16 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       exits there, pointing at `pinned
                                       deploy`, and with work to do a gate
                                       naming the round is the last line
-                                      before sudo (--yes skips it); the
+                                      before sudo (--yes skips it),
+                                      preceded by the exact sudo argv --
+                                      --flake decides what the rebuild
+                                      activates as root and --yes removes
+                                      the last confirm, so neither reaches
+                                      the password prompt undisclosed;
+                                      upgrade self-elevates, so its --flake
+                                      obeys deploy's root-side rule and a
+                                      user-owned path is refused before any
+                                      ceremony runs; the
                                       plan lists every input, one row
                                       each, and highlights only the ones
                                       a ceremony will cover -- the rest

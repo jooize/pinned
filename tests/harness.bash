@@ -2246,7 +2246,11 @@ EOF
   assert_contains "$OUT" "Ctrl-C stops" "and names the way out"
   assert_contains "$OUT" "The preview above was orientation only." \
     "the orientation disclaimer stays"
-  assert_missing "$OUT" "Will run:" "upgrade displays no command line pre-sudo"
+  # upgrade takes --flake, whose value decides what the rebuild activates as
+  # root, and --yes, which removes the last confirm before it. Both must be
+  # on the page before the password prompt, like every other verb's argv.
+  assert_shows_cmd "$OUT" "sudo -- $PREVIEW upgrade --flake $FIX/flake-pv-one.nix" \
+    "upgrade discloses its exact argv pre-sudo, --flake included"
   assert_missing "$OUT" "To rebuild anyway:" "and no no-op hint on the stale path"
 
   # Two of them: plural_s, and the count is the plan's own review rows.
@@ -2262,6 +2266,8 @@ EOF
   run_preview upgrade --flake "$FIX/flake-pv-one.nix" --yes
   assert_exit "$RC" 97 "--yes elevates without a gate"
   assert_missing "$OUT" "Enter continues" "no gate is printed under --yes"
+  assert_shows_cmd "$OUT" "sudo -- $PREVIEW upgrade --flake $FIX/flake-pv-one.nix --yes" \
+    "--yes is on the page even when it is the flag that skipped the gate"
 
   # Off-tty the gate cannot be answered: refuse rather than elevate unasked.
   NOTTY=1
@@ -4383,6 +4389,62 @@ if [ -n "$GUARD_LINE" ] && [ -n "$DIGEST_LINE" ] && [ "$GUARD_LINE" -lt "$DIGEST
 else
   fail "setup runs the interpreter guard before it computes the sudoers digest (guard='$GUARD_LINE' digest='$DIGEST_LINE')"
 fi
+
+# ---------------------------------------------------------------------------
+say "S17b: the root-owned flake gate (upgrade's --flake)"
+# ---------------------------------------------------------------------------
+# `upgrade` self-elevates through the sudoers digest grant and ends in
+# `<rebuild> switch --flake <dirname>`, which ACTIVATES whatever that
+# directory says -- root code chosen by an argument the invoker typed, with
+# --yes removing the last confirm. verify_root_flake is the root side's
+# refusal; it is driven through the PROBE because the EUID==0 branch that
+# calls it cannot be reached without real root (see the coverage gaps).
+#
+# The stub widens the OWNER allowlist to the harness user in both
+# verify_record_file and verify_root_owned_path, so what these cases exercise
+# is the MODE half of each: a flake nothing non-root may rewrite, reachable
+# only through directories nothing non-root may rewrite. The owner half is
+# the same code path every other ownership check in this file rides on.
+VRF="$FIX/vrf"
+mkdir -p "$VRF/ok"
+printf '{ }\n' > "$VRF/ok/flake.nix"; chmod 644 "$VRF/ok/flake.nix"
+chmod 755 "$VRF/ok"
+run_probe verify_root_flake "$VRF/ok/flake.nix"
+assert_exit "$RC" 0 "a 644 flake under a 755 dir passes (the default flake's shape)"
+assert_eq "$(wc -c <"$ERRF" | tr -d ' ')" "0" "and says nothing while passing"
+
+# The file itself: group-writable means someone who is not root can rewrite
+# what root is about to activate.
+mkdir -p "$VRF/loosefile"
+printf '{ }\n' > "$VRF/loosefile/flake.nix"; chmod 664 "$VRF/loosefile/flake.nix"
+chmod 755 "$VRF/loosefile"
+run_probe verify_root_flake "$VRF/loosefile/flake.nix"
+assert_exit "$RC" 1 "a group-writable flake file is refused"
+assert_contains "$ERRF" "group/other-writable" "the record-file check names the mode"
+assert_contains "$ERRF" "the root side will not build from it" \
+  "and the refusal says what it is refusing to do"
+
+# The directory: the file may be perfect and still sit where anyone can
+# replace it, or beside a flake.lock and modules that decide as much as it does.
+mkdir -p "$VRF/loosedir"
+printf '{ }\n' > "$VRF/loosedir/flake.nix"; chmod 644 "$VRF/loosedir/flake.nix"
+chmod 777 "$VRF/loosedir"
+run_probe verify_root_flake "$VRF/loosedir/flake.nix"
+assert_exit "$RC" 1 "a flake under a world-writable directory is refused"
+assert_contains "$ERRF" "expected 755 or stricter" "the ancestry walk names the mode"
+assert_contains "$ERRF" "reachable through a directory that is not root-owned" \
+  "and the refusal names the ancestry, not the file"
+chmod 755 "$VRF/loosedir"
+
+# The call sites: a probe cannot reach either EUID==0 branch, so their
+# presence is asserted in the source. deploy gates the rebuild it runs;
+# upgrade gates it BEFORE the ceremonies, so a flake the rebuild would refuse
+# never drives a batch of review gates chosen by its own input list.
+assert_eq "$(grep -c '^    verify_root_flake "\$FLAKE" || exit 1$' "$SRC")" 2 \
+  "both do_deploy and do_upgrade call the gate"
+assert_eq "$(grep -B1 '^    verify_root_flake "\$FLAKE" || exit 1$' "$SRC" \
+             | grep -c '^  if \[ "\$EUID" -eq 0 \]; then$')" 2 \
+  "each call sits under the EUID==0 branch, leaving unprivileged deploy unchanged"
 
 # ---------------------------------------------------------------------------
 say "S18: --version"

@@ -804,6 +804,23 @@ and one pasteable
 line naming all of them closes the report \(em a single authentication
 covers the whole batch, but approval stays a separate ceremony, never
 a deploy flag.
+.IP
+.B \-\-flake
+names the flake file to sync, defaulting to
+.I /etc/nix\-darwin/flake.nix
+on macOS and
+.I /etc/nixos/flake.nix
+elsewhere.
+Run unprivileged, any readable path is allowed: deploy displays the root
+commands and runs them under a fresh
+.BR sudo (8)
+the operator answers.
+Run as root \(em which only
+.B upgrade
+reaches \(em the flake must be root\-owned and not group\- or
+other\-writable, and every directory on the way to it must be root\-owned
+with mode 755 or stricter; anything else is refused before a rebuild
+starts.
 .TP
 .B upgrade [\-\-dry\-run] [\-\-yes] [\-\-flake \fIpath\fP]
 (sudo)
@@ -825,6 +842,24 @@ With work to do, a gate naming the round is the last line before
 .BR sudo (8);
 .B \-\-yes
 skips it, and off a tty upgrade refuses rather than elevate unanswered.
+The gate is preceded by the exact
+.BR sudo (8)
+argv upgrade is about to run, flags included: the value of
+.B \-\-flake
+decides what the rebuild activates as root, and
+.B \-\-yes
+removes the last confirm before it, so neither may reach the password
+prompt undisclosed.
+.IP
+Because upgrade self\-elevates, its
+.B \-\-flake
+is subject to the root\-side rule described under
+.BR deploy :
+the flake file must be root\-owned and not group\- or other\-writable, and
+so must every directory on the way to it.
+The default flake satisfies this by construction, which is why it is the
+default; a user\-owned path is refused before any ceremony runs, rather
+than after a round of approvals has already been driven by its input list.
 The plan lists every git+file input of the flake, one aligned row each in
 flake order, and highlights only the rows a ceremony will cover
 .RB ( review: ).
