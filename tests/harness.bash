@@ -1471,6 +1471,31 @@ d6 binary      1 file   +0 -0' "the ceremony lists chronologically, aligned and 
   # A merge inside the range must not poison its neighbours' counts: the
   # placeholder row is the only one without numbers.
   assert_eq "$(grep -c -e '-  -$' "$OUT")" 1 "exactly one placeholder row (the merge)"
+
+  # A commit subject is text the attacker writes, and it prints unpaged, just
+  # below the ancestry alarm the ceremony's y/N is read against: an ESC[1A
+  # ESC[2K inside one erases the line above it. No ESC byte may reach any
+  # display. The helper first, then the two paths that show a subject (the
+  # aligned listing, and the one-line "candidate:" / "pinned:" rows).
+  ESC="$(printf '\033')"
+  assert_eq "$("$PROBE" sanitize_display "$(printf 'a\tb%s[2Kc\177d' "$ESC")")" \
+    'a b[2Kcd' "sanitize_display: tab to space, control bytes dropped"
+  assert_eq "$("$PROBE" sanitize_display 'plain subject')" 'plain subject' \
+    "sanitize_display: ordinary text is untouched"
+  printf 'e1\n' > "$REPO_D/e.txt"
+  bgit "$REPO_D" add e.txt
+  bgit "$REPO_D" commit -q -m "$(printf 'd7 %s[1A%s[2K erased' "$ESC" "$ESC")"
+  ANS='
+y
+'
+  run_pinned review "$REPO_D"
+  assert_exit "$RC" 0 "review over an escape-carrying subject exits 0"
+  if LC_ALL=C grep -qF -e "$ESC" "$OUT"; then
+    fail "no ESC byte reaches the ceremony display"
+  else
+    ok "no ESC byte reaches the ceremony display"
+  fi
+  assert_contains "$OUT" 'd7 [1A[2K erased' "the subject still reads, minus the control bytes"
 else
   say "S8d: SKIPPED (no git fixture)"
 fi

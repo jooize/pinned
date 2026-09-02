@@ -826,6 +826,29 @@ sgit() {
     -c core.fsmonitor=false -c core.pager=cat "$@"
 }
 
+# FREE TEXT OUT OF A REPO IS NOT SAFE TO PRINT. A commit subject is content
+# the attacker writes, and printf sends it to a terminal verbatim: an ESC[1A
+# ESC[2K inside one erases the line above it. That line is frequently the
+# ancestry alarm -- ancestry_floor prints its red "the pinned line is being
+# abandoned" refusal, and the candidate's subject prints right after, so a
+# crafted subject can scrub the alarm off the screen before the y/N. None of
+# this display is paged (`less -R` neutralises the same bytes, which is why
+# the reviewed DIFF is left alone below), so the stripping happens here.
+#
+# Byte-based, LC_ALL=C: an invalid multibyte sequence must not make this
+# function fail open, and only the C0 set plus DEL can move a cursor. Tab
+# becomes a space rather than vanishing -- it is a word separator in a
+# subject, and deleting it would join two words into one. Everything the
+# terminal cannot use as a control survives untouched, so a subject in any
+# language still reads as itself.
+#
+# Display only, and only for strings that come out of git. Nothing hashed,
+# recorded, compared or passed to another program goes through here: the
+# record must keep the bytes that were approved.
+sanitize_display() { # <string> -> the same string with no terminal controls
+  printf '%s' "$1" | LC_ALL=C tr '\011' ' ' | LC_ALL=C tr -d '\000-\037\177'
+}
+
 # The "commits since last approval" listing, one aligned line per commit,
 # newest first:
 #
@@ -865,6 +888,15 @@ print_commit_range() {
   sgit log --reverse --format='%x01%h%x09%s' --numstat "${1}..${2}" | LC_ALL=C awk \
     -v pre="${3:-}" -v cyn="$C_CYN" -v dim="$C_DIM" \
     -v grn="$C_GRN" -v red="$C_RED" -v off="$C_OFF" '
+    # sanitize_display, in awk: the subject is attacker-written text on its
+    # way to a terminal, and this listing prints under the same ancestry
+    # alarm the ceremony below it depends on. Byte semantics (LC_ALL=C is set
+    # on the awk invocation), tab to space so the columns hold.
+    function scrub(s) {
+      gsub(/[\001-\010\013-\037\177]/, "", s)
+      gsub(/\t/, " ", s)
+      return s
+    }
     function fit(s,   k) {                      # cap the subject column
       if (length(s) <= 60) return s
       k = 57
@@ -877,7 +909,7 @@ print_commit_range() {
       n++
       line = substr($0, 2)
       t = index(line, "\t")
-      if (t > 0) { hsh[n] = substr(line, 1, t - 1); sbj[n] = fit(substr(line, t + 1)) }
+      if (t > 0) { hsh[n] = substr(line, 1, t - 1); sbj[n] = fit(scrub(substr(line, t + 1))) }
       else       { hsh[n] = line; sbj[n] = "" }
       nfl[n] = 0; ins[n] = 0; del[n] = 0; mrg[n] = 1
       # %h picks its own length per commit, so the hash gets a column too.
@@ -3140,10 +3172,10 @@ case "$action" in
             if [ -n "$preview_tag" ]; then
               printf '%stag:%s        %s\n' "$C_B" "$C_OFF" "$preview_tag"
               printf '%scandidate:%s  %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_head" "$C_OFF" \
-                "$C_DIM" "$(sgit log -1 --format=%s "$preview_head")" "$C_OFF"
+                "$C_DIM" "$(sanitize_display "$(sgit log -1 --format=%s "$preview_head")")" "$C_OFF"
             else
               printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_head" "$C_OFF" \
-                "$C_DIM" "$(sgit log -1 --format=%s "$preview_head")" "$C_OFF"
+                "$C_DIM" "$(sanitize_display "$(sgit log -1 --format=%s "$preview_head")")" "$C_OFF"
             fi
             if [ -n "$preview_pin" ]; then
               printf '%spinned:%s     %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_pin" "$C_OFF"
@@ -3782,7 +3814,7 @@ do_approve() {
       [ "${#tag_args[@]}" -gt 1 ] \
         && printf '%s%d/%d tags agree on the commit below%s\n' "$C_GRN" "${#tag_args[@]}" "${#tag_args[@]}" "$C_OFF"
       printf '%scandidate:%s  %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
-        "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
+        "$C_DIM" "$(sanitize_display "$(sgit log -1 --format=%s "$hash")")" "$C_OFF"
       if [ -n "$old_hash" ]; then
         printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
         if [ -n "$ancestry_mb" ]; then
@@ -3823,10 +3855,10 @@ do_approve() {
       if [ -n "$sel_tag" ]; then
         printf '%stag:%s        %s\n' "$C_DIM" "$C_OFF" "$sel_tag"
         printf '%scandidate:%s  %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
-          "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
+          "$C_DIM" "$(sanitize_display "$(sgit log -1 --format=%s "$hash")")" "$C_OFF"
       else
         printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
-          "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
+          "$C_DIM" "$(sanitize_display "$(sgit log -1 --format=%s "$hash")")" "$C_OFF"
       fi
       if [ -n "$old_hash" ]; then
         printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
@@ -4880,7 +4912,7 @@ do_rekey() {
     rev)
       printf '%skind:%s       repo record %s(%s)%s\n' "$C_B" "$C_OFF" "$C_DIM" "$target" "$C_OFF"
       printf '%srev:%s        %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$rev" "$C_OFF" \
-        "$C_DIM" "$(sgit log -1 --format=%s "$rev")" "$C_OFF" ;;
+        "$C_DIM" "$(sanitize_display "$(sgit log -1 --format=%s "$rev")")" "$C_OFF" ;;
     pin)
       printf '%skind:%s       file record %s(%s)%s\n' "$C_B" "$C_OFF" "$C_DIM" "$target" "$C_OFF"
       printf '%sdigest:%s     %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$digest" "$C_OFF" \
@@ -5067,7 +5099,7 @@ do_declare() {
     "$C_DIM" "$repo" "$C_OFF"
   printf '%sslot:%s       %s\n' "$C_B" "$C_OFF" "$slot"
   printf '%spinned:%s     %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$rev" "$C_OFF" \
-    "$C_DIM" "$(sgit log -1 --format=%s "$rev" 2>/dev/null || echo 'commit not in repo!')" "$C_OFF"
+    "$C_DIM" "$(sanitize_display "$(sgit log -1 --format=%s "$rev" 2>/dev/null || echo 'commit not in repo!')")" "$C_OFF"
   if [ "$remove" -eq 1 ]; then
     printf '%sdeclared:%s   %s%s%s -> (none)\n' "$C_B" "$C_OFF" "$C_DIM" "$old_tag" "$C_OFF"
     printf "%sdeploy:%s     %sthe input's ref= stops being managed; it keeps whatever it says now%s\n" \
@@ -5487,7 +5519,7 @@ do_status() {
     printf '%spinned:%s     (none)\n' "$C_DIM" "$C_OFF"
   else
     printf '%spinned:%s     %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
-      "$C_DIM" "$(sgit log -1 --format=%s "$hash" 2>/dev/null || echo 'commit not in repo!')" "$C_OFF"
+      "$C_DIM" "$(sanitize_display "$(sgit log -1 --format=%s "$hash" 2>/dev/null || echo 'commit not in repo!')")" "$C_OFF"
     # The declared release name, in its three states: declared and live
     # (deploy syncs ref= to it), rev-only, or stale -- the third is the
     # early warning for a state that otherwise surfaces as a failed
@@ -5516,7 +5548,7 @@ do_status() {
     fi
   fi
   printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$head_hash" "$C_OFF" \
-    "$C_DIM" "$(sgit log -1 --format=%s "$head_hash")" "$C_OFF"
+    "$C_DIM" "$(sanitize_display "$(sgit log -1 --format=%s "$head_hash")")" "$C_OFF"
   if [ -n "$hash" ] && [ "$hash" = "$head_hash" ]; then
     printf '%sstate:%s      %s✓ HEAD is approved%s\n' "$C_DIM" "$C_OFF" "$C_GRN" "$C_OFF"
   elif [ -n "$hash" ]; then
@@ -6061,7 +6093,7 @@ do_show_repo() {
   printf '%srepo:%s       %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_B$C_MAG" "${repo##*/}" "$C_OFF" \
     "$C_DIM" "$repo" "$C_OFF"
   printf '%spinned:%s     %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
-    "$C_DIM" "$(sgit log -1 --format=%s "$hash")" "$C_OFF"
+    "$C_DIM" "$(sanitize_display "$(sgit log -1 --format=%s "$hash")")" "$C_OFF"
   if [ -r "$default_slot/tag" ]; then
     IFS= read -r tag <"$default_slot/tag" || tag=""
     [ -z "$tag" ] \
