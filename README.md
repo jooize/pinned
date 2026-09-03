@@ -89,15 +89,16 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       recorded digest, or drift confined
                                       to the keys the slot already
                                       ignores), and <old> is tombstoned
-    pinned declare <repo> --tag <name> | --remove
+    pinned declare <repo> --release <name> | --no-release
                                       name the release a pinned rev
                                       already is: the tag must already
                                       resolve to the pinned rev (checked,
                                       not taken -- the rev never moves),
                                       and deploy then syncs the input's
-                                      ref= to it; --remove withdraws the
+                                      ref= to it; --no-release clears the
                                       declaration and the slot goes
-                                      rev-only
+                                      rev-only; both state an end state
+                                      and are idempotent
     pinned sign <repo> <tag>          signed release tag at the pinned hash
     pinned signer add|list|remove [--repo <path>] (--file <pubkey> | --key '<line>')
                                       allowed-signers ceremony:

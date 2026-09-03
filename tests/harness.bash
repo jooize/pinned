@@ -1268,29 +1268,29 @@ y
   # this case is not about).
   printf 'b3\n' > "$REPO_B/f"; bgit "$REPO_B" commit -q -am b3
   bgit "$REPO_B" tag v9 "$B_PIN"
-  printf 'v9\n' > "$B_SLOT/tag"
+  printf 'v9\n' > "$B_SLOT/release"
   ANS=""
   run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
   assert_exit "$RC" 0 "a tag-declared stale input does not break upgrade"
   assert_contains "$OUT" "review --tag by hand" "tag-declared slot routed to manual approval"
   assert_no_row "$OUT" "review:" "$REPO_B" "a tag-declared slot is never highlighted for a plain review"
   assert_row "$OUT" "skipped:" "$REPO_B" "it is a skipped row instead"
-  rm -f "$B_SLOT/tag"
+  rm -f "$B_SLOT/release"
   bgit "$REPO_B" tag -d v9 >/dev/null
 
   # A tag-declared slot whose HEAD carries EXACTLY ONE release tag joins
   # the batch: the ceremony approves that commit under that name, and the
   # declaration follows the release (v9 -> v10).
-  printf 'v9\n' > "$B_SLOT/tag"
+  printf 'v9\n' > "$B_SLOT/release"
   bgit "$REPO_B" tag v10
   ANS='
 y
 '
   run_pinned upgrade --flake "$FIX/flake.nix"
   assert_exit "$RC" 2 "tagged upgrade reaches deploy's confirmation gate"
-  assert_contains "$OUT" "(release tag v10)" "the plan names the HEAD release"
+  assert_contains "$OUT" "(release v10)" "the plan names the HEAD release"
   assert_eq "$(rev_in "$B_SLOT/rev.git")" "$(bgit "$REPO_B" rev-parse 'HEAD^{commit}')" "the tagged repo pinned at its release"
-  assert_eq "$(cat "$B_SLOT/tag")" "v10" "the declaration followed the release"
+  assert_eq "$(cat "$B_SLOT/release")" "v10" "the declaration followed the release"
 
   # A release behind HEAD is the common shape (tag, then keep committing).
   # It never routes: the row is skipped, but names the newest release past
@@ -1673,7 +1673,7 @@ s
 
   # --- a stepped yes clears a declared release name ------------------------
   seed_rev "$REPO_E" "$E_BASE"
-  printf 'v1\n' > "$E_SLOT/tag"
+  printf 'v1\n' > "$E_SLOT/release"
   ANS='
 y
 
@@ -1681,7 +1681,7 @@ n
 '
   run_pinned review "$REPO_E" --step
   assert_exit "$RC" 0 "a stepped review over a tag-declared slot exits 0"
-  assert_absent "$E_SLOT/tag" "a stepped yes clears the declared tag"
+  assert_absent "$E_SLOT/release" "a stepped yes clears the declared tag"
 
   # --- --tag moves the endpoint: the walk ends at the tag's commit ---------
   # The name is declared only when the walk actually approves that commit;
@@ -1696,7 +1696,7 @@ y
   run_pinned review "$REPO_E" --step --tag v9
   assert_exit "$RC" 0 "a stepped walk to a tag exits 0"
   assert_eq "$(rev_in "$E_SLOT/rev.git")" "$E_C2" "the pin rests at the tag's commit, not HEAD"
-  assert_eq "$(cat "$E_SLOT/tag")" "v9" "reaching the endpoint declares the name"
+  assert_eq "$(cat "$E_SLOT/release")" "v9" "reaching the endpoint declares the name"
   assert_contains "$OUT" "approved 2 of 2 commits" "the walk is exactly pin..tag"
   assert_missing  "$OUT" "E3LINE" "the commit past the tag is never offered"
 
@@ -1710,7 +1710,7 @@ n
   run_pinned review "$REPO_E" --step --tag v9
   assert_exit "$RC" 0 "an early stop below the tag still exits 0"
   assert_eq "$(rev_in "$E_SLOT/rev.git")" "$E_C1" "the pin rests where reading stopped"
-  assert_absent "$E_SLOT/tag" "an unreached name is not declared"
+  assert_absent "$E_SLOT/release" "an unreached name is not declared"
   assert_contains "$OUT" "declared name v9 not reached; the slot stays rev-only" \
     "the summary says the name was not declared"
 
@@ -2041,7 +2041,7 @@ if [ "$GIT_OK" -eq 1 ] && [ -x "$REBUILD_TOOL" ] && [ "$SIGN_OK" -eq 1 ]; then
   printf 't3\n' > "$REPO_T/f"; bgit "$REPO_T" commit -q -am t3
   T_SLOT="$(slot_of "$REPO_T")"
   seed_rev "$REPO_T" "$T_PIN"
-  seed_state "$REPO_T" tag t1
+  seed_state "$REPO_T" release t1
 
   cat > "$FIX/flake-signed.nix" <<EOF
 {
@@ -2089,9 +2089,9 @@ y
   assert_contains "$OUT" "2/2 tags agree on the commit below" \
     "the agreeing tags are read as k-of-n agreement"
   assert_eq "$(rev_in "$S_SLOT/rev.git")" "$S_REL" "the RELEASE is pinned, not HEAD"
-  assert_eq "$(cat "$S_SLOT/tag")" "v2" "the declaration landed in the slot"
+  assert_eq "$(cat "$S_SLOT/release")" "v2" "the declaration landed in the slot"
   assert_eq "$(rev_in "$T_SLOT/rev.git")" "$T_REL" "the tag-declared repo pinned at its signed release"
-  assert_eq "$(cat "$T_SLOT/tag")" "t2" "and its declaration followed the release"
+  assert_eq "$(cat "$T_SLOT/release")" "t2" "and its declaration followed the release"
 
   # Nothing verified remains above the new pin: the only newer names are the
   # outsider's signature and a bare name, so the repo drops back to its
@@ -2211,7 +2211,8 @@ say "S8h: the pre-sudo upgrade preview, and deploy's elevation"
 assert_eq "$(sed -n '/^case "\$elev_action" in$/{n;p;}' "$SRC")" \
   "  review|add|setup|tombstone|upgrade|rekey|declare|deploy)" \
   "deploy is in the self-elevation case list"
-assert_eq "$(grep -c '^  if \[ "\$DRY" -eq 0 \]; then require_root deploy; fi$' "$SRC")" 1 \
+assert_eq "$(sed -n '/^  if \[ "\$DRY" -eq 0 \]; then$/{n;p;}' "$SRC")" \
+  "    require_root deploy" \
   "and do_deploy requires root on every run that is not --dry-run"
 
 if [ "$GIT_OK" -eq 1 ]; then
@@ -2785,12 +2786,13 @@ fi
 # ---------------------------------------------------------------------------
 say "S8j: declare (name the release a pinned rev already is)"
 # ---------------------------------------------------------------------------
-# The record-mutation verb for the slot's `tag` annotation. The invariant:
+# The record-mutation verb for the slot's `release` record. The invariant:
 # a declaration may only name a tag that ALREADY resolves to the pinned rev
 # -- deploy's own cross-check, run at declaration time -- so declare can
 # never write a record deploy would refuse, and it never touches the rev,
-# so nothing about what is BUILT can change here. --remove withdraws the
-# declaration and the slot goes rev-only.
+# so nothing about what is BUILT can change here. --no-release clears the
+# declaration and the slot goes rev-only. Both flags state a desired end
+# state: a slot already there is a success, exit 0, with a no-change line.
 if [ "$GIT_OK" -eq 1 ]; then
   REPO_DC="$FIX/decl-repo"
   mkdir -p "$REPO_DC"
@@ -2804,10 +2806,10 @@ if [ "$GIT_OK" -eq 1 ]; then
 
   # Unpinned: nothing for a name to be about.
   ANS=""
-  run_pinned declare "$REPO_DC" --tag v1
+  run_pinned declare "$REPO_DC" --release v1
   assert_exit "$RC" 1 "an unpinned repo refuses"
   assert_contains "$OUT" "nothing is pinned here" "the refusal points at review"
-  assert_absent "$DC_SLOT/tag" "and no declaration was written"
+  assert_absent "$DC_SLOT/release" "and no declaration was written"
 
   seed_rev "$REPO_DC" "$DC_C2"
 
@@ -2815,68 +2817,68 @@ if [ "$GIT_OK" -eq 1 ]; then
   # the tag actually points at.
   bgit "$REPO_DC" tag v0 "$DC_C1"
   ANS=""
-  run_pinned declare "$REPO_DC" --tag v0
+  run_pinned declare "$REPO_DC" --release v0
   assert_exit "$RC" 1 "a tag naming another commit refuses"
   assert_contains "$OUT" "names ${DC_C1:0:10}, not the pinned ${DC_C2:0:10}" \
     "the refusal names the commit the tag actually points at"
-  assert_absent "$DC_SLOT/tag" "the slot stays rev-only"
+  assert_absent "$DC_SLOT/release" "the slot stays rev-only"
 
   ANS=""
-  run_pinned declare "$REPO_DC" --tag v99
+  run_pinned declare "$REPO_DC" --release v99
   assert_exit "$RC" 1 "a tag missing from the checkout refuses"
   assert_contains "$OUT" "is missing from this checkout" "and says so"
-  assert_absent "$DC_SLOT/tag" "without writing anything"
+  assert_absent "$DC_SLOT/release" "without writing anything"
 
   # Out-of-grammar names refuse root-side, slot untouched...
   for badname in 'v1;rm -rf /' 'a..b' 'x.lock' -x; do
     ANS=""
-    run_pinned declare "$REPO_DC" --tag "$badname"
+    run_pinned declare "$REPO_DC" --release "$badname"
     assert_exit "$RC" 1 "out-of-grammar name '$badname' refuses"
-    assert_absent "$DC_SLOT/tag" "and leaves the slot untouched"
+    assert_absent "$DC_SLOT/release" "and leaves the slot untouched"
   done
   # ...and pre-sudo, before authentication costs a prompt: the preview stub
   # keeps the elevation live, so a bad argv must die at 1 and never reach
   # the sudo marker (97).
   ANS=""
-  run_preview declare "$REPO_DC" --tag 'a..b'
+  run_preview declare "$REPO_DC" --release 'a..b'
   assert_exit "$RC" 1 "an out-of-grammar name dies pre-sudo"
   ANS=""
-  run_preview declare "$FIX/no-such-dir" --tag v1
+  run_preview declare "$FIX/no-such-dir" --release v1
   assert_exit "$RC" 1 "a repo that is not a directory dies pre-sudo"
 
   # Both flags, and neither: usage.
   ANS=""
-  run_pinned declare "$REPO_DC" --tag v1 --remove
-  assert_exit "$RC" 1 "--tag with --remove is usage"
+  run_pinned declare "$REPO_DC" --release v1 --no-release
+  assert_exit "$RC" 1 "--release with --no-release is usage"
   assert_contains "$OUT" "usage: pinned" "and says so"
   ANS=""
   run_pinned declare "$REPO_DC"
-  assert_exit "$RC" 1 "neither --tag nor --remove is usage"
+  assert_exit "$RC" 1 "neither --release nor --no-release is usage"
 
   # A decline leaves the record unchanged.
   ANS='n
 '
-  run_pinned declare "$REPO_DC" --tag v1
+  run_pinned declare "$REPO_DC" --release v1
   assert_exit "$RC" 2 "declining exits 2"
   assert_contains "$OUT" "aborted; record unchanged" "the decline says so"
-  assert_absent "$DC_SLOT/tag" "and no declaration was written"
+  assert_absent "$DC_SLOT/release" "and no declaration was written"
 
   # The verb's whole point: a rev-only slot gains its declaration.
   ANS='y
 '
-  run_pinned declare "$REPO_DC" --tag v1
+  run_pinned declare "$REPO_DC" --release v1
   assert_exit "$RC" 0 "declaring a valid name on a rev-only slot succeeds"
   assert_contains "$OUT" "names the pinned rev" "the display shows the invariant holding"
   assert_contains "$OUT" "(none) -> v1" "the declared row shows the transition"
   assert_contains "$OUT" "ref=refs/tags/v1" "the deploy row states the effect on the anchor"
   assert_contains "$OUT" "pinned deploy" "the follow-up points at deploy"
-  assert_file "$DC_SLOT/tag" "the declaration was written"
-  assert_eq "$(cat "$DC_SLOT/tag")" "v1" "and holds exactly the name"
+  assert_file "$DC_SLOT/release" "the declaration was written"
+  assert_eq "$(cat "$DC_SLOT/release")" "v1" "and holds exactly the name"
   assert_eq "$(rev_in "$DC_SLOT/rev.git")" "$DC_C2" "the pin itself is untouched"
 
   # Re-declaring the same name is a no-op; no answer is consumed.
   ANS=""
-  run_pinned declare "$REPO_DC" --tag v1
+  run_pinned declare "$REPO_DC" --release v1
   assert_exit "$RC" 0 "re-declaring the same name needs no answer"
   assert_contains "$OUT" "already declared" "and short-circuits"
 
@@ -2901,23 +2903,27 @@ if [ "$GIT_OK" -eq 1 ]; then
     "the stale declaration is the loud third state"
   bgit "$REPO_DC" tag -f v1 "$DC_C2" >/dev/null
 
-  # Withdrawal, and the rev-only state it leaves.
+  # Clearing, and the rev-only state it leaves.
   ANS='y
 '
-  run_pinned declare "$REPO_DC" --remove
-  assert_exit "$RC" 0 "--remove withdraws the declaration"
-  assert_contains "$OUT" "v1 -> (none)" "the display shows the withdrawal"
+  run_pinned declare "$REPO_DC" --no-release
+  assert_exit "$RC" 0 "--no-release clears the declaration"
+  assert_contains "$OUT" "v1 -> (none)" "the display shows the transition"
   assert_contains "$OUT" "stops being managed" "and says what deploy stops doing"
-  assert_absent "$DC_SLOT/tag" "the slot is rev-only again"
+  assert_contains "$OUT" "cleared: v1" "the result line names what was cleared"
+  assert_absent "$DC_SLOT/release" "the slot is rev-only again"
   ANS=""
   run_pinned status "$REPO_DC"
   assert_contains "$OUT" "(rev-only; deploy leaves ref= alone)" \
     "status names the rev-only state instead of omitting the row"
 
+  # The requested state already holds: a success with a no-change line,
+  # symmetric with `already declared`; no answer is consumed.
   ANS=""
-  run_pinned declare "$REPO_DC" --remove
-  assert_exit "$RC" 1 "--remove on a rev-only slot refuses"
-  assert_contains "$OUT" "no declaration to withdraw" "and says so"
+  run_pinned declare "$REPO_DC" --no-release
+  assert_exit "$RC" 0 "--no-release on a rev-only slot is a success"
+  assert_contains "$OUT" "already rev-only" "and says nothing changed"
+  assert_absent "$DC_SLOT/release" "the slot is still rev-only"
 
   # A tombstoned slot is read_rev's own refusal.
   REPO_TS="$FIX/decl-tomb"
@@ -2926,34 +2932,75 @@ if [ "$GIT_OK" -eq 1 ]; then
   bgit "$REPO_TS" init -q
   printf 't1\n' > "$REPO_TS/f"; bgit "$REPO_TS" add f; bgit "$REPO_TS" commit -q -m t1
   ANS=""
-  run_pinned declare "$REPO_TS" --tag v1
+  run_pinned declare "$REPO_TS" --release v1
   assert_exit "$RC" 1 "a tombstoned slot refuses"
   assert_contains "$OUT" "is tombstoned" "with read_rev's own refusal"
 
   # The elevation gates, in the verb's own words.
   ANS='
 '
-  run_preview declare "$REPO_DC" --tag v1
+  run_preview declare "$REPO_DC" --release v1
   assert_exit "$RC" 97 "an answered declare gate reaches the elevation"
-  assert_shows_cmd "$OUT" "sudo -- $PREVIEW declare $REPO_DC --tag v1" \
+  assert_shows_cmd "$OUT" "sudo -- $PREVIEW declare $REPO_DC --release v1" \
     "the exact argv stays on screen"
   assert_contains "$OUT" "next: declare the release name as root (sudo); Enter continues" \
     "the gate names the declaration"
   assert_contains "$OUT" "sudo asks you to authenticate" "the record-verb contract line survives"
   ANS='
 '
-  run_preview declare "$REPO_DC" --remove
-  assert_exit "$RC" 97 "an answered withdrawal gate reaches the elevation"
-  assert_contains "$OUT" "next: withdraw the declaration as root (sudo)" \
-    "its gate names the withdrawal"
+  run_preview declare "$REPO_DC" --no-release
+  assert_exit "$RC" 97 "an answered clearing gate reaches the elevation"
+  assert_contains "$OUT" "next: clear the declaration as root (sudo)" \
+    "its gate names the clearing"
 
   # --yes answers the gate at the command line, never the root confirm.
   ANS='y
 '
-  run_pinned declare "$REPO_DC" --tag v1 --yes
+  run_pinned declare "$REPO_DC" --release v1 --yes
   assert_exit "$RC" 0 "the root side declares with --yes in its argv"
   assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there"
-  assert_eq "$(cat "$DC_SLOT/tag")" "v1" "and the declaration landed"
+  assert_eq "$(cat "$DC_SLOT/release")" "v1" "and the declaration landed"
+
+  # --- the legacy `tag` record heals at the first root ceremony ------------
+  # One-shot rename inside ensure_tree, so no reader ever consults the old
+  # name. The bytes travel verbatim, and the ceremony answers from the
+  # renamed record: `already declared` proves the read came AFTER the heal.
+  mv "$DC_SLOT/release" "$DC_SLOT/tag"
+  ANS=""
+  run_pinned declare "$REPO_DC" --release v1
+  assert_exit "$RC" 0 "a ceremony over a legacy tag record succeeds"
+  assert_contains "$OUT" "renamed the declared release name record" "and announces the heal"
+  assert_contains "$OUT" "already declared" "answering from the renamed record"
+  assert_absent "$DC_SLOT/tag" "the old record is gone"
+  assert_eq "$(cat "$DC_SLOT/release")" "v1" "the new one holds the same bytes"
+
+  # No reader consults `tag`: a slot holding BOTH, with differing contents,
+  # reads exactly as one holding only `release` -- the assert that catches
+  # a fallback reader sneaking back in.
+  printf 'legacy-name\n' > "$DC_SLOT/tag"
+  ANS=""
+  run_pinned status "$REPO_DC"
+  assert_exit "$RC" 0 "status answers over a slot holding both records"
+  assert_contains "$OUT" "declared:   v1" "status reads release"
+  assert_missing "$OUT" "legacy-name" "and never the old record"
+  ANS=""
+  run_pinned list --under "$REPO_DC"
+  assert_contains "$OUT" "declared: v1" "list reads release"
+  assert_missing "$OUT" "legacy-name" "and never the old record"
+  # A root ceremony refuses the ambiguity instead of picking a side: it
+  # names the slot and the hand-fix, and touches neither file.
+  ANS=""
+  run_pinned declare "$REPO_DC" --release v1
+  assert_exit "$RC" 1 "a slot holding both records refuses the ceremony"
+  assert_contains "$OUT" "holds both a tag and a release record" "naming the survivor"
+  assert_contains "$OUT" "rm $DC_SLOT/tag" "and the hand-fix"
+  assert_eq "$(cat "$DC_SLOT/tag")" "legacy-name" "the old file is untouched"
+  assert_eq "$(cat "$DC_SLOT/release")" "v1" "and so is the record"
+  rm -f "$DC_SLOT/tag"
+  ANS=""
+  run_pinned declare "$REPO_DC" --release v1
+  assert_exit "$RC" 0 "the hand-fix restores the ceremony"
+  assert_missing "$OUT" "renamed the declared" "with nothing left to heal"
 
   # Integration, the case that proves the point: declare, then deploy
   # --dry-run shows the ref= sed expression for that input alone -- and no
@@ -2971,6 +3018,20 @@ EOF
     assert_missing "$OUT" "s/rev=" "and no rev expression rides along"
     assert_contains "$OUT" "Dry run -- nothing executed" "nothing ran"
     assert_contains "$FIX/flake-dc.nix" "ref=refs/heads/main" "the flake file itself is untouched"
+
+    # A root deploy heals the tree BEFORE it reads a slot: a legacy record
+    # is renamed first, so the declaration is seen and its ref= synced,
+    # never mistaken for a rev-only slot. The gate is declined, so nothing
+    # runs; the heal and the read are what this proves.
+    mv "$DC_SLOT/release" "$DC_SLOT/tag"
+    ANS=""
+    run_pinned deploy --flake "$FIX/flake-dc.nix"
+    assert_exit "$RC" 2 "a declined deploy gate exits 2"
+    assert_contains "$OUT" "renamed the declared release name record" "deploy healed the record first"
+    assert_contains "$OUT" "ref=refs/tags/v1" "and then read the declaration it had just renamed"
+    assert_absent "$DC_SLOT/tag" "the old record is gone"
+    assert_eq "$(cat "$DC_SLOT/release")" "v1" "the new one holds the name"
+    assert_contains "$FIX/flake-dc.nix" "ref=refs/heads/main" "the declined deploy touched nothing"
   else
     say "S8j: SKIPPED deploy integration (no rebuild tool)"
   fi
@@ -3695,8 +3756,8 @@ y
   assert_contains "$OUT" "+alpha line" "the pinned rev is still displayed from the object store"
 
   # A declared release name is part of what the pin says.
-  printf 'v1.2.3\n' > "$R_SLOT/tag"
-  chmod 640 "$R_SLOT/tag"
+  printf 'v1.2.3\n' > "$R_SLOT/release"
+  chmod 640 "$R_SLOT/release"
   ANS=""
   run_pinned show "$REPO_R"
   assert_exit "$RC" 0 "show with a declared tag exits 0"
@@ -4005,12 +4066,12 @@ y
   assert_exit "$RC" 0 "a repo record moves to the work tree that holds its rev"
   assert_eq "$(rev_in "$MVR_NEW_SLOT/rev.git")" "$MVR_HASH" "the rev travels verbatim"
   assert_eq "$(count_state "$MVR_NEW_SLOT")" 1 "the new slot holds exactly one state file"
-  assert_eq "$(cat "$MVR_NEW_SLOT/tag")" "v1" "the declared tag travelled"
+  assert_eq "$(cat "$MVR_NEW_SLOT/release")" "v1" "the declared tag travelled"
   assert_file "$MVR_NEW_SLOT/signers/allowed_signers" "the per-slot signers travelled"
   assert_contains "$MVR_NEW_SLOT/signers/allowed_signers" "harness@example.invalid" "with their content"
   assert_file "$MVR_OLD_SLOT/tombstone" "the old key is tombstoned"
   assert_contains "$MVR_OLD_SLOT/tombstone" "moved to $MVR_NEW" "naming where the record went"
-  assert_absent "$MVR_OLD_SLOT/tag" "the old slot's declared name went with the record"
+  assert_absent "$MVR_OLD_SLOT/release" "the old slot's declared name went with the record"
   assert_absent "$MVR_OLD_SLOT/signers" "and so did its signers"
   ANS=""
   run_pinned status "$MVR_NEW"
@@ -4229,7 +4290,7 @@ n
   bgit "$ADD_T" tag v3
   T_REV="$(bgit "$ADD_T" rev-parse 'HEAD^{commit}')"
   seed_rev "$ADD_T" "$T_REV"
-  printf 'v3\n' > "$(slot_of "$ADD_T")/tag"
+  printf 'v3\n' > "$(slot_of "$ADD_T")/release"
   FL_T="$FIX/add-flake-t.nix"
   new_flake "$FL_T"
   ANS='y

@@ -30,13 +30,14 @@
 #                                             content at <new> must answer to
 #                                             the record, and <old> is
 #                                             tombstoned)
-#   pinned declare <repo> --tag <name>        name the release a pinned rev
+#   pinned declare <repo> --release <name>    name the release a pinned rev
 #                                             ALREADY is: the tag must already
 #                                             resolve to the pinned rev, and
 #                                             deploy then syncs the input's
-#                                             ref= to it (--remove withdraws
+#                                             ref= to it (--no-release clears
 #                                             the declaration; the slot goes
-#                                             rev-only)
+#                                             rev-only; both state a desired
+#                                             end state and are idempotent)
 #   pinned sign <repo> <tag>                  signed release tag at the pinned hash
 #   pinned signer add|list|remove             allowed-signers ceremony
 #   pinned ignorable add|remove|list          which keys a ceremony may declare
@@ -93,7 +94,7 @@
 #   slots/<encoded-path>/  one SLOT DIRECTORY per pinned path, holding
 #                          exactly one of rev.<vcs> (repo pin), pin.<algo>
 #                          (file pin) or tombstone, plus optional
-#                          annotations (tag, ignored.<format>, approved,
+#                          annotations (release, ignored.<format>, approved,
 #                          signers/allowed_signers)
 #   policy/                what this tier is ALLOWED to record:
 #                          allowed_signers (who may vouch) and
@@ -109,7 +110,7 @@
 # keeping them apart is the whole model.
 #
 # The RECORD is what was approved: a digest (pin.<algo>) plus the ceremony's
-# declarations (`ignored.json`, `tag`). Root-owned, one shape always, and the
+# declarations (`ignored.json`, `release`). Root-owned, one shape always, and the
 # ONLY trust anchor -- nothing else in this tool authorizes anything.
 #
 # A WITNESS is any bytes that re-hash to the record's digest. Witnesses are
@@ -142,7 +143,7 @@
 # launch-time payload of only the slot dirs it is measured against, whose
 # files the lane already reads through its own mounts. Bounded is not
 # nothing, though, so it stays a per-slot human decision, re-stated by every
-# ceremony exactly like `tag`: a review without --store DROPS a copy the
+# ceremony exactly like `release`: a review without --store DROPS a copy the
 # slot holds today, loudly. `pinned cat` is custody's verified reader --
 # consumers must never open a slot file directly.
 #
@@ -307,7 +308,7 @@ usage: pinned <action> [args]
   review --file <path> ...       (sudo) file-pin ceremony: freeze, review, record hash
   tombstone <path>               (sudo) retire a pinned file that is gone
   rekey <old> <new>              (sudo) re-key a record to a moved path
-  declare <repo> --tag <t>|--remove
+  declare <repo> --release <n>|--no-release
                                  (sudo) declare the release name deploy syncs ref= to
   verify [options] <path>        file-pin verdict; quiet exit-code contract for gates
   cat <path>                     the approved bytes, from root custody; fail-closed
@@ -1534,6 +1535,35 @@ ensure_tree() {
         "$C2_YEL" "$old_signers" "$C2_OFF" >&2
     fi
   fi
+  # SELF-HEAL: the declared release name used to be the slot's `tag`
+  # record; it is `release` now (the record names the declaration, and
+  # `tag` names git's object everywhere else in this tool). One-shot, in
+  # the one place that owns this tree's shape, so the first root ceremony
+  # after an upgrade converts every slot and no reader ever consults the
+  # old name. rename(2) is atomic: there is no moment where a slot holds
+  # neither record, so an interrupted pass loses no declaration and the
+  # next ceremony finishes the job. A slot holding BOTH names is
+  # unexplained state -- two declarations that may disagree -- and a trust
+  # tool does not pick one on a hunch: every survivor is named, and the
+  # ceremony refuses until a hand has removed the old file.
+  local d old_decl survivors=0
+  for d in "$udir"/slots/*/; do
+    d="${d%/}"
+    old_decl="$d/tag"
+    [ -f "$old_decl" ] || continue
+    if [ -e "$d/release" ]; then
+      printf '%serror: %s holds both a tag and a release record; release is the one that is read%s\n' \
+        "$C2_RED$C2_B" "$d" "$C2_OFF" >&2
+      printf '%s       inspect both, then remove the old one by hand (rm %s), and re-run%s\n' \
+        "$C2_RED" "$old_decl" "$C2_OFF" >&2
+      survivors=$((survivors + 1))
+      continue
+    fi
+    mv -f "$old_decl" "$d/release"
+    printf '%snote: renamed the declared release name record:%s\n' "$C2_YEL" "$C2_OFF" >&2
+    printf '      %s -> %s/release\n' "$old_decl" "$d" >&2
+  done
+  [ "$survivors" -eq 0 ] || exit 1
   # Deterministic sweep so a group arriving (or leaving) heals the whole
   # tree, not just paths the current ceremony touches.
   chown -R "root:$TREE_GRP" "$udir"
@@ -1669,7 +1699,7 @@ write_slot_copy() {
 # Drop a slot's ignored-key DECLARATION, in any declared format -- including
 # one this version does not recognize, which is why the glob and not a fixed
 # name. Called wherever the declaration is re-stated without keys: the file
-# ceremony re-states it every time, exactly like `tag`.
+# ceremony re-states it every time, exactly like `release`.
 clear_ignore_decl() { rm -f "$1"/ignored.*; }
 
 # Declaration AND stored witness -- everything the ceremony re-states. The
@@ -1824,12 +1854,12 @@ resolve_repo() {
   default_slot="$(slot_dir_for "$(tier_user)" "$repo")"
 }
 
-# Declared-name grammar for the slot `tag` annotation, deliberately
+# Declared-name grammar for the slot's `release` record, deliberately
 # narrower than git's own ref rules: the name is spliced into sed
 # expressions and flake URLs at deploy time, so only [A-Za-z0-9._/+-]
 # survives -- validated fail-closed on WRITE and on READ (the record
 # declares; an undeclared shape refuses).
-validate_tag_name() {
+validate_release_name() {
   case "$1" in
     ''|-*|/*|*/|*..*|*.lock|*.lock/*) return 1 ;;
     *[!A-Za-z0-9._/+-]*) return 1 ;;
@@ -2820,7 +2850,7 @@ scan_flake_inputs() { # <flakefile> [tier-user]
     # First line only: the record is one name, and a stray second line must
     # not become a second field of this function's output.
     tag=""
-    if [ -f "$slot/tag" ]; then IFS= read -r tag <"$slot/tag" || tag=""; fi
+    if [ -f "$slot/release" ]; then IFS= read -r tag <"$slot/release" || tag=""; fi
     approved=""
     if [ -z "$r" ]; then
       st=norev
@@ -2883,7 +2913,7 @@ head_release_tag() { # <repo-path>
   [ -n "$t" ] || return 0
   n="$(printf '%s\n' "$t" | grep -c . || true)"
   [ "$n" = 1 ] || return 0
-  validate_tag_name "$t" || return 0
+  validate_release_name "$t" || return 0
   printf '%s' "$t"
 }
 
@@ -2961,7 +2991,7 @@ release_tags_past_pin() {
     [ -n "$t" ] || continue
     # The declared-name grammar, before anything else: a name upgrade could
     # not record as the slot's declaration is not a name it may offer.
-    validate_tag_name "$t" || continue
+    validate_release_name "$t" || continue
     c="$(sgit rev-parse --verify --quiet "refs/tags/${t}"'^{commit}' 2>/dev/null)" || continue
     [ -n "$c" ] || continue
     # Strictly newer than the pin, and on the checkout's own line of
@@ -3042,7 +3072,7 @@ signed_offer_lag() {
 #   tagged    review --tag <release at HEAD>
 #   notag     tag-declared, no single release at HEAD -- by-hand work
 #   review    plain review
-# $1 = repo path, $2 = declared tag ('' = rev-only slot), $3 = tier user.
+# $1 = repo path, $2 = declared release ('' = rev-only slot), $3 = tier user.
 upgrade_route() {
   local p="$1" tag="$2" tu="$3" rc=0 so ht
   upg_route="" upg_info=""
@@ -3117,7 +3147,7 @@ EOF
               ex="HEAD is $lag commit$(plural_s "$lag") past the release; the release is what gets pinned"
             fi ;;
           tagged)
-            det="(release tag $upg_info)" ;;
+            det="(release $upg_info)" ;;
           notag)
             lbl="skipped:" lc="$C_YEL" pc=""
             # Orientation for the by-hand route: the newest release past the
@@ -3138,18 +3168,18 @@ EOF
 $nt
 EOF
                 if [ "$tn" -eq 1 ]; then
-                  det="(declared tag $upg_info; newest release past the pin is $tj, unverified -- review --tag $tj by hand)"
+                  det="(declared release $upg_info; newest release past the pin is $tj, unverified -- review --tag $tj by hand)"
                 else
-                  det="(declared tag $upg_info; newest releases past the pin are $tj, unverified -- review --tag by hand)"
+                  det="(declared release $upg_info; newest releases past the pin are $tj, unverified -- review --tag by hand)"
                 fi
                 lag="$(signed_offer_lag "$p" "$t1")"
                 if [ -n "$lag" ]; then
                   ex="HEAD is $lag commit$(plural_s "$lag") past that release; review --tag pins the release, not HEAD"
                 fi ;;
               2)
-                det="(declared tag $upg_info; release tags past the pin sit on separate lines -- review --tag by hand)" ;;
+                det="(declared release $upg_info; release tags past the pin sit on separate lines -- review --tag by hand)" ;;
               *)
-                det="(declared tag $upg_info; no release tag past the pin -- review --tag by hand)" ;;
+                det="(declared release $upg_info; no release tag past the pin -- review --tag by hand)" ;;
             esac ;;
           disagree)
             lbl="skipped:" lc="$C_YEL" pc=""
@@ -3311,7 +3341,7 @@ case "$elev_action" in
       # declare: an argv that can only ever reach a root-side argument error
       # fails here, before authentication costs a sudo prompt (the
       # tombstone/rekey precedent): the repo present and a directory, exactly
-      # one of --tag <name> / --remove, and the name inside the
+      # one of --release <name> / --no-release, and the name inside the
       # declared-name grammar. The root side re-checks every one of these
       # and stays the authority.
       if [ "$action" = "declare" ]; then
@@ -3319,8 +3349,8 @@ case "$elev_action" in
         for a in "$@"; do
           if [ "$dc_want" -eq 1 ]; then dc_tag="$a"; dc_want=0; continue; fi
           case "$a" in
-            --tag) dc_want=1 ;;
-            --remove) dc_remove=1 ;;
+            --release) dc_want=1 ;;
+            --no-release) dc_remove=1 ;;
             --yes) ;;
             -*) usage ;;
             *)
@@ -3328,13 +3358,13 @@ case "$elev_action" in
               dc_repo="$a" ;;
           esac
         done
-        [ "$dc_want" -eq 0 ] || { echo "--tag needs a name" >&2; exit 1; }
+        [ "$dc_want" -eq 0 ] || { echo "--release needs a name" >&2; exit 1; }
         [ -n "$dc_repo" ] || usage
         [ -d "$dc_repo" ] || { echo "not a directory: $dc_repo" >&2; exit 1; }
         if [ -n "$dc_tag" ] && [ "$dc_remove" -eq 1 ]; then usage; fi
         if [ -z "$dc_tag" ] && [ "$dc_remove" -eq 0 ]; then usage; fi
-        if [ -n "$dc_tag" ] && ! validate_tag_name "$dc_tag"; then
-          echo "ERROR: tag name '$dc_tag' is outside the declared-name grammar [A-Za-z0-9._/+-]" >&2
+        if [ -n "$dc_tag" ] && ! validate_release_name "$dc_tag"; then
+          echo "ERROR: release name '$dc_tag' is outside the declared-name grammar [A-Za-z0-9._/+-]" >&2
           exit 1
         fi
       fi
@@ -3820,7 +3850,7 @@ case "$elev_action" in
         elif [ "$action" = "rekey" ]; then
           elevation_gate "re-key the record" "$@"
         elif [ "$dc_remove" -eq 1 ]; then
-          elevation_gate "withdraw the declaration" "$@"
+          elevation_gate "clear the declaration" "$@"
         else
           elevation_gate "declare the release name" "$@"
         fi
@@ -4097,8 +4127,8 @@ do_approve() {
       # upfront if it cannot be declared (the fallback declaration from a
       # signed tag merely degrades to rev-only, but an explicit request
       # that cannot be honored must not half-succeed).
-      validate_tag_name "$sel_tag" || {
-        echo "ERROR: tag name '$sel_tag' is outside the declared-name grammar [A-Za-z0-9._/+-]" >&2
+      validate_release_name "$sel_tag" || {
+        echo "ERROR: release name '$sel_tag' is outside the declared-name grammar [A-Za-z0-9._/+-]" >&2
         exit 1
       }
     fi
@@ -4392,7 +4422,7 @@ do_approve() {
     # exactly like a no-op in the one place a user most needs to know a record
     # was written.
     printf '%s✓ approved:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" "$slot/rev.git"
-    # The declared release name (optional `tag` annotation, repo slots
+    # The declared release name (optional `release` record, repo slots
     # only): deploy syncs the input's ref= to it after cross-checking the
     # live tag still names the pinned rev. The --tag selector is the
     # declared name; with only --signed-tag evidence the first signed name
@@ -4403,16 +4433,16 @@ do_approve() {
       decl_tag="${tag_args[0]}"
     fi
     if [ -n "$decl_tag" ]; then
-      if ! validate_tag_name "$decl_tag"; then
-        printf '%snote: tag name %s is outside the declared-name grammar [A-Za-z0-9._/+-]; not declaring it (rev-only slot)%s\n' \
+      if ! validate_release_name "$decl_tag"; then
+        printf '%snote: release name %s is outside the declared-name grammar [A-Za-z0-9._/+-]; not declaring it (rev-only slot)%s\n' \
           "$C_YEL" "$decl_tag" "$C_OFF"
-        rm -f "$slot/tag"
+        rm -f "$slot/release"
       else
-        write_note "$slot" tag "$decl_tag"
-        printf '%s✓ declared:%s %s -> %s\n' "$C_GRN" "$C_OFF" "$decl_tag" "$slot/tag"
+        write_note "$slot" release "$decl_tag"
+        printf '%s✓ declared:%s %s -> %s\n' "$C_GRN" "$C_OFF" "$decl_tag" "$slot/release"
       fi
     else
-      rm -f "$slot/tag"
+      rm -f "$slot/release"
     fi
     log_action approve "$repo" "$hash"
     n_approved=$((n_approved + 1))
@@ -4530,12 +4560,12 @@ EOF
     # release name; the declaration is written back only if this yes is the
     # --tag selector's own commit -- the walk arriving at the name it was
     # asked to walk to.
-    rm -f "$slot/tag"
+    rm -f "$slot/release"
     log_action approve "$repo" "$c"
     printf '%s✓ pin advanced:%s %s%s%s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$c" "$C_OFF"
     if [ -n "$sel_tag" ] && [ "$c" = "$hash" ]; then
-      write_note "$slot" tag "$sel_tag"
-      printf '%s✓ declared:%s %s -> %s\n' "$C_GRN" "$C_OFF" "$sel_tag" "$slot/tag"
+      write_note "$slot" release "$sel_tag"
+      printf '%s✓ declared:%s %s -> %s\n' "$C_GRN" "$C_OFF" "$sel_tag" "$slot/release"
     fi
     prev="$c"
     approved=$((approved + 1))
@@ -5120,7 +5150,7 @@ do_tombstone() {
     *) echo "aborted; slot unchanged"; log_action tombstone "$path" "" abort; exit 2 ;;
   esac
   write_slot_state "$slot" tombstone "$(date -u +%Y-%m-%dT%H:%M:%SZ) retired by $inv"
-  rm -f "$slot/tag"   # a declared release name has no meaning on a tombstone
+  rm -f "$slot/release"   # a declared release name has no meaning on a tombstone
   clear_slot_ignore "$slot"   # nor do tolerated keys, or a copy of what is gone
   printf '%s✓ tombstoned:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$path"
   log_action tombstone "$path"
@@ -5320,15 +5350,15 @@ do_rekey() {
       ;;
   esac
 
-  # The annotations that travel. The tag is re-read through the same
+  # The annotations that travel. The release name is re-read through the same
   # declared-name grammar every other reader applies -- a name this version
   # would refuse must not ride along unexamined.
-  if [ -f "$old_slot/tag" ]; then
-    verify_record_file "$old_slot/tag" || exit 1
-    IFS= read -r tag <"$old_slot/tag" || tag=""
-    if [ -n "$tag" ] && ! validate_tag_name "$tag"; then
-      echo "ERROR: $old_slot/tag is outside the declared-name grammar [A-Za-z0-9._/+-]: $tag" >&2
-      echo "       clear it by hand (rm $old_slot/tag), then re-run" >&2
+  if [ -f "$old_slot/release" ]; then
+    verify_record_file "$old_slot/release" || exit 1
+    IFS= read -r tag <"$old_slot/release" || tag=""
+    if [ -n "$tag" ] && ! validate_release_name "$tag"; then
+      echo "ERROR: $old_slot/release is outside the declared-name grammar [A-Za-z0-9._/+-]: $tag" >&2
+      echo "       clear it by hand (rm $old_slot/release), then re-run" >&2
       exit 1
     fi
   fi
@@ -5403,7 +5433,7 @@ do_rekey() {
     rev) write_slot_state "$new_slot" "$target" "$rev  $new" ;;
     pin) write_slot_state "$new_slot" "$target" "$digest  $new" ;;
   esac
-  [ -z "$tag" ] || write_note "$new_slot" tag "$tag"
+  [ -z "$tag" ] || write_note "$new_slot" release "$tag"
   # By suffix, not by name: a declared format this version does not
   # recognize still belongs to the record and still travels with it.
   for f in "$old_slot"/ignored.*; do
@@ -5418,7 +5448,7 @@ do_rekey() {
   printf '%s✓ re-keyed:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$new" "$C_OFF" "$new_slot/$target"
 
   write_slot_state "$old_slot" tombstone "$(date -u +%Y-%m-%dT%H:%M:%SZ) moved to $new by $inv"
-  rm -f "$old_slot/tag"          # the declared name left with the record
+  rm -f "$old_slot/release"      # the declared name left with the record
   clear_slot_ignore "$old_slot"  # as did the tolerated keys and the copy
   if [ -f "$old_slot/signers/allowed_signers" ]; then
     rm -f "$old_slot/signers/allowed_signers"
@@ -5436,12 +5466,20 @@ do_rekey() {
 # ---- declare ---------------------------------------------------------------
 
 # Name the release a pinned rev ALREADY is. The declaration is the slot's
-# `tag` annotation: the release name deploy syncs the input's ref= to,
+# `release` record: the release name deploy syncs the input's ref= to,
 # after cross-checking that the live tag still names the approved rev. A
 # review that MOVES the pin already writes it (--tag, --signed-tag), and a
 # plain review clears it; this verb is how a slot that is already pinned
 # gains a declaration -- or gives one up -- without waiting for the next
 # release.
+#
+# DECLARATIVE: --release <name> and --no-release each state a desired end
+# state, and success means the slot now matches it. A slot already in the
+# requested state is a success with an explicit no-change line, exit 0, on
+# BOTH sides -- a provisioning script re-running `declare` must not fail.
+# Fail-closed governs refusing a state that cannot be VERIFIED, not a state
+# already achieved. The no-op still costs the sudo prompt: the pre-sudo side
+# validates argv only and never reads root-owned slot state.
 #
 # THE INVARIANT: a declaration may only name a tag that already resolves to
 # the slot's pinned rev -- deploy's own cross-check, run at declaration
@@ -5468,8 +5506,8 @@ do_declare() {
   for a in "$@"; do
     if [ "$want" -eq 1 ]; then name="$a"; want=0; continue; fi
     case "$a" in
-      --tag) want=1 ;;
-      --remove) remove=1 ;;
+      --release) want=1 ;;
+      --no-release) remove=1 ;;
       --yes) ;;
       -*) usage ;;
       *)
@@ -5477,24 +5515,28 @@ do_declare() {
         repo_arg="$a" ;;
     esac
   done
-  [ "$want" -eq 0 ] || { echo "--tag needs a name" >&2; exit 1; }
+  [ "$want" -eq 0 ] || { echo "--release needs a name" >&2; exit 1; }
   [ -n "$repo_arg" ] || usage
-  # Exactly one of the two: a name to declare, or the withdrawal.
+  # Exactly one of the two: a name to declare, or the cleared state.
   if [ -n "$name" ] && [ "$remove" -eq 1 ]; then usage; fi
   if [ -z "$name" ] && [ "$remove" -eq 0 ]; then usage; fi
   # The declared-name grammar, before the name can reach a sed expression
   # or a flake URL -- enforced on write here and on read in deploy.
-  if [ -n "$name" ] && ! validate_tag_name "$name"; then
-    echo "ERROR: tag name '$name' is outside the declared-name grammar [A-Za-z0-9._/+-]" >&2
+  if [ -n "$name" ] && ! validate_release_name "$name"; then
+    echo "ERROR: release name '$name' is outside the declared-name grammar [A-Za-z0-9._/+-]" >&2
     exit 1
   fi
 
   resolve_repo "$repo_arg"
   local slot="$default_slot"
-  # Same shape as review: walk from the annotation when the slot exists,
+  # ensure_tree BEFORE the record is read (the approve precedent): it owns
+  # this tree's shape, and its self-heal is what moves a legacy record into
+  # the name read below. write_note also consumes the TREE_* it sets.
+  ensure_tree "$inv"
+  # Same shape as review: walk from the record when the slot exists,
   # from the slot itself when there is nothing there yet.
   if [ -d "$slot" ]; then
-    verify_ancestry "$slot/tag" || exit 1
+    verify_ancestry "$slot/release" || exit 1
   else
     verify_ancestry "$slot" || exit 1
   fi
@@ -5507,14 +5549,18 @@ do_declare() {
   }
 
   local old_tag=""
-  if [ -f "$slot/tag" ]; then
-    verify_record_file "$slot/tag" || exit 1
-    IFS= read -r old_tag <"$slot/tag" || old_tag=""
+  if [ -f "$slot/release" ]; then
+    verify_record_file "$slot/release" || exit 1
+    IFS= read -r old_tag <"$slot/release" || old_tag=""
   fi
 
   local t_hash="" answer
   if [ "$remove" -eq 1 ]; then
-    [ -n "$old_tag" ] || { echo "no declaration to withdraw" >&2; exit 1; }
+    # The requested state already holds -- mirrors `already declared:`.
+    if [ -z "$old_tag" ]; then
+      printf '%salready rev-only%s\n' "$C_GRN" "$C_OFF"
+      exit 0
+    fi
   else
     # THE INVARIANT, via sgit (scrubbed env, no user git config, no
     # hooks): the name must already resolve to the pinned rev.
@@ -5545,9 +5591,9 @@ do_declare() {
     printf "%sdeploy:%s     %sthe input's ref= stops being managed; it keeps whatever it says now%s\n" \
       "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
     echo
-    printf '%swithdraw this declaration? [y/N]%s ' "$C_B" "$C_OFF"
+    printf '%sclear this declaration? [y/N]%s ' "$C_B" "$C_OFF"
   else
-    printf '%stag:%s        %s -> %s%.10s%s  %s✓ names the pinned rev%s\n' \
+    printf '%srelease:%s    %s -> %s%.10s%s  %s✓ names the pinned rev%s\n' \
       "$C_B" "$C_OFF" "$name" "$C_CYN" "$t_hash" "$C_OFF" "$C_GRN" "$C_OFF"
     printf '%sdeclared:%s   %s%s%s -> %s%s%s\n' "$C_B" "$C_OFF" \
       "$C_DIM" "${old_tag:-(none)}" "$C_OFF" "$C_CYN$C_B" "$name" "$C_OFF"
@@ -5576,17 +5622,14 @@ do_declare() {
       exit 2 ;;
   esac
 
-  # ensure_tree before the write: write_note consumes TREE_GRP/TREE_FMODE,
-  # which only ensure_tree sets.
-  ensure_tree "$inv"
   if [ "$remove" -eq 1 ]; then
-    rm -f "$slot/tag"
-    printf '%s✓ withdrawn:%s %s %s(the slot is rev-only)%s\n' \
+    rm -f "$slot/release"
+    printf '%s✓ cleared:%s %s %s(the slot is rev-only)%s\n' \
       "$C_GRN$C_B" "$C_OFF" "$old_tag" "$C_DIM" "$C_OFF"
     log_action declare "$repo" "$old_tag"
   else
-    write_note "$slot" tag "$name"
-    printf '%s✓ declared:%s %s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$name" "$slot/tag"
+    write_note "$slot" release "$name"
+    printf '%s✓ declared:%s %s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$name" "$slot/release"
     printf '  %spinned deploy%s   %s(syncs ref= to refs/tags/%s, rebuilds)%s\n' \
       "$C_CYN" "$C_OFF" "$C_DIM" "$name" "$C_OFF"
     log_action declare "$repo" "$name"
@@ -5985,11 +6028,11 @@ do_status() {
     # deploy. Without this row the declaration is invisible to every
     # reader, which is how a slot silently stays rev-only.
     local decl_tag="" decl_live
-    if [ -f "$slot/tag" ]; then IFS= read -r decl_tag <"$slot/tag" || decl_tag=""; fi
+    if [ -f "$slot/release" ]; then IFS= read -r decl_tag <"$slot/release" || decl_tag=""; fi
     if [ -z "$decl_tag" ]; then
       printf '%sdeclared:%s   (none)  %s(rev-only; deploy leaves ref= alone)%s\n' \
         "$C_DIM" "$C_OFF" "$C_DIM" "$C_OFF"
-    elif ! validate_tag_name "$decl_tag"; then
+    elif ! validate_release_name "$decl_tag"; then
       printf '%sdeclared:%s   %s✗ outside the declared-name grammar -- deploy will refuse%s\n' \
         "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF"
     else
@@ -6269,9 +6312,9 @@ do_list() {
           # The declared release name, beside the declared kind -- absent
           # for a rev-only slot, exactly like the ignored declaration on
           # file entries.
-          if [ -f "$d/tag" ]; then
-            IFS= read -r line <"$d/tag" || line=""
-            if [ -n "$line" ] && validate_tag_name "$line"; then
+          if [ -f "$d/release" ]; then
+            IFS= read -r line <"$d/release" || line=""
+            if [ -n "$line" ] && validate_release_name "$line"; then
               list_field declared "$C_CYN" "$line" "deploy syncs ref= to refs/tags/$line"
             else
               list_field declared "$C_YEL" "unusable declaration" ""
@@ -6569,10 +6612,10 @@ do_show_repo() {
     "$C_DIM" "$repo" "$C_OFF"
   printf '%spinned:%s     %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
     "$C_DIM" "$(sanitize_display "$(sgit log -1 --format=%s "$hash")")" "$C_OFF"
-  if [ -r "$default_slot/tag" ]; then
-    IFS= read -r tag <"$default_slot/tag" || tag=""
+  if [ -r "$default_slot/release" ]; then
+    IFS= read -r tag <"$default_slot/release" || tag=""
     [ -z "$tag" ] \
-      || printf '%stag:%s        %s  %s(declared)%s\n' "$C_DIM" "$C_OFF" "$tag" "$C_DIM" "$C_OFF"
+      || printf '%srelease:%s    %s  %s(declared)%s\n' "$C_DIM" "$C_OFF" "$tag" "$C_DIM" "$C_OFF"
   fi
 
   # ORIENTATION ONLY -- where the checkout stands relative to the pin. The
@@ -7106,7 +7149,14 @@ do_deploy() {
   # A run that executes anything is a root run: the elevation above brought us
   # here, and this is the check that says so rather than assuming it. --dry-run
   # executes nothing, so it is the one shape that stays unprivileged.
-  if [ "$DRY" -eq 0 ]; then require_root deploy; fi
+  if [ "$DRY" -eq 0 ]; then
+    require_root deploy
+    # The tree's shape before its records are read: ensure_tree's self-heal
+    # is what moves a legacy record into the name the loop below reads, and
+    # a deploy that reads first would take a still-unhealed slot for
+    # rev-only and quietly skip its live-tag cross-check for one run.
+    ensure_tree "$inv"
+  fi
 
   # Per-OS flake root and rebuild command. The rebuild tool is named by
   # ABSOLUTE path: it lives only in the system profile, which the trusted
@@ -7206,18 +7256,18 @@ EOF
     # No declaration -> rev-only sync; rev-only slots are a supported
     # shape, not degraded (the rev is the anchor, the name is context).
     decl_tag="" want_ref="" ref_stale=0
-    if [ -f "$slot/tag" ]; then
-      verify_record_file "$slot/tag" || exit 1
-      IFS= read -r decl_tag <"$slot/tag" || decl_tag=""
-      validate_tag_name "$decl_tag" || {
-        printf '%serror: %s declares an invalid tag name; refusing%s\n' \
-          "$C2_RED$C2_B" "$slot/tag" "$C2_OFF" >&2
+    if [ -f "$slot/release" ]; then
+      verify_record_file "$slot/release" || exit 1
+      IFS= read -r decl_tag <"$slot/release" || decl_tag=""
+      validate_release_name "$decl_tag" || {
+        printf '%serror: %s declares an invalid release name; refusing%s\n' \
+          "$C2_RED$C2_B" "$slot/release" "$C2_OFF" >&2
         exit 1
       }
       live_tag="$(sgit rev-parse -q --verify "refs/tags/${decl_tag}^{commit}" 2>/dev/null || true)"
       if [ "$live_tag" != "$approved" ]; then
         if [ -z "$live_tag" ]; then tag_detail="is missing from the checkout"; else tag_detail="names ${live_tag:0:10}, not the approved ${approved:0:10}"; fi
-        printf '%serror: slot for %s declares tag %s, but the live tag %s -- refusing (moved or deleted tags do not deploy)%s\n' \
+        printf '%serror: slot for %s declares release %s, but the live tag %s -- refusing (moved or deleted tags do not deploy)%s\n' \
           "$C2_RED$C2_B" "$name" "$decl_tag" "$tag_detail" "$C2_OFF" >&2
         exit 1
       fi
@@ -7250,10 +7300,10 @@ EOF
     fi
     if [ -n "$decl_tag" ]; then
       if [ -z "$flake_ref" ]; then
-        printf '  %-*s  %sdeclares tag %s, but the input has no ref= -- rev-only sync%s\n' \
+        printf '  %-*s  %sdeclares release %s, but the input has no ref= -- rev-only sync%s\n' \
           "$width" '' "$C_YEL" "$decl_tag" "$C_OFF"
       elif [ "$ref_stale" -eq 0 ]; then
-        printf '  %-*s  %stag %s (live tag verified at the approved rev)%s\n' \
+        printf '  %-*s  %srelease %s (live tag verified at the approved rev)%s\n' \
           "$width" '' "$C_DIM" "$decl_tag" "$C_OFF"
       fi
     fi
@@ -7741,11 +7791,11 @@ do_add() {
   # checkout's own branch. A detached HEAD with no declared name leaves
   # nothing honest to write, so it refuses rather than guessing a branch.
   local ref="" decl_tag=""
-  if [ -f "$slot/tag" ]; then
-    verify_record_file "$slot/tag" || exit 1
-    IFS= read -r decl_tag <"$slot/tag" || decl_tag=""
-    validate_tag_name "$decl_tag" || {
-      echo "ERROR: $slot/tag declares an invalid tag name; refusing" >&2
+  if [ -f "$slot/release" ]; then
+    verify_record_file "$slot/release" || exit 1
+    IFS= read -r decl_tag <"$slot/release" || decl_tag=""
+    validate_release_name "$decl_tag" || {
+      echo "ERROR: $slot/release declares an invalid release name; refusing" >&2
       exit 1
     }
     ref="refs/tags/$decl_tag"
@@ -7754,7 +7804,7 @@ do_add() {
     case "$ref" in
       refs/heads/?*) ;;
       *)
-        echo "ERROR: $repo is on a detached HEAD and its slot declares no tag" >&2
+        echo "ERROR: $repo is on a detached HEAD and its slot declares no release" >&2
         echo "       an input needs a ref: check out the branch you deploy from," >&2
         echo "       or review --tag <tag> so the record declares one" >&2
         exit 1 ;;
@@ -7762,7 +7812,7 @@ do_add() {
     # The same declared-name grammar tags answer to: the ref is spliced into
     # a flake url and into sed expressions, and git admits ref names ('&',
     # for one) that neither survives.
-    validate_tag_name "$ref" || {
+    validate_release_name "$ref" || {
       echo "ERROR: branch name '${ref#refs/heads/}' is outside the declared-name grammar [A-Za-z0-9._/+-]" >&2
       exit 1
     }

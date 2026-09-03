@@ -302,12 +302,12 @@ may add an unsigned name (a clean release name) that must name the
 same commit.
 .SS Declaring a release name
 .TP
-.B declare \fIrepo\fP (\fB\-\-tag\fP \fIname\fP | \fB\-\-remove\fP) [\fB\-\-yes\fP]
-(sudo) Name the release a pinned rev already is \(em or withdraw that
+.B declare \fIrepo\fP (\fB\-\-release\fP \fIname\fP | \fB\-\-no\-release\fP) [\fB\-\-yes\fP]
+(sudo) Name the release a pinned rev already is \(em or clear that
 name.
 The declaration is the slot's
-.B tag
-annotation: the release name
+.B release
+record: the release name
 .B deploy
 syncs the input's
 .B ref=
@@ -351,20 +351,28 @@ content, and content must never choose the shape of a slot; once a
 slot is declared, the tagged and signed routes maintain the name at
 every release.
 .IP
-.B \-\-remove
-withdraws the declaration and the slot goes rev-only:
+.B \-\-no\-release
+clears the declaration and the slot goes rev-only:
 .B deploy
 stops managing the input's
 .BR ref= ,
 which keeps whatever it says.
-Withdrawing from a rev-only slot refuses \(em there is no declaration
-to withdraw.
+Both flags state a desired end state, and success means the slot now
+matches it: a name the slot already declares answers
+.RB \(dq "already declared" \(dq
+and a rev-only slot asked for
+.B \-\-no\-release
+answers
+.RB \(dq "already rev-only" \(dq ,
+exit 0 either way, so a provisioning script may re-run the verb.
+The no-op still costs the sudo prompt: the pre-sudo side validates the
+arguments and never reads root-owned slot state.
 .IP
 The pre-sudo gate reads
 .RB \(dq "next: declare the release name as root (sudo)" \(dq
 (for
-.BR \-\-remove :
-.RB \(dq "withdraw the declaration" \(dq);
+.BR \-\-no\-release :
+.RB \(dq "clear the declaration" \(dq);
 .B \-\-yes
 skips it and leaves the root-side confirmation untouched.
 .B status
@@ -1070,12 +1078,12 @@ and
 .B list
 report a violation wherever they find one.
 .TP
-.I /var/db/pinned/<user>/slots/<enc>/tag
-The slot's declared release name.
+.I /var/db/pinned/<user>/slots/<enc>/release
+The slot's declared release name, one line.
 Written by a review that carries one and by
 .BR declare ,
 cleared by a plain review and by
-.BR "declare \-\-remove" ;
+.BR "declare \-\-no\-release" ;
 .B deploy
 syncs the input's
 .B ref=
