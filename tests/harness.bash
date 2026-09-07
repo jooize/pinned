@@ -773,8 +773,8 @@ printf '{"a":2}\n' > "$FIX/kc-new.json"
 if command -v jq >/dev/null 2>&1; then
   run_probe json_keys_changed "$FIX/kc-old.json" "$FIX/kc-new.json"
   assert_exit "$RC" 0 "json_keys_changed answers 0 for two JSON documents"
-  assert_eq "$POUT" "$(printf 'changed\t0\ta')" \
-            "a key changed on both sides folds to one bare 'changed' row"
+  assert_eq "$POUT" "$(printf '1\t1\ta')" \
+            "a key changed on both sides is one row carrying both counts"
   mkdir -p "$SUB/a/keys"
   printf '{\n  "extra": true,\n  "model": "opus",\n  "permissions": {\n    "ask": ["a"]\n  }\n}\n' \
     > "$SUB/a/keys/set.json"
@@ -791,8 +791,16 @@ y
 '
   run_pinned review --file "$SUB/a/keys/set.json" --baseline "$FIX/keys-baseline.json"
   assert_exit "$RC" 0 "a JSON baseline-diff ceremony records"
-  assert_contains "$OUT" "keys: extra(-1) model permissions.ask(+2)" \
-                  "ONE keys line counts removals and additions, leaves a changed key bare, and folds array leaves to their key"
+  assert_contains "$OUT" "keys:      3 keys · +3  -2" \
+                  "the keys block heads with the totals, in the rows' own columns"
+  assert_contains "$OUT" "  extra                 -1" \
+                  "a removed key sits in the deletion column, the addition side blank"
+  assert_contains "$OUT" "  model             +1  -1" \
+                  "a key changed on both sides carries both counts"
+  assert_contains "$OUT" "  permissions.ask   +2" \
+                  "array leaves fold to their key"
+  assert_missing "$OUT" "  permissions.ask   +2 " \
+                  "a blank deletion side prints nothing trailing"
   # Malformed JSON degrades to the byte diff alone: the summary must fail
   # safe to nothing, never render a wrong structural claim.
   printf '{\n  "model": "opus"\n}\n' > "$SUB/a/keys/broken.json"

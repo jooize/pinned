@@ -687,7 +687,7 @@ diff_shape() {
 # the flattenings, keep the KEY of every changed leaf. An array collapses to
 # its own name (permissions.allow[] -> permissions.allow) so one added entry
 # reads as one key with a count, not a cascade of leaves; a key changed on
-# both sides is "changed" and carries no count. Sorted-input side effect: a
+# both sides carries both counts. Sorted-input side effect: a
 # pure reordering shows no key here -- the byte diff below still shows it.
 #
 # A SUMMARY, NOT A PER-HUNK CLAIM: computed once from whole-document
@@ -708,7 +708,7 @@ flatten_json_paths() {
           | gsub("\\.\\[\\]"; "[]"))
          + " = " + (.[1] | tojson)' "$1" 2>/dev/null | sort
 }
-json_keys_changed() { # <old> <new> -> "<state>\t<count>\t<key>" rows
+json_keys_changed() { # <old> <new> -> "<added>\t<removed>\t<key>" rows
   local old="$1" new="$2"
   command -v jq >/dev/null 2>&1 || return 1
   jq -e . "$old" >/dev/null 2>&1 || return 1
@@ -738,10 +738,55 @@ json_keys_changed() { # <old> <new> -> "<state>\t<count>\t<key>" rows
     END {
       for (i = 1; i <= n; i++) {
         k = order[i]
-        if (add[k] > 0 && del[k] > 0)  printf "changed\t0\t%s\n", k
-        else if (add[k] > 0)           printf "added\t%d\t%s\n", add[k], k
-        else                           printf "removed\t%d\t%s\n", del[k], k
+        printf "%d\t%d\t%s\n", add[k] + 0, del[k] + 0, k
       }
+    }'
+}
+
+# The keys block: json_keys_changed rows in, one aligned block out, or nothing
+# for an empty row set. The same shape the shim's drift index draws before
+# the sudo prompt (claude-shim.bash, "the drift index"), so the orientation
+# and the authority never disagree on what a key row looks like:
+#
+#   keys:         3 keys ·  +3  -2      the totals, in the rows' own columns
+#     extra                     -1      a key present on one side only
+#     model                 +1  -1      a key changed on both sides
+#     permissions.ask       +2          an array grew by two entries
+#
+# Two right-aligned count columns, sized to the widest +N and -N in the block
+# (totals included); a zero side is blank, never "+0", and a blank deletion
+# side prints nothing trailing. The sign is part of the token, right-aligned
+# with it: "+10" over " +2", never a sign stranded from its digits. Padding
+# goes OUTSIDE the colour: a padded coloured argument aligns to the wrong
+# width. House palette: key names are identifiers (cyan); the counts wear
+# the diff's own green/red; the label is dim.
+render_keys_block() {
+  LC_ALL=C awk -F'\t' -v cyn="$C_CYN" -v grn="$C_GRN" -v red="$C_RED" -v dim="$C_DIM" -v off="$C_OFF" '
+    function pad(w) { return (w > 0 ? sprintf("%" w "s", "") : "") }
+    function cols(a, d,   s) {
+      s = ""
+      if (aw > 0) s = (a > 0 ? pad(aw - length(a) - 1) grn "+" a off : pad(aw))
+      if (d > 0)  s = s (aw > 0 ? "  " : "") pad(dw - length(d) - 1) red "-" d off
+      return s
+    }
+    NF == 3 && $3 != "" {
+      n++; add[n] = $1 + 0; del[n] = $2 + 0; key[n] = $3
+      ta += add[n]; td += del[n]
+      if (length(key[n]) > kw) kw = length(key[n])
+    }
+    END {
+      if (n == 0) exit
+      if (ta > 0) aw = length(ta) + 1
+      if (td > 0) dw = length(td) + 1
+      label = (n == 1 ? "1 key" : n " keys") " \302\267"
+      ll = length(label) - 1              # the middle dot is two bytes under LC_ALL=C
+      # "keys:" (5) + a gap of at least 3 + the label + one space lands on the
+      # count column, which the rows put at 2 + kw + 3.
+      if (kw < ll + 4) kw = ll + 4
+      gap = 2 + kw + 3 - 5 - ll - 1
+      printf "%skeys:%s%s%s%s%s %s\n", dim, off, pad(gap), dim, label, off, cols(ta, td)
+      for (i = 1; i <= n; i++)
+        printf "  %s%s%s%s   %s\n", cyn, key[i], off, pad(kw - length(key[i])), cols(add[i], del[i])
     }'
 }
 
@@ -4631,7 +4676,7 @@ do_approve_files() {
   local base_ok recorded=0 declined=0 failed=0 answer state_note nl
   local ign ign_json old_ign old_bad had_copy copy_bad cur_copy ign_note cust_note decl_changed
   local cust_changed shape gate_shape n_lines
-  local keys_rows keys_line kstate kcount kname kfrag
+  local keys_block
   local gk gscope gwhere gr_keys gr_pairs gr_scope gr_mixed gr_mach
   local -a hdr_opt=()
 
@@ -4926,7 +4971,7 @@ EOF
     # to the prior recorded digest (the self-verifying trust-cache
     # trick, root-side). Anything else degrades to the full view --
     # never to a diff against unverified bytes.
-    base_ok=0
+    base_ok=0 keys_block=""
     if [ -n "$base" ] && [ -n "$old_digest" ] && [ -f "$base" ]; then
       if freeze_file "$base" 2>/dev/null \
         && [ "$(hash_file "$old_label" "$FROZEN_COPY")" = "$old_digest" ]; then
@@ -4942,26 +4987,12 @@ EOF
         # is re-cut to the gate's spelling rather than counted a second time.
         gate_shape="${shape#*, }"; gate_shape="${gate_shape% lines}"
         gate_shape="${gate_shape/\// }"
-        # The keys summary, computed here with the diff -- before the gate
+        # The keys block, computed here with the diff -- before the gate
         # announces anything -- from the same two frozen buffers the diff
-        # reads (baseline = $FROZEN_COPY, candidate = $fro). House palette:
-        # key names are identifiers (cyan); the (+N)/(-N) magnitudes wear the
-        # diff's own green/red; a both-ways "changed" key carries no count.
-        # An empty row set (non-JSON, malformed JSON, or no jq -- rc 1 from
-        # json_keys_changed) fails safe to NO line, never to a wrong one.
-        keys_line=""
-        keys_rows="$(json_keys_changed "$FROZEN_COPY" "$fro")" || keys_rows=""
-        while IFS="$TAB" read -r kstate kcount kname; do
-          [ -n "$kname" ] || continue
-          case "$kstate" in
-            added)   kfrag="${C_CYN}${kname}${C_OFF}${C_GRN}(+${kcount})${C_OFF}" ;;
-            removed) kfrag="${C_CYN}${kname}${C_OFF}${C_RED}(-${kcount})${C_OFF}" ;;
-            *)       kfrag="${C_CYN}${kname}${C_OFF}" ;;
-          esac
-          keys_line="${keys_line:+$keys_line }$kfrag"
-        done <<EOF
-$keys_rows
-EOF
+        # reads (baseline = $FROZEN_COPY, candidate = $fro). An empty row
+        # set (non-JSON, malformed JSON, or no jq -- rc 1 from
+        # json_keys_changed) fails safe to NO block, never to a wrong one.
+        keys_block="$({ json_keys_changed "$FROZEN_COPY" "$fro" || true; } | render_keys_block)"
       fi
     fi
     # THE GATE BEFORE THE PAGER, as the repo ceremony has it: nothing
@@ -4992,10 +5023,10 @@ EOF
       printf '%s--- diff vs the approved baseline (exactly the bytes being approved) ---%s\n' "$C_B" "$C_OFF"
       printf '%scontext trimmed to 1 line; every changed line is always shown; @@ section labels are orientation, not authority.%s\n' "$C_DIM" "$C_OFF"
       printf '%s%s%s\n' "$C_DIM" "$shape" "$C_OFF"
-      # One summary line, above the whole diff (see json_keys_changed: a
+      # One summary block, above the whole diff (see json_keys_changed: a
       # per-hunk placement would let one hunk lie about another); absent
       # entirely when there is no structural view.
-      [ -z "$keys_line" ] || printf '%skeys:%s %s\n' "$C_DIM" "$C_OFF" "$keys_line"
+      [ -z "$keys_block" ] || printf '%s\n' "$keys_block"
       printf '%s\n' "$line" | color_diff | page || true
     else
       if [ -n "$base" ] && [ -n "$old_digest" ]; then
