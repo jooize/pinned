@@ -848,6 +848,122 @@ POUT="$("$FIX/nojq-probe" json_keys_changed "$FIX/kc-old.json" "$FIX/kc-new.json
 assert_exit "$RC" 1 "no jq in the trusted PATH -> json_keys_changed answers 1 (no structural view)"
 assert_eq "$POUT" "" "and emits nothing, so no keys line can render"
 
+# --- hunk labels, from the parse rather than the indentation ----------------
+# Each "@@" header carries the key path of the lines its hunk CHANGES,
+# computed by label_hunks from jq's stream parser over the same two frozen
+# buffers the keys block reads -- so a label follows the document's
+# STRUCTURE, and reformatting cannot move it. Fail-safe in every direction:
+# a side that does not parse, or a hunk with no parser row beside its changed
+# lines, keeps the plain header diff wrote.
+mkdir -p "$SUB/a/hunk"
+# Non-JSON content: plain headers, no error. The trailing-space needle is how
+# "nothing was appended" is asserted -- a labeled header would carry one.
+printf 'one\ntwo\nthree\n' > "$SUB/a/hunk/plain.txt"
+ANS='
+y
+'
+run_pinned review --file "$SUB/a/hunk/plain.txt"
+assert_exit "$RC" 0 "fixture: plain.txt first approval"
+cp "$SUB/a/hunk/plain.txt" "$FIX/hunk-plain.txt"
+printf 'one\nTWO\nthree\n' > "$SUB/a/hunk/plain.txt"
+ANS='
+y
+'
+run_pinned review --file "$SUB/a/hunk/plain.txt" --baseline "$FIX/hunk-plain.txt"
+assert_exit "$RC" 0 "a non-JSON baseline diff reviews without error"
+assert_contains "$OUT" "@@ -1,3 +1,3 @@" "and prints its hunk header"
+assert_missing "$OUT" "@@ -1,3 +1,3 @@ " "with nothing appended: no label on unparseable content"
+
+if command -v jq >/dev/null 2>&1; then
+  # Three levels deep: the WHOLE path, not the top-level key the old
+  # -F '^  "' anchor would have named.
+  printf '{\n  "a": {\n    "b": {\n      "c": 1,\n      "d": 2\n    }\n  }\n}\n' \
+    > "$SUB/a/hunk/deep.json"
+  ANS='
+y
+'
+  run_pinned review --file "$SUB/a/hunk/deep.json"
+  assert_exit "$RC" 0 "fixture: deep.json first approval"
+  cp "$SUB/a/hunk/deep.json" "$FIX/hunk-deep.json"
+  printf '{\n  "a": {\n    "b": {\n      "c": 9,\n      "d": 2\n    }\n  }\n}\n' \
+    > "$SUB/a/hunk/deep.json"
+  ANS='
+y
+'
+  run_pinned review --file "$SUB/a/hunk/deep.json" --baseline "$FIX/hunk-deep.json"
+  assert_exit "$RC" 0 "a three-level JSON baseline diff records"
+  assert_contains "$OUT" "@@ -3,3 +3,3 @@ a.b.c" \
+                  "a change three levels deep is labeled with its full path"
+
+  # THE SPOOF: "inner" is a NESTED key indented at two spaces, which is what
+  # the old anchor matched on. The parser is not fooled -- the label is the
+  # key's true path, and the planted section name never appears.
+  printf '{\n  "outer": {\n  "inner": {\n      "deep": 1,\n      "other": 2\n    }\n  }\n}\n' \
+    > "$SUB/a/hunk/spoof.json"
+  ANS='
+y
+'
+  run_pinned review --file "$SUB/a/hunk/spoof.json"
+  assert_exit "$RC" 0 "fixture: spoof.json first approval"
+  cp "$SUB/a/hunk/spoof.json" "$FIX/hunk-spoof.json"
+  printf '{\n  "outer": {\n  "inner": {\n      "deep": 7,\n      "other": 2\n    }\n  }\n}\n' \
+    > "$SUB/a/hunk/spoof.json"
+  ANS='
+y
+'
+  run_pinned review --file "$SUB/a/hunk/spoof.json" --baseline "$FIX/hunk-spoof.json"
+  assert_exit "$RC" 0 "a spoofed-indentation baseline diff records"
+  assert_contains "$OUT" "@@ -3,3 +3,3 @@ outer.inner.deep" \
+                  "a nested key indented at two spaces is labeled by its TRUE path"
+  assert_missing "$OUT" '@@ -3,3 +3,3 @@   "inner": {' \
+                  "and the planted section name is nowhere on the header"
+
+  # A change on a container's LAST line: the closing-bracket attribution quirk
+  # is absorbed, and the label names the container the line belongs to.
+  printf '{\n  "sandbox": {\n    "filesystem": {\n      "allowRead": [\n        "/a",\n        "/b"\n      ]\n    }\n  },\n  "last": 1\n}\n' \
+    > "$SUB/a/hunk/last.json"
+  ANS='
+y
+'
+  run_pinned review --file "$SUB/a/hunk/last.json"
+  assert_exit "$RC" 0 "fixture: last.json first approval"
+  cp "$SUB/a/hunk/last.json" "$FIX/hunk-last.json"
+  printf '{\n  "sandbox": {\n    "filesystem": {\n      "allowRead": [\n        "/a",\n        "/z"\n      ]\n    }\n  },\n  "last": 1\n}\n' \
+    > "$SUB/a/hunk/last.json"
+  ANS='
+y
+'
+  run_pinned review --file "$SUB/a/hunk/last.json" --baseline "$FIX/hunk-last.json"
+  assert_exit "$RC" 0 "a last-line change reviews"
+  assert_contains "$OUT" "@@ -5,3 +5,3 @@ sandbox.filesystem.allowRead" \
+                  "a change on a container's last line labels the container"
+
+  # An element APPENDED to an array -- the allowRead case this began with.
+  # The label is spelled the way the keys block spells its rows, so the same
+  # string appears in both places.
+  printf '{\n  "sandbox": {\n    "filesystem": {\n      "allowRead": [\n        "/a",\n        "/b"\n      ]\n    }\n  },\n  "last": 1\n}\n' \
+    > "$SUB/a/hunk/arr.json"
+  ANS='
+y
+'
+  run_pinned review --file "$SUB/a/hunk/arr.json"
+  assert_exit "$RC" 0 "fixture: arr.json first approval"
+  cp "$SUB/a/hunk/arr.json" "$FIX/hunk-arr.json"
+  printf '{\n  "sandbox": {\n    "filesystem": {\n      "allowRead": [\n        "/a",\n        "/b",\n        "/c"\n      ]\n    }\n  },\n  "last": 1\n}\n' \
+    > "$SUB/a/hunk/arr.json"
+  ANS='
+y
+'
+  run_pinned review --file "$SUB/a/hunk/arr.json" --baseline "$FIX/hunk-arr.json"
+  assert_exit "$RC" 0 "an array-append baseline diff records"
+  assert_contains "$OUT" "@@ -5,3 +5,4 @@ sandbox.filesystem.allowRead" \
+                  "an element appended to an array labels the array"
+  assert_contains "$OUT" "  sandbox.filesystem.allowRead   +1" \
+                  "and the label is findable as a row in the keys block above it"
+else
+  say "  hunk-label JSON cases SKIPPED (no jq in the trusted PATH)"
+fi
+
 # ---------------------------------------------------------------------------
 say "S5: tombstone"
 # ---------------------------------------------------------------------------
