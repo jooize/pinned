@@ -2237,6 +2237,8 @@ y
   assert_exit "$RC" 2 "declining the offer still reaches deploy"
   assert_contains "$OUT" "(signed release v5 -- signature-gated)" "the new release is offered"
   assert_contains "$OUT" "0 approved, 1 declined" "the decline skipped the repo"
+  assert_contains "$OUT" "past the pin; skipped this round" \
+    "the deploy table names the skip on the declined repo's row"
   assert_eq "$(rev_in "$S_SLOT/rev.git")" "$S_REL" "a declined offer moves no pin"
 
   # VERIFIED TAGS THAT DO NOT ORDER: two signed releases on branches that
@@ -4423,6 +4425,13 @@ n
   assert_exit "$RC" 0 "a tag-declared slot adds fine"
   assert_contains "$FL_T" "?ref=refs/tags/v3&rev=$T_REV" \
     "the input's ref names the declared release, not a branch"
+  # The deploy table reads that input as current state: the declared name
+  # and the fact that its tag still names the pin, never as an offer.
+  ANS=""
+  run_pinned deploy --flake "$FL_T" --dry-run
+  assert_exit "$RC" 0 "a dry-run deploy over the added input exits 0"
+  assert_contains "$OUT" "declared v3; tag still at the pin" \
+    "a declared release at the pin reads as current state, not an offer"
 
   # A detached HEAD with no declared name leaves nothing honest to write.
   ADD_D="$FIX/add-detached"

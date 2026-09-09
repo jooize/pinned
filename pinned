@@ -194,6 +194,10 @@ set -euo pipefail
 # so a checkout between releases reports the release it descends from.
 PINNED_VERSION="0.14.0"
 
+# Set by upgrade for the round its batches share (see do_approve).
+ROUND_APPROVED=0 ROUND_DECLINED=0 ROUND_ALREADY=0
+ROUND_DECLINED_REPOS=()
+
 # Where this script installs itself. Override-friendly (handy for testing);
 # a packaging that owns its own prefix rewrites this line at build time.
 : "${INSTALL_TARGET:=/usr/local/sbin/pinned}"
@@ -4539,7 +4543,7 @@ do_approve() {
           s|S|skip)
             printf '%sskipped; pin unchanged%s\n' "$C_YEL" "$C_OFF"
             log_action approve "$repo" "$hash" skip
-            if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
+            if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); ROUND_DECLINED_REPOS+=("$repo"); continue; fi
             exit 2
             ;;
         esac
@@ -4569,7 +4573,7 @@ do_approve() {
           s|S|skip)
             printf '%sskipped; pin unchanged%s\n' "$C_YEL" "$C_OFF"
             log_action approve "$repo" "$hash" skip
-            if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
+            if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); ROUND_DECLINED_REPOS+=("$repo"); continue; fi
             exit 2
             ;;
         esac
@@ -4591,7 +4595,7 @@ do_approve() {
       *)
         printf '%saborted; pin unchanged%s\n' "$C_YEL" "$C_OFF"
         log_action approve "$repo" "$hash" abort
-        if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
+        if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); ROUND_DECLINED_REPOS+=("$repo"); continue; fi
         exit 2
         ;;
     esac
@@ -4633,10 +4637,23 @@ do_approve() {
   done
 
   if [ "$multi" -eq 1 ]; then
-    echo
-    printf '%s%s approved, %s declined, %s already pinned%s\n' \
-      "$C_DIM" "$n_approved" "$n_declined" "$n_already" "$C_OFF"
+    if [ "${APPROVE_BATCH:-0}" -eq 1 ]; then
+      # upgrade's round spans several batches; it prints one summary.
+      ROUND_APPROVED=$((ROUND_APPROVED + n_approved))
+      ROUND_DECLINED=$((ROUND_DECLINED + n_declined))
+      ROUND_ALREADY=$((ROUND_ALREADY + n_already))
+    else
+      echo
+      print_batch_summary "$n_approved" "$n_declined" "$n_already"
+    fi
   fi
+}
+
+# The batch summary line: counts only, dim. Called once per review batch,
+# or once per upgrade round (the round's batches fold into ROUND_*).
+print_batch_summary() {
+  printf '%s%s approved, %s declined, %s already pinned%s\n' \
+    "$C_DIM" "$1" "$2" "$3" "$C_OFF"
 }
 
 # The --step walk: the commits since the pin, oldest first, one diff and one
@@ -7280,7 +7297,7 @@ do_deploy() {
   # the caller's scope, so the loop below sets it for each input before any
   # git runs. Declared local so a deploy nested inside another resolved-repo
   # context (upgrade) cannot leak its value back out.
-  local DRY=0 YES=0 FLAKE_ARG="" stale_repos upd_cmd p repo=""
+  local DRY=0 YES=0 FLAKE_ARG="" stale_repos upd_cmd p repo="" why rp
   stale_repos=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -7449,7 +7466,7 @@ EOF
         printf '  %-*s  %sdeclares release %s, but the input has no ref= -- rev-only sync%s\n' \
           "$width" '' "$C_YEL" "$decl_tag" "$C_OFF"
       elif [ "$ref_stale" -eq 0 ]; then
-        printf '  %-*s  %srelease %s (live tag verified at the approved rev)%s\n' \
+        printf '  %-*s  %sdeclared %s; tag still at the pin%s\n' \
           "$width" '' "$C_DIM" "$decl_tag" "$C_OFF"
       fi
     fi
@@ -7475,8 +7492,16 @@ EOF
       fi
       ahead="$(sgit rev-list --count "${approved}..HEAD" 2>/dev/null || echo '?')"
       if [ "$ahead" != 0 ]; then
-        printf '  %-*s  %sgit HEAD is %s commit%s past the pin (unapproved)%s\n' \
-          "$width" '' "$C_DIM" "$ahead" "$(plural_s "$ahead")" "$C_OFF"
+        # Yellow, partial marker: the checkout could deploy and will not.
+        # Declined in this round (upgrade's batches record it) says so;
+        # otherwise the plain fact. Dim would file it as meta.
+        why="not approved"
+        rp="$(readlink -f "$path" 2>/dev/null || printf '%s' "$path")"
+        for p in ${ROUND_DECLINED_REPOS[@]+"${ROUND_DECLINED_REPOS[@]}"}; do
+          [ "$p" = "$rp" ] && why="skipped this round"
+        done
+        printf '  %-*s  %s~ HEAD is %s commit%s past the pin; %s%s\n' \
+          "$width" '' "$C_YEL" "$ahead" "$(plural_s "$ahead")" "$why" "$C_OFF"
         stale_repos+=("$path")
       fi
       # sgit_diff, not sgit: the render guard refuses a bare `diff`, and
@@ -7680,6 +7705,7 @@ EOF
       printf '%sDry run: no ceremonies; deploy preview follows%s\n\n' "$C_DIM" "$C_OFF"
     else
       APPROVE_BATCH=1
+      ROUND_APPROVED=0 ROUND_DECLINED=0 ROUND_ALREADY=0
       if [ "${#repos[@]}" -gt 0 ]; then
         do_approve ${repos[@]+"${repos[@]}"}
       fi
@@ -7704,6 +7730,8 @@ EOF
         i=$((i + 1))
       done
       APPROVE_BATCH=0
+      echo
+      print_batch_summary "$ROUND_APPROVED" "$ROUND_DECLINED" "$ROUND_ALREADY"
       echo
     fi
   fi
