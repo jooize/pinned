@@ -192,7 +192,7 @@ set -euo pipefail
 
 # The release this file IS. Bumped in the release commit the tag points at,
 # so a checkout between releases reports the release it descends from.
-PINNED_VERSION="0.15.0"
+PINNED_VERSION="0.16.0"
 
 # Set by upgrade for the round its batches share (see do_approve).
 ROUND_APPROVED=0 ROUND_DECLINED=0 ROUND_ALREADY=0
