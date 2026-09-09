@@ -2810,7 +2810,7 @@ if [ -f "$INSTALL_TARGET" ]; then
 fi
 
 # The program token of a displayed command line (the pre-sudo elevation
-# lines and deploy's "Will run:" block). The dirname is provenance
+# lines and deploy's command block). The dirname is provenance
 # and stays plain cyan; the basename is the ACT and goes bold inside that
 # cyan (C_B does not cancel a color, so the two compose). A bare name
 # carries no provenance and is bold whole. Scoped to the program token:
@@ -2966,7 +2966,7 @@ elevation_gate() { # <what-the-root-side-does> argv...
       "$C2_RED" "$C2_OFF" >&2
     exit 2
   fi
-  printf '%snext: %s as root (sudo); Enter continues%s %s· Ctrl-C stops%s ' \
+  printf '%snext: %s as root; Enter runs the line above%s %s· Ctrl-C stops%s ' \
     "$C_B" "$what" "$C_OFF" "$C_DIM" "$C_OFF"
   drain_tty
   read -r answer </dev/tty
@@ -3327,7 +3327,7 @@ print_upgrade_plan() {
             done <<EOF
 $upg_info
 EOF
-            det="(signed release $tj -- signature-gated)"
+            det="(signed release ${C_OFF}${C_CYN}$tj${C_OFF}${C_DIM} -- signature-gated)"
             # The release, not HEAD, is what the ceremony pins; say so
             # wherever the two are not the same commit.
             lag="$(signed_offer_lag "$p" "$t1")"
@@ -3335,7 +3335,7 @@ EOF
               ex="HEAD is $lag commit$(plural_s "$lag") past the release; the release is what gets pinned"
             fi ;;
           tagged)
-            det="(release $upg_info)" ;;
+            det="(release ${C_OFF}${C_CYN}$upg_info${C_OFF}${C_DIM})" ;;
           notag)
             lbl="skipped:" lc="$C_YEL" pc=""
             # Orientation for the by-hand route: the newest release past the
@@ -7280,7 +7280,7 @@ do_ignorable_list() {
 # loop self-elevated, so root gains no code it did not already run -- and
 # under sudo's env reset, behind the sudoers digest on the installed binary,
 # reading root-owned inputs, the composition is ENFORCED rather than assumed.
-# The human loses nothing: the table and the `rebuild? [y/N]` confirm move to
+# The human loses nothing: the table and the `rebuild with the lines above? [y/N]` confirm move to
 # the root side, where the exact commands are still shown before any of them
 # runs.
 #
@@ -7560,12 +7560,13 @@ EOF
   sudo_disp="${C_B}sudo${C_OFF} "
   if [ "$EUID" -eq 0 ]; then SUDO_ARGV=(); sudo_disp=""; fi
   REBUILD_CMD=("$REBUILD" switch --flake "$(dirname "$FLAKE")")
-  # "Will run:", not "Will run as root:" -- this process execs the displayed
-  # line AS THE USER; authority begins at the bold `sudo` token inside it (and
-  # the sudo prompt states it again at the real boundary). In the root context
-  # sudo is dropped above and the bare label is simply true. Claiming root
-  # over a line that starts with sudo double-counts the elevation.
-  printf '%sWill run:%s\n' "$C_B" "$C_OFF"
+  # No label above the command lines: the confirm below names them ("the
+  # lines above"), and a label whose only job is to announce the next line
+  # is the wall the framework argues against. Authority begins at the bold
+  # `sudo` token inside the line (and the sudo prompt states it again at the
+  # real boundary); in the root context sudo is dropped and the lines are
+  # what this process runs. Suggestion blocks elsewhere keep their own label,
+  # which is what tells a suggestion from the command about to run.
   if [ "$updates" -gt 0 ]; then
     PIN_CMD=("${SED_I[@]}" "${sed_exprs[@]}" "$FLAKE")
     # ONE FLAG-GROUP PER LINE, backslash-continued -- the same shape the
@@ -7611,7 +7612,7 @@ EOF
         "$C2_RED" "$C2_OFF" >&2
       exit 2
     fi
-    printf '%srebuild? [y/N]%s ' "$C_B" "$C_OFF"
+    printf '%srebuild with the lines above? [y/N]%s ' "$C_B" "$C_OFF"
     drain_tty
     read -r answer </dev/tty
     case "$answer" in

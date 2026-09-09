@@ -2392,7 +2392,7 @@ EOF
   assert_contains "$OUT" "pinned deploy" "naming the verb that rebuilds"
   assert_missing "$OUT" "Then: deploy" "the old chained-plan line is gone"
   assert_missing "$OUT" "Will run:" "no elevation is displayed"
-  assert_missing "$OUT" "Enter continues" "and no gate is offered"
+  assert_missing "$OUT" "Enter runs the line above" "and no gate is offered"
 
   # --yes and --dry-run buy nothing here: an empty round needs no root either
   # way, so both take the same exit.
@@ -2411,7 +2411,7 @@ EOF
 '
   run_preview upgrade --flake "$FIX/flake-pv-one.nix"
   assert_exit "$RC" 97 "an answered gate reaches the elevation"
-  assert_contains "$OUT" "next: review 1 repo + rebuild as root (sudo); Enter continues" \
+  assert_contains "$OUT" "next: review 1 repo + rebuild as root; Enter runs the line above" \
     "the gate counts the round in the singular"
   assert_contains "$OUT" "Ctrl-C stops" "and names the way out"
   assert_contains "$OUT" "The preview above was orientation only." \
@@ -2428,14 +2428,14 @@ EOF
 '
   run_preview upgrade --flake "$FIX/flake-pv-two.nix"
   assert_exit "$RC" 97 "the two-repo round reaches the elevation"
-  assert_contains "$OUT" "next: review 2 repos + rebuild as root (sudo)" \
+  assert_contains "$OUT" "next: review 2 repos + rebuild as root" \
     "the gate counts both repos"
 
   # --yes answers the gate at the command line.
   ANS=""
   run_preview upgrade --flake "$FIX/flake-pv-one.nix" --yes
   assert_exit "$RC" 97 "--yes elevates without a gate"
-  assert_missing "$OUT" "Enter continues" "no gate is printed under --yes"
+  assert_missing "$OUT" "Enter runs the line above" "no gate is printed under --yes"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW upgrade --flake $FIX/flake-pv-one.nix --yes" \
     "--yes is on the page even when it is the flag that skipped the gate"
 
@@ -2463,7 +2463,7 @@ EOF
     assert_exit "$RC" 97 "deploy reaches the elevation"
     assert_shows_cmd "$OUT" "sudo -- $PREVIEW deploy --flake $FIX/flake-pv-quiet.nix" \
       "deploy discloses its exact argv pre-sudo, --flake included"
-    assert_contains "$OUT" "next: sync the flake + rebuild as root (sudo); Enter continues" \
+    assert_contains "$OUT" "next: sync the flake + rebuild as root; Enter runs the line above" \
       "the gate names what the authentication buys"
     assert_missing "$OUT" "The preview above was orientation only." \
       "and claims no preview, having printed none"
@@ -2472,7 +2472,7 @@ EOF
     ANS=""
     run_preview deploy --flake "$FIX/flake-pv-quiet.nix" --yes
     assert_exit "$RC" 97 "--yes elevates without a gate"
-    assert_missing "$OUT" "Enter continues" "no gate is printed under --yes"
+    assert_missing "$OUT" "Enter runs the line above" "no gate is printed under --yes"
     assert_shows_cmd "$OUT" "sudo -- $PREVIEW deploy --flake $FIX/flake-pv-quiet.nix --yes" \
       "--yes is on the page even when it is the flag that skipped the gate"
 
@@ -2491,18 +2491,18 @@ EOF
     run_preview deploy --bogus
     assert_exit "$RC" 1 "an unknown deploy option is a usage error"
     assert_contains "$OUT" "usage: pinned" "and says so as a usage error"
-    assert_missing "$OUT" "Enter continues" "with no gate offered"
+    assert_missing "$OUT" "Enter runs the line above" "with no gate offered"
     ANS=""
     run_preview deploy --flake "$FIX/no-such-flake.nix"
     assert_exit "$RC" 1 "an unreadable --flake dies pre-sudo"
     assert_contains "$OUT" "cannot read $FIX/no-such-flake.nix -- pass --flake" \
       "naming the file and the flag"
-    assert_missing "$OUT" "Enter continues" "and never reaches the gate"
+    assert_missing "$OUT" "Enter runs the line above" "and never reaches the gate"
 
     ANS=""
     run_preview deploy --flake "$FIX/flake-pv-unpinned.nix" --dry-run
     assert_exit "$RC" 0 "a dry run with an unpinned input exits 0"
-    assert_missing "$OUT" "Enter continues" "--dry-run runs nothing, so it authenticates nothing"
+    assert_missing "$OUT" "Enter runs the line above" "--dry-run runs nothing, so it authenticates nothing"
     assert_contains "$OUT" "pinned inputs all at their approved revs" \
       "the mixed verdict is lowercase too"
     assert_contains "$OUT" "sudo $REBUILD_TOOL switch --flake" \
@@ -2516,13 +2516,13 @@ EOF
 '
     run_preview deploy --flake "$FIX/flake-pv-quiet.nix"
     assert_exit "$RC" 2 "declining the root-context confirm exits 2"
-    assert_contains "$OUT" "rebuild? [y/N]" "the confirm names what a yes does"
+    assert_contains "$OUT" "rebuild with the lines above? [y/N]" "the confirm names what a yes does"
     assert_missing "$OUT" "proceed? [y/N]" "the old wording is gone"
     assert_contains "$OUT" "all inputs at their approved revs" "the verdict is a label, not a sentence"
     assert_contains "$OUT" "(converges the running system to the flake -- changes nothing if already current)" \
       "the unconditional rebuild carries its reason on the command"
     assert_missing "$OUT" "Rebuilding anyway" "the paragraph that used to carry it is gone"
-    assert_contains "$OUT" "Will run:" "the label stays in the root context"
+    assert_missing "$OUT" "Will run:" "no label in the root context either: the confirm names the lines"
     assert_contains "$OUT" "$REBUILD_TOOL switch --flake" "the rebuild command is unchanged"
     assert_missing "$OUT" "sudo $REBUILD_TOOL" "but sudo is dropped from the displayed line"
     TESTROOT=""
@@ -2613,7 +2613,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_missing "$OUT" "Will run:" "review prints no prose header"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW review $EV_STALE" \
     "the exact argv stays on screen -- it is the only pre-auth disclosure"
-  assert_contains "$OUT" "next: review 1 repo as root (sudo); Enter continues" \
+  assert_contains "$OUT" "next: review 1 repo as root; Enter runs the line above" \
     "the gate counts the repo in the singular"
   assert_contains "$OUT" "Ctrl-C stops" "and names the way out"
   assert_contains "$OUT" "The preview above was orientation only." \
@@ -2627,7 +2627,7 @@ if [ "$GIT_OK" -eq 1 ]; then
 '
   run_preview review "$EV_STALE" "$EV_STALE2"
   assert_exit "$RC" 97 "the two-repo review reaches the elevation"
-  assert_contains "$OUT" "next: review 2 repos as root (sudo)" "the gate counts both repos"
+  assert_contains "$OUT" "next: review 2 repos as root" "the gate counts both repos"
 
   # The gate counts the ROUND, not the argv: a repo already at its pin was
   # skipped by the preview and buys no ceremony, so promising it would be a
@@ -2637,7 +2637,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   run_preview review "$EV_PINNED" "$EV_STALE"
   assert_exit "$RC" 97 "a mixed batch still elevates for the stale repo"
   assert_contains "$OUT" "already pinned:" "the preview skips the pinned one"
-  assert_contains "$OUT" "next: review 1 repo as root (sudo)" \
+  assert_contains "$OUT" "next: review 1 repo as root" \
     "and the gate counts only what the root side will review"
 
   # --yes answers the gate at the command line -- and rides through in the
@@ -2645,7 +2645,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   ANS=""
   run_preview review "$EV_STALE" --yes
   assert_exit "$RC" 97 "--yes elevates review without a gate"
-  assert_missing "$OUT" "Enter continues" "no gate is printed under --yes"
+  assert_missing "$OUT" "Enter runs the line above" "no gate is printed under --yes"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW review $EV_STALE --yes" \
     "the flag is shown where it will really be passed"
 
@@ -2671,7 +2671,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_missing "$OUT" "Will run:" "review --file prints no prose header"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW review --file $SUB/real.txt" \
     "the file ceremony's argv stays on screen"
-  assert_contains "$OUT" "next: review 1 file as root (sudo); Enter continues" \
+  assert_contains "$OUT" "next: review 1 file as root; Enter runs the line above" \
     "the gate counts the file in the singular"
   assert_missing "$OUT" "The preview above was orientation only." \
     "and claims no preview it did not print"
@@ -2680,7 +2680,7 @@ if [ "$GIT_OK" -eq 1 ]; then
 '
   run_preview review --file "$SUB/real.txt" --file "$SUB/link.txt"
   assert_exit "$RC" 97 "two files reach the elevation too"
-  assert_contains "$OUT" "next: review 2 files as root (sudo)" "the gate counts both files"
+  assert_contains "$OUT" "next: review 2 files as root" "the gate counts both files"
 
   # --- the display GROUPS each --file with the flags scoped to it -----------
   # --ignore-json-key binds POSITIONALLY to the --file it follows (arg parsing
@@ -2736,7 +2736,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_missing "$OUT" "Will run:" "add prints no prose header"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW add $EV_ADD --flake $EV_FLAKE" \
     "add's argv stays on screen"
-  assert_contains "$OUT" "next: approve ev-add + edit the flake as root (sudo); Enter continues" \
+  assert_contains "$OUT" "next: approve ev-add + edit the flake as root; Enter runs the line above" \
     "the gate names the input the ceremony will approve"
 
   # Already pinned: the round is the flake edit alone, and the gate says so
@@ -2745,7 +2745,7 @@ if [ "$GIT_OK" -eq 1 ]; then
 '
   run_preview add "$EV_ADDPIN" --flake "$EV_FLAKE"
   assert_exit "$RC" 97 "an already-pinned checkout still elevates for the flake edit"
-  assert_contains "$OUT" "next: edit the flake as root (sudo); Enter continues" \
+  assert_contains "$OUT" "next: edit the flake as root; Enter runs the line above" \
     "the gate promises only the edit"
   assert_missing "$OUT" "next: approve" "and no approval it will not perform"
 
@@ -2757,7 +2757,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_missing "$OUT" "Will run:" "signer prints no prose header"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW signer add alice --file $SUB/alice.pub" \
     "signer's argv stays on screen"
-  assert_contains "$OUT" "next: record the key as root (sudo); Enter continues" \
+  assert_contains "$OUT" "next: record the key as root; Enter runs the line above" \
     "the gate names what root does with the key"
   assert_contains "$OUT" "sudo asks you to authenticate" "the site's contract line survives"
   assert_before "$OUT" "sudo asks you to authenticate" "sudo -- $PREVIEW signer" \
@@ -2769,7 +2769,7 @@ if [ "$GIT_OK" -eq 1 ]; then
 '
   run_preview signer remove alice --file "$SUB/alice.pub"
   assert_exit "$RC" 97 "signer remove reaches the elevation"
-  assert_contains "$OUT" "next: remove the key as root (sudo)" "its gate names the withdrawal"
+  assert_contains "$OUT" "next: remove the key as root" "its gate names the withdrawal"
 
   ANS='
 '
@@ -2777,14 +2777,14 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_exit "$RC" 97 "an answered ignorable gate reaches the elevation"
   assert_missing "$OUT" "Will run:" "ignorable prints no prose header"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW ignorable add model" "ignorable's argv stays on screen"
-  assert_contains "$OUT" "next: record the grant as root (sudo); Enter continues" \
+  assert_contains "$OUT" "next: record the grant as root; Enter runs the line above" \
     "the gate names what root does with the grant"
 
   ANS='
 '
   run_preview ignorable remove model
   assert_exit "$RC" 97 "ignorable remove reaches the elevation"
-  assert_contains "$OUT" "next: withdraw the grant as root (sudo)" \
+  assert_contains "$OUT" "next: withdraw the grant as root" \
     "its gate names the withdrawal in the grant's own words"
 
   NOTTY=1
@@ -2796,7 +2796,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   ANS=""
   run_preview ignorable add model --yes
   assert_exit "$RC" 97 "off-tty ignorable WITH --yes elevates"
-  assert_missing "$OUT" "Enter continues" "and prints no gate"
+  assert_missing "$OUT" "Enter runs the line above" "and prints no gate"
   NOTTY=""
 
   # --- tombstone / rekey ------------------------------------------------------
@@ -2810,7 +2810,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_missing "$OUT" "Will run:" "tombstone prints no prose header"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW tombstone $FIX/ts-gone" \
     "tombstone's argv stays on screen"
-  assert_contains "$OUT" "next: tombstone the record as root (sudo); Enter continues" \
+  assert_contains "$OUT" "next: tombstone the record as root; Enter runs the line above" \
     "the gate names the retirement in the verb's own word"
   assert_before "$OUT" "sudo asks you to authenticate" "sudo -- $PREVIEW tombstone" \
     "the contract sentence sits above the command"
@@ -2823,7 +2823,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_exit "$RC" 97 "an answered rekey gate reaches the elevation"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW rekey $FIX/mv-old-gone $FIX/mv-new" \
     "rekey's argv stays on screen"
-  assert_contains "$OUT" "next: re-key the record as root (sudo); Enter continues" \
+  assert_contains "$OUT" "next: re-key the record as root; Enter runs the line above" \
     "the gate names the re-key"
   assert_before "$OUT" "old:" "sudo asks you to authenticate" \
     "rekey's own preview stays above the handoff"
@@ -2831,7 +2831,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   ANS=""
   run_preview tombstone "$FIX/ts-gone" --yes
   assert_exit "$RC" 97 "--yes elevates tombstone without a gate"
-  assert_missing "$OUT" "Enter continues" "no gate is printed under --yes"
+  assert_missing "$OUT" "Enter runs the line above" "no gate is printed under --yes"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW tombstone $FIX/ts-gone --yes" \
     "the flag is shown where it will really be passed"
 
@@ -3069,14 +3069,14 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_exit "$RC" 97 "an answered declare gate reaches the elevation"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW declare $REPO_DC --release v1" \
     "the exact argv stays on screen"
-  assert_contains "$OUT" "next: declare the release name as root (sudo); Enter continues" \
+  assert_contains "$OUT" "next: declare the release name as root; Enter runs the line above" \
     "the gate names the declaration"
   assert_contains "$OUT" "sudo asks you to authenticate" "the record-verb contract line survives"
   ANS='
 '
   run_preview declare "$REPO_DC" --no-release
   assert_exit "$RC" 97 "an answered clearing gate reaches the elevation"
-  assert_contains "$OUT" "next: clear the declaration as root (sudo)" \
+  assert_contains "$OUT" "next: clear the declaration as root" \
     "its gate names the clearing"
 
   # --yes answers the gate at the command line, never the root confirm.
