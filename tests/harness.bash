@@ -200,7 +200,7 @@ need '^  logger -t pinned '                                 1 'audit-log call'
 need '</dev/tty'                                            20 'tty reads (15 confirms + the shared gate + 4 inside drain_tty)'
 need '^ *read -r answer </dev/tty$'                         15 'ceremony tty reads'
 need '^    if ! read -r answer </dev/tty; then$'             1 'the shared gate tty read'
-need '^gate_answer() { # <rendered gate line> <what Enter does> <n|s>$' 1 'the shared gate helper'
+need '^gate_answer() { # <rendered gate line> <what Enter does> <stops|skips>$' 1 'the shared gate helper'
 need '^ *drain_tty$'                                        16 'a drain before every ceremony tty read'
 need '^  saved="\$(stty -g </dev/tty 2>/dev/null)" || return 0$' 1 'drain_tty entry'
 need '^# ---- setup ---'                                    1 'library cut marker'
@@ -710,22 +710,22 @@ assert_exit "$RC" 0 "declining exits 0"
 assert_contains "$OUT" "declined; record unchanged" "decline is reported"
 assert_eq "$(count_state "$DECL_SLOT")" 0 "declining records nothing"
 
-# `s` at the file's gate declines without opening the display at all:
+# `n` at the file's gate declines without opening the display at all:
 # record unchanged, counted as declined, and the frozen bytes are never
 # presented as reviewable.
 printf 'unseen\n' > "$SUB/a/skipped.txt"
 SKIP_SLOT="$(slot_of "$SUB/a/skipped.txt")"
-ANS='s
+ANS='n
 '
 run_pinned review --file "$SUB/a/skipped.txt"
 assert_exit "$RC" 0 "a gate skip exits 0 like a decline"
-assert_contains "$OUT" "s skips" "the gate line offers the skip"
+assert_contains "$OUT" "n skips" "the gate line offers the skip"
 assert_contains "$OUT" "skipped; record unchanged" "the skip names its outcome"
 assert_eq "$(count_state "$SKIP_SLOT")" 0 "a gate skip records nothing"
 assert_missing "$OUT" "exactly the bytes being approved" "the display never opened"
 
 # End of input is a skip, not consent. A closed tty answers nothing, so the
-# gate fails closed exactly as `s` does: same line, same logging, same count.
+# gate fails closed exactly as `n` does: same line, same logging, same count.
 printf 'unseen\n' > "$SUB/a/gate-eof.txt"
 EOFG_SLOT="$(slot_of "$SUB/a/gate-eof.txt")"
 ANS=""
@@ -739,18 +739,24 @@ assert_missing "$OUT" "exactly the bytes being approved" "the display never open
 # asks again, so a typo can never open (or skip) anything. The echo is
 # truncated to 20 characters -- it is untrusted input printed next to the
 # gate it is about to reprint, and it has to stay one line.
+#
+# `s` is in that set now: no letter means "skip" any more, so a bare `s`
+# is garbage like any other and the gate asks again rather than declining.
 printf 'seen\n' > "$SUB/a/gate-retry.txt"
 RETRYG_SLOT="$(slot_of "$SUB/a/gate-retry.txt")"
 ANS='x
+s
 abcdefghijklmnopqrstuvwxyz0123
 y
 y
 '
 run_pinned review --file "$SUB/a/gate-retry.txt"
 assert_exit "$RC" 0 "a gate that was re-asked still records once answered"
-assert_contains "$OUT" 'not an answer: "x"; Enter or y opens it, s skips' \
+assert_contains "$OUT" 'not an answer: "x"; Enter or y opens it, n skips' \
   "the re-ask names the input back and states every valid answer"
-assert_contains "$OUT" 'not an answer: "abcdefghijklmnopqrst"; Enter or y opens it, s skips' \
+assert_contains "$OUT" 'not an answer: "s"; Enter or y opens it, n skips' \
+  "a bare s is unknown input at a review gate, not a skip"
+assert_contains "$OUT" 'not an answer: "abcdefghijklmnopqrst"; Enter or y opens it, n skips' \
   "a long answer is echoed truncated to 20 characters"
 assert_eq "$(count_state "$RETRYG_SLOT")" 1 "y opens the gate and y records at the confirm"
 
@@ -1326,15 +1332,15 @@ n
   assert_exit "$RC" 2 "a single-repo decline still exits 2"
   assert_contains "$OUT" "aborted; pin unchanged" "single decline keeps its message"
 
-  # `s` at the diff gate declines WITHOUT opening the pager: pin unchanged,
+  # `n` at the diff gate declines WITHOUT opening the pager: pin unchanged,
   # exit as a decline, and the confirm is never reached -- approving a repo
   # without its diff stays impossible.
   A_PRE="$(rev_in "$A_SLOT/rev.git")"
-  ANS='s
+  ANS='n
 '
   run_pinned review "$REPO_A"
   assert_exit "$RC" 2 "a single-repo gate skip exits 2 like a decline"
-  assert_contains "$OUT" "s skips" "the gate line offers the skip"
+  assert_contains "$OUT" "n skips" "the gate line offers the skip"
   assert_contains "$OUT" "skipped; pin unchanged" "the skip names its outcome"
   assert_eq "$(rev_in "$A_SLOT/rev.git")" "$A_PRE" "a gate skip moves no pin"
   assert_missing "$OUT" "(from object store)" "the diff never opened"
@@ -1342,7 +1348,7 @@ n
 
   # In a batch the skip is the decline's twin: the skipped repo keeps its
   # pin and the batch moves on (repo B, already at its pin, still counted).
-  ANS='s
+  ANS='n
 '
   run_pinned review "$REPO_A" "$REPO_B"
   assert_exit "$RC" 0 "a mid-batch gate skip does not abort the batch"
@@ -1822,14 +1828,14 @@ n
   assert_contains "$OUT" "pin unchanged" "the summary says the pin did not move"
   assert_missing  "$OUT" "total:" "no aggregate for a walk that approved nothing"
 
-  # --- `s` at a step's gate: the walk stops before the diff opens ----------
+  # --- `n` at a step's gate: the walk stops before the diff opens ----------
   # Same stop-the-walk contract as a decline at the confirm -- commits
   # advance linearly, so there is no skipping past an unreviewed one --
   # but the skipped step's diff is never shown at all.
   seed_rev "$REPO_E" "$E_BASE"
   ANS='
 y
-s
+n
 '
   run_pinned review "$REPO_E" --step
   assert_exit "$RC" 0 "a skip after one yes still exits 0 (the pin did advance)"

@@ -148,7 +148,7 @@ preview says why), then reports the pin as the no\-op it is.
 reports either half of the staleness before any ceremony.
 .IP
 Every diff opens behind its own gate line; answering
-.B s
+.B n
 there declines without opening it \(em the pin is unchanged, the
 outcome is logged as a skip, and a batch counts it as declined and
 moves on.
@@ -157,7 +157,7 @@ Enter,
 and
 .B yes
 open the diff;
-.B s
+.B n
 is the only other answer, and end of input takes the skip.
 Anything else is named back and the gate asks again.
 Approving a repo without its review is never offered.
@@ -252,7 +252,7 @@ A decline stops the walk rather than skipping the commit \(em trust is
 a tree state, so approving commit N would silently carry N\-1's
 changes in with it.
 An
-.B s
+.B n
 at a step's diff gate stops the walk the same way, before the diff
 opens.
 .IP
@@ -410,7 +410,7 @@ The pre-sudo handoff counts the files named on the command line
 skips that gate and no other, so each file is still displayed and
 confirmed as root.
 Each file's display opens behind its own gate line; answering
-.B s
+.B n
 there declines without opening it \(em record unchanged, counted as
 declined.
 .IP

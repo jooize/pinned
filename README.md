@@ -727,8 +727,9 @@ one.
 - **Glyphs**: `✓` recorded/verified, `✗` refused, `~` matched with a
   declared tolerance.
 - **Gates read one way everywhere.** A `next:` line states what happens next
-  and names the one other answer: `· n stops` before an action, `· s skips`
-  before a review. Enter, `y` and `yes` continue; the named key declines;
+  and names the one other answer: `· n stops` before an action, `· n skips`
+  before a review. Enter, `y` and `yes` continue; `n` declines every gate,
+  because a gate has exactly two outcomes and one decline key is enough;
   end of input declines too, because a closed tty is not consent. Anything
   else is not an answer at all — the gate names it back in yellow and asks
   again, so a typo or a stray paste can never pass for a yes. A decline is
