@@ -197,9 +197,11 @@ need '-o root -g "\$TREE_GRP" '                             4 'slot-tree install
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
-need '</dev/tty'                                            25 'tty reads (21 gates + 4 inside drain_tty)'
-need '^ *read -r answer </dev/tty$'                         21 'ceremony tty reads'
-need '^ *drain_tty$'                                        21 'a drain before every ceremony tty read'
+need '</dev/tty'                                            20 'tty reads (15 confirms + the shared gate + 4 inside drain_tty)'
+need '^ *read -r answer </dev/tty$'                         15 'ceremony tty reads'
+need '^    if ! read -r answer </dev/tty; then$'             1 'the shared gate tty read'
+need '^gate_answer() { # <rendered gate line> <what Enter does> <n|s>$' 1 'the shared gate helper'
+need '^ *drain_tty$'                                        16 'a drain before every ceremony tty read'
 need '^  saved="\$(stty -g </dev/tty 2>/dev/null)" || return 0$' 1 'drain_tty entry'
 need '^# ---- setup ---'                                    1 'library cut marker'
 need '^#!/bin/bash$'                                        1 'pinned shebang'
@@ -721,6 +723,36 @@ assert_contains "$OUT" "s skips" "the gate line offers the skip"
 assert_contains "$OUT" "skipped; record unchanged" "the skip names its outcome"
 assert_eq "$(count_state "$SKIP_SLOT")" 0 "a gate skip records nothing"
 assert_missing "$OUT" "exactly the bytes being approved" "the display never opened"
+
+# End of input is a skip, not consent. A closed tty answers nothing, so the
+# gate fails closed exactly as `s` does: same line, same logging, same count.
+printf 'unseen\n' > "$SUB/a/gate-eof.txt"
+EOFG_SLOT="$(slot_of "$SUB/a/gate-eof.txt")"
+ANS=""
+run_pinned review --file "$SUB/a/gate-eof.txt"
+assert_exit "$RC" 0 "EOF at the gate exits 0 like a skip"
+assert_contains "$OUT" "skipped; record unchanged" "EOF takes the skip's own line"
+assert_eq "$(count_state "$EOFG_SLOT")" 0 "EOF records nothing"
+assert_missing "$OUT" "exactly the bytes being approved" "the display never opened"
+
+# Anything that is not an answer is NOT ACTED ON: the gate names it back and
+# asks again, so a typo can never open (or skip) anything. The echo is
+# truncated to 20 characters -- it is untrusted input printed next to the
+# gate it is about to reprint, and it has to stay one line.
+printf 'seen\n' > "$SUB/a/gate-retry.txt"
+RETRYG_SLOT="$(slot_of "$SUB/a/gate-retry.txt")"
+ANS='x
+abcdefghijklmnopqrstuvwxyz0123
+y
+y
+'
+run_pinned review --file "$SUB/a/gate-retry.txt"
+assert_exit "$RC" 0 "a gate that was re-asked still records once answered"
+assert_contains "$OUT" 'not an answer: "x"; Enter or y opens it, s skips' \
+  "the re-ask names the input back and states every valid answer"
+assert_contains "$OUT" 'not an answer: "abcdefghijklmnopqrst"; Enter or y opens it, s skips' \
+  "a long answer is echoed truncated to 20 characters"
+assert_eq "$(count_state "$RETRYG_SLOT")" 1 "y opens the gate and y records at the confirm"
 
 # --- the gates before each pager --------------------------------------------
 # Nothing full-screen arrives unannounced: each file's pager sits behind a
@@ -2461,7 +2493,7 @@ EOF
   assert_exit "$RC" 97 "an answered gate reaches the elevation"
   assert_contains "$OUT" "next: review 1 repo + rebuild as root; Enter runs the line above" \
     "the gate counts the round in the singular"
-  assert_contains "$OUT" "Ctrl-C stops" "and names the way out"
+  assert_contains "$OUT" "n stops" "and names the key that stops"
   assert_contains "$OUT" "The preview above was orientation only." \
     "the orientation disclaimer stays"
   # upgrade takes --flake, whose value decides what the rebuild activates as
@@ -2505,7 +2537,7 @@ EOF
     # meets is the argv and the gate, nothing else. Composing the sed
     # expressions that rewrite rev= in a process the invoker's environment
     # can steer was the thing this removed.
-    ANS='n
+    ANS='
 '
     run_preview deploy --flake "$FIX/flake-pv-quiet.nix"
     assert_exit "$RC" 97 "deploy reaches the elevation"
@@ -2516,6 +2548,17 @@ EOF
     assert_missing "$OUT" "The preview above was orientation only." \
       "and claims no preview, having printed none"
     assert_missing "$OUT" "Will run:" "the command table belongs to the root side now"
+
+    # deploy's decline names the STATE, and deploy is the one verb whose
+    # state is the machine rather than a record: nothing is pinned here, a
+    # rebuild is what the authentication buys, and stopping leaves the
+    # system as it stands.
+    ANS='n
+'
+    run_preview deploy --flake "$FIX/flake-pv-quiet.nix"
+    assert_exit "$RC" 2 "n stops deploy before the elevation"
+    assert_contains "$OUT" "stopped; system unchanged" \
+      "and names the machine, not a record, as what it left alone"
 
     ANS=""
     run_preview deploy --flake "$FIX/flake-pv-quiet.nix" --yes
@@ -2663,7 +2706,7 @@ if [ "$GIT_OK" -eq 1 ]; then
     "the exact argv stays on screen -- it is the only pre-auth disclosure"
   assert_contains "$OUT" "next: review 1 repo as root; Enter runs the line above" \
     "the gate counts the repo in the singular"
-  assert_contains "$OUT" "Ctrl-C stops" "and names the way out"
+  assert_contains "$OUT" "n stops" "and names the key that stops"
   assert_contains "$OUT" "The preview above was orientation only." \
     "the orientation disclaimer stays"
   assert_before "$OUT" "The preview above was orientation only." "sudo -- $PREVIEW" \
@@ -2687,6 +2730,41 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_contains "$OUT" "already pinned:" "the preview skips the pinned one"
   assert_contains "$OUT" "next: review 1 repo as root" \
     "and the gate counts only what the root side will review"
+
+  # `n` is an answer now, not only Enter. It stops before sudo, names what
+  # the verb leaves alone, and exits 2 -- the quiet decline, in the same
+  # state words the root side would have used for the same verb.
+  ANS='n
+'
+  run_preview review "$EV_STALE"
+  assert_exit "$RC" 2 "n at the elevation gate stops"
+  assert_contains "$OUT" "stopped; pin unchanged" "and names what stays unchanged"
+  assert_missing "$OUT" "not an answer" "a typed n is an answer, never a typo"
+
+  # y continues, exactly as Enter does.
+  ANS='y
+'
+  run_preview review "$EV_STALE"
+  assert_exit "$RC" 97 "y at the elevation gate reaches the elevation"
+
+  # Anything else is NOT ACTED ON. This is the case that used to elevate:
+  # the old gate matched n and let every other byte fall through into sudo,
+  # so a typo bought an authentication. Now the gate names it back and asks
+  # again, and the answer AFTER it is the one that decides.
+  ANS='zzz
+n
+'
+  run_preview review "$EV_STALE"
+  assert_exit "$RC" 2 "an unknown answer does not elevate"
+  assert_contains "$OUT" 'not an answer: "zzz"; Enter or y runs the line above, n stops' \
+    "the re-ask names the input back and states every valid answer"
+  assert_contains "$OUT" "stopped; pin unchanged" "the answer after the re-ask decides"
+
+  # End of input stops too: a closed tty is not consent.
+  ANS=""
+  run_preview review "$EV_STALE"
+  assert_exit "$RC" 2 "EOF at the elevation gate stops"
+  assert_contains "$OUT" "stopped; pin unchanged" "and takes the same decline line"
 
   # --yes answers the gate at the command line -- and rides through in the
   # displayed argv, because the display IS the argv sudo gets.

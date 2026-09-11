@@ -58,14 +58,26 @@ authentication buys:
 .nf
     sudo \-\- /usr/local/bin/pinned review /home/u/src/foo
 
-  next: review 1 repo as root (sudo); Enter continues \(pc Ctrl\-C stops
+  next: review 1 repo as root; Enter runs the line above \(pc n stops
 .fi
 .PP
 The displayed line is the argv, token for token \(em nothing is added,
 elided, or reworded for the display \(em and it is printed
 unconditionally, because on a host without a root-side echo it is the
 only account of the command the human gets before authenticating.
-The gate is a pause, not a decision: the ceremony's own
+Enter,
+.BR y ,
+and
+.B yes
+run it;
+.B n
+stops there, printing
+.RB \(dq stopped; \(dq
+and the state the verb leaves untouched, and exiting 2.
+End of input stops the same way.
+Anything else is not an answer at all: the gate names it back and asks
+again, so a typo cannot buy an authentication.
+Continuing still decides nothing on its own \(em the ceremony's own
 .RB \(dq [y/N] \(dq
 comes later, as root, and nothing is recorded until it is answered.
 .B \-\-yes
@@ -140,10 +152,15 @@ Every diff opens behind its own gate line; answering
 there declines without opening it \(em the pin is unchanged, the
 outcome is logged as a skip, and a batch counts it as declined and
 moves on.
-Enter and
+Enter,
+.BR y ,
+and
+.B yes
+open the diff;
 .B s
-are the gate's only answers: approving a repo without its review is
-never offered.
+is the only other answer, and end of input takes the skip.
+Anything else is named back and the gate asks again.
+Approving a repo without its review is never offered.
 .BR \-\-tag ,
 .BR \-\-signed\-tag ,
 and

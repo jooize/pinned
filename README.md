@@ -726,6 +726,17 @@ one.
   (no trailing newline, a NUL, malformed JSON), is shown raw.
 - **Glyphs**: `✓` recorded/verified, `✗` refused, `~` matched with a
   declared tolerance.
+- **Gates read one way everywhere.** A `next:` line states what happens next
+  and names the one other answer: `· n stops` before an action, `· s skips`
+  before a review. Enter, `y` and `yes` continue; the named key declines;
+  end of input declines too, because a closed tty is not consent. Anything
+  else is not an answer at all — the gate names it back in yellow and asks
+  again, so a typo or a stray paste can never pass for a yes. A decline is
+  quiet and yellow, `<verb>; <what stays unchanged>`, and the verb says
+  what was declined: `skipped` a review, before looking; `stopped` a run
+  gate; `aborted` a `? [y/N]`, after looking. The state half is the same
+  words on both sides of the sudo seam, so one decline reads as one event.
+  Every decline exits 2.
 - **Paging** is `less -RF` through a fixed trusted path -- never `$PAGER`
   or user config, since the pager sits between reviewed bytes and eyes.
   `-F` means one-screen content prints inline and never takes over the
