@@ -2668,8 +2668,8 @@ say "S8i: the pre-sudo elevation display and its gate"
 # ignorable put on screen before sudo is asked for anything.
 #
 # THE COMMAND LINE IS THE ASSERTION THAT MATTERS. The prose header over it is
-# gone (the argv already opens with `sudo` and the gate already says "as root
-# (sudo)" -- three statements of one fact), but on a host without sudowhat
+# gone (the argv already opens with `sudo` and the gate already says "as
+# root" -- three statements of one fact), but on a host without sudowhat
 # nothing root-side reprints the argv before the authentication sheet, so the
 # line itself is the only pre-auth disclosure there is. Its disappearance
 # would be a silent loss, which is why every path below asserts BOTH halves:

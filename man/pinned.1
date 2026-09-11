@@ -386,7 +386,7 @@ The no-op still costs the sudo prompt: the pre-sudo side validates the
 arguments and never reads root-owned slot state.
 .IP
 The pre-sudo gate reads
-.RB \(dq "next: declare the release name as root (sudo)" \(dq
+.RB \(dq "next: declare the release name as root" \(dq
 (for
 .BR \-\-no\-release :
 .RB \(dq "clear the declaration" \(dq);
@@ -405,7 +405,7 @@ Multiple
 .B \-\-file
 arguments share one authentication.
 The pre-sudo handoff counts the files named on the command line
-.RB ( "next: review 2 files as root (sudo)" );
+.RB ( "next: review 2 files as root" );
 .B \-\-yes
 skips that gate and no other, so each file is still displayed and
 confirmed as root.
@@ -485,7 +485,7 @@ If it reappears,
 .B verify
 refuses until it is re-approved.
 The pre-sudo gate reads
-.RB \(dq "next: tombstone the record as root (sudo)" \(dq;
+.RB \(dq "next: tombstone the record as root" \(dq;
 .B \-\-yes
 skips it and leaves the root-side confirmation untouched.
 .TP
@@ -539,7 +539,7 @@ the repair is a review (see
 and exit 17 under EXIT STATUS).
 .IP
 The pre-sudo gate reads
-.RB \(dq "next: re-key the record as root (sudo)" \(dq;
+.RB \(dq "next: re-key the record as root" \(dq;
 .B \-\-yes
 skips it and leaves the root-side confirmation untouched.
 .SS Verification and serving
@@ -589,7 +589,7 @@ A bare public key needs
 .B \-\-repo
 targets the per-repo override.
 The pre-sudo gate reads
-.RB \(dq "next: record the key as root (sudo)" \(dq;
+.RB \(dq "next: record the key as root" \(dq;
 .B \-\-yes
 skips it and leaves the fingerprint confirmation, which runs as root,
 untouched.
@@ -598,7 +598,7 @@ untouched.
 (sudo) Remove that key's entries (key compromise must not be the
 hand-edited path).
 Its gate reads
-.RB \(dq "next: remove the key as root (sudo)" \(dq,
+.RB \(dq "next: remove the key as root" \(dq,
 and
 .B \-\-yes
 skips that gate only.
@@ -615,7 +615,7 @@ may then declare ignored.
 scopes the grant to that directory's subtree; omitted means
 everywhere.
 The pre-sudo gate reads
-.RB \(dq "next: record the grant as root (sudo)" \(dq;
+.RB \(dq "next: record the grant as root" \(dq;
 .B \-\-yes
 skips it and leaves the root-side confirmation untouched.
 .TP
@@ -623,7 +623,7 @@ skips it and leaves the root-side confirmation untouched.
 (sudo) Withdraw exactly that grant (same key, same scope).
 Slots recording it fall back to byte-exact.
 Its gate reads
-.RB \(dq "next: withdraw the grant as root (sudo)" \(dq,
+.RB \(dq "next: withdraw the grant as root" \(dq,
 and
 .B \-\-yes
 skips that gate only.
@@ -739,7 +739,7 @@ three satisfied is a no-op that exits 0.
 An unprivileged preview names the checkout, the input, the flake and
 the ceremony before the sudo prompt, and closes with the pre-sudo
 handoff: the gate promises the approval and the flake edit
-.RB ( "next: approve " \fIname\fP " + edit the flake as root (sudo)" ),
+.RB ( "next: approve " \fIname\fP " + edit the flake as root" ),
 or the edit alone when the checkout is already at a pin.
 .B \-\-yes
 skips that gate; the input block is still shown and confirmed as root
