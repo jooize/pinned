@@ -892,6 +892,10 @@ is one: with nothing to approve, upgrade exits there \(em before any
 authentication \(em pointing at
 .BR "pinned deploy" ,
 which is what rebuilds from the pins already recorded.
+An input whose approved rev the flake does not carry yet is a highlighted
+.B deploy:
+row, never a quiet one, since the next deploy moves it; with nothing to
+review, the plan then says how many such revs are waiting.
 With work to do, a gate naming the round is the last line before
 .BR sudo (8);
 .B \-\-yes

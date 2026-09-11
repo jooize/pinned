@@ -184,9 +184,14 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       root-side rule and a user-owned path
                                       is refused before any ceremony runs;
                                       the plan lists every input, one row
-                                      each, and highlights only the ones
-                                      a ceremony will cover -- the rest
-                                      stay visible but quiet (at pin, no
+                                      each, and highlights the ones a
+                                      ceremony will cover and, as
+                                      `deploy:`, any whose approved rev
+                                      the flake does not carry yet (with
+                                      nothing to review, upgrade then
+                                      points at `pinned deploy` to
+                                      deploy them) -- the rest stay
+                                      visible but quiet (at pin, no
                                       rev=, no slot, no checkout); a
                                       stale repo with a newer signed
                                       release an installed key verifies

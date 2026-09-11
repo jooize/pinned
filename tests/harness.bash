@@ -1374,15 +1374,23 @@ y
   assert_contains "$FIX/flake.nix" "rev=$A_PIN" "the flake file was not rewritten"
 
   # Nothing stale: the second round has no ceremonies to offer -- and says
-  # so under a list that still holds every input.
+  # so under a list that still holds every input. But the deploy above
+  # stopped at its gate, so the flake still has A's OLD rev: A's checkout
+  # is at its pin and the flake is not, which the next deploy changes. That
+  # row must not be a quiet "at pin:" (it once was, and read as "nothing
+  # happens" over a round that moves a rev).
   ANS=""
   run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
   assert_exit "$RC" 0 "an up-to-date upgrade dry run exits 0"
   assert_contains "$OUT" "nothing to approve" "no stale inputs reported"
-  assert_contains "$OUT" "every pinned input is at its approved rev" \
-    "an all-quiet plan keeps the at-their-pins wording"
-  assert_row "$OUT" "at pin:" "$REPO_A" "the approved repo is now a quiet row"
-  assert_row "$OUT" "at pin:" "$REPO_B" "and so is the one that never moved"
+  assert_contains "$OUT" "nothing to approve -- 1 approved rev not yet in the flake" \
+    "the tail counts the approval the flake does not carry"
+  assert_missing "$OUT" "every pinned input is at its approved rev" \
+    "and does not claim nothing is left to do"
+  assert_row "$OUT" "deploy:" "$REPO_A" "the approved repo the flake lags is a deploy row"
+  assert_contains "$OUT" "(approved $(bgit "$REPO_A" rev-parse 'HEAD^{commit}' | cut -c1-10); the flake still has ${A_PIN:0:10})" \
+    "naming the approved rev and the one the flake still has"
+  assert_row "$OUT" "at pin:" "$REPO_B" "the one that never moved stays quiet"
   assert_no_row "$OUT" "review:" "$REPO_A" "with nothing highlighted for approval"
 
   # A tag-declared slot is never plain-approved: it is listed for manual
@@ -1498,7 +1506,11 @@ y
 
   # The round done, the forward repo is a quiet at-pin row BESIDE the two
   # refused ones -- and a plan with nothing to approve but something refused
-  # must not claim every input is at its pin.
+  # must not claim every input is at its pin. The flake is brought up to the
+  # new pin first (what the deploy the gate stopped would have done), so
+  # this case stays about refused rows; flake lag has its own cases.
+  FW_NEW="$(bgit "$REPO_FW" rev-parse 'HEAD^{commit}')"
+  sed -i.bak "s/rev=$FW_PIN/rev=$FW_NEW/" "$FIX/flake3.nix"
   ANS=""
   run_pinned upgrade --flake "$FIX/flake3.nix" --dry-run
   assert_exit "$RC" 0 "the follow-up plan exits 0"
@@ -2404,6 +2416,42 @@ EOF
   run_preview upgrade --flake "$FIX/flake-pv-quiet.nix" --dry-run
   assert_exit "$RC" 0 "--dry-run exits before sudo as well"
   assert_contains "$OUT" "To rebuild anyway:" "with the same hint"
+
+  # Nothing to review, but the flake lags an approval: still no ceremony and
+  # no authentication, but the hint is not "anyway" -- deploying is exactly
+  # what is left to do, and the row says which rev it moves. The lagging rev
+  # is made up: the fixture repos' first commits are byte-identical, so any
+  # real sibling rev would equal the pin. The plan only compares strings,
+  # and this round never reaches nix.
+  LAG_REV="0123456789abcdef0123456789abcdef01234567"
+  cat > "$FIX/flake-pv-lag.nix" <<EOF
+{
+  inputs.pv-pin.url = "git+file://$PV_PIN?rev=$LAG_REV";
+}
+EOF
+  ANS=""
+  run_preview upgrade --flake "$FIX/flake-pv-lag.nix"
+  assert_exit "$RC" 0 "a lagging flake with nothing to review exits 0 without sudo"
+  assert_row "$OUT" "deploy:" "$PV_PIN" "the lagging input is a deploy row"
+  assert_contains "$OUT" "(approved ${PV_PIN_REV:0:10}; the flake still has ${LAG_REV:0:10})" \
+    "naming both revs"
+  assert_contains "$OUT" "To deploy them:" "the hint says deploying is the point"
+  assert_missing "$OUT" "To rebuild anyway:" "not a rebuild-anyway fallback"
+  assert_missing "$OUT" "Enter runs the line above" "and no gate is offered"
+
+  # A row with a review AND a lagging flake: skipping the review still
+  # deploys the old approval, which the row says under itself.
+  cat > "$FIX/flake-pv-lag-fwd.nix" <<EOF
+{
+  inputs.pv-stale1.url = "git+file://$PV_S1?rev=$LAG_REV";
+}
+EOF
+  ANS=""
+  run_pinned upgrade --flake "$FIX/flake-pv-lag-fwd.nix" --dry-run
+  assert_exit "$RC" 0 "a lagging forward input plans cleanly"
+  assert_row "$OUT" "review:" "$PV_S1" "the forward input is still a review row"
+  assert_contains "$OUT" "the flake still has ${LAG_REV:0:10}; deploy moves it to the approved ${PV_S1_REV:0:10} even without a review" \
+    "and says what deploy does if the review is skipped"
 
   # One stale input: the gate counts the round, the disclaimer stays, and an
   # Enter reaches the elevation.

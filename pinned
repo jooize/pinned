@@ -3030,6 +3030,7 @@ scan_flake_inputs() { # <flakefile> [tier-user]
   # `repo` is sgit's contract: it builds `git -C "$repo"` from a variable of
   # that name in the caller's scope, so the loop sets it for each input.
   local flake="$1" tu="${2:-$(id -un)}" url p r slot approved head tag st repo=""
+  local lag_from lag_to
   grep -oE 'git\+file:///[^"]+' "$flake" | while IFS= read -r url; do
     p="${url#git+file://}"; p="${p%%\?*}"
     repo="$p"
@@ -3076,7 +3077,15 @@ scan_flake_inputs() { # <flakefile> [tier-user]
         st="$(ancestry_class "$p" "$approved" "$head")"
       fi
     fi
-    printf '%s|%s|%s\n' "$p" "$tag" "$st"
+    # Flake lag, orthogonal to the checkout state: an approved rev the flake
+    # does not carry yet is a change the next deploy makes, whatever the
+    # checkout says. Both revs travel so the plan can name them; empty when
+    # the flake already has the pin (or there is no pin to compare).
+    lag_from="" lag_to=""
+    if [ -n "$approved" ] && [ -n "$r" ] && [ "$r" != "$approved" ]; then
+      lag_from="$r" lag_to="$approved"
+    fi
+    printf '%s|%s|%s|%s|%s\n' "$p" "$tag" "$st" "$lag_from" "$lag_to"
   done || true
 }
 
@@ -3291,17 +3300,21 @@ upgrade_route() {
 # Sets plan_reviews in the CALLER's scope (the upgrade_route / inspect_slot
 # convention): how many rows the plan labelled `review:`, i.e. how many
 # ceremonies a root side would run. Callers that only render ignore it.
+# Sets plan_syncs the same way: how many inputs carry an approved rev the
+# flake does not have yet, i.e. how many revs the next deploy moves even
+# with no ceremony at all. A quiet "at pin:" row over such an input would
+# say nothing happens where something does, so it is `deploy:` instead.
 print_upgrade_plan() {
   local p tag st tu="${2:-$(id -un)}" flake="${3:-}" upg_route upg_info
-  local r_p r_lbl r_lc r_pc r_det r_ex
+  local r_p r_lbl r_lc r_pc r_det r_ex lag_from lag_to syncs=0
   local n i w=0 act=0 quiet=0 lbl lc pc det ex pad t t1 tj lag nrc nt tn
-  plan_reviews=0
+  plan_reviews=0 plan_syncs=0
   if [ -z "$1" ]; then
     printf '%snothing to approve -- every pinned input is at its approved rev%s\n' "$C_DIM" "$C_OFF"
     return 0
   fi
   r_p=(); r_lbl=(); r_lc=(); r_pc=(); r_det=(); r_ex=()
-  while IFS='|' read -r p tag st; do
+  while IFS='|' read -r p tag st lag_from lag_to; do
     [ -n "$p" ] || continue
     # The quiet default: dim label, dim path, dim parenthetical. Only the
     # rows below that raise their voice say so.
@@ -3374,7 +3387,15 @@ EOF
             det="(verified signed tags disagree -- review --signed-tag by hand)" ;;
         esac ;;
       equal)
-        lbl="at pin:"; quiet=$((quiet + 1)) ;;
+        if [ -n "$lag_to" ]; then
+          # Nothing to review, but not nothing to do: the checkout is at its
+          # pin and the flake is not. Highlighted like review: -- it is a
+          # change the round makes -- and never counted quiet.
+          lbl="deploy:" lc="$C_B" pc="$C_CYN$C_B"
+          det="(approved ${lag_to:0:10}; the flake still has ${lag_from:0:10})"
+        else
+          lbl="at pin:"; quiet=$((quiet + 1))
+        fi ;;
       # norev and noslot count as quiet too: the healthy summary tail says
       # "every PINNED input", and an input without a pin is not one -- its
       # row right above already tells the reader what it is.
@@ -3412,13 +3433,22 @@ EOF
         lbl="?:" lc="$C_YEL" pc=""
         det="(unrecognized state $st)" ;;
     esac
+    # Any other state can lag too. A skipped or declined review still
+    # leaves the old approval in force, and deploy moves the flake to it --
+    # the case a reader least expects, so it is said on the row itself.
+    if [ -n "$lag_to" ]; then
+      syncs=$((syncs + 1))
+      if [ "$st" != equal ] && [ -z "$ex" ]; then
+        ex="the flake still has ${lag_from:0:10}; deploy moves it to the approved ${lag_to:0:10} even without a review"
+      fi
+    fi
     [ "${#lbl}" -gt "$w" ] && w="${#lbl}"
     r_p+=("$p"); r_lbl+=("$lbl"); r_lc+=("$lc"); r_pc+=("$pc")
     r_det+=("$det"); r_ex+=("$ex")
   done <<EOF
 $1
 EOF
-  plan_reviews="$act"
+  plan_reviews="$act" plan_syncs="$syncs"
   n="${#r_p[@]}"
   [ "$n" -gt 0 ] || return 0
   if [ -n "$flake" ]; then
@@ -3446,8 +3476,12 @@ EOF
   if [ "$act" -eq 0 ]; then
     # Same opening either way -- it is what a reader (and the harness) looks
     # for -- but the tail must not claim every input is at its pin when the
-    # rows above say a checkout is refused or skipped.
-    if [ "$quiet" -eq "$n" ]; then
+    # rows above say a checkout is refused or skipped -- nor that nothing
+    # happens when the flake is behind an approval.
+    if [ "$syncs" -gt 0 ]; then
+      printf '%snothing to approve -- %s approved rev%s not yet in the flake%s\n' \
+        "$C_DIM" "$syncs" "$(plural_s "$syncs")" "$C_OFF"
+    elif [ "$quiet" -eq "$n" ]; then
       printf '%snothing to approve -- every pinned input is at its approved rev%s\n' "$C_DIM" "$C_OFF"
     else
       printf '%snothing to approve -- no input above is a forward checkout upgrade may cover%s\n' \
@@ -3585,8 +3619,14 @@ case "$elev_action" in
         # plan is untrusted orientation, and letting it decline to escalate
         # is the safe direction (letting it skip a ceremony would not be).
         # The same under --yes and --dry-run: a rebuild is deploy's job.
+        # "anyway" only when deploy would change no rev: with approved revs
+        # still outside the flake, deploying is the point, not a fallback.
         if [ "$upg_reviews" -eq 0 ]; then
-          printf '\n%sTo rebuild anyway:%s\n' "$C_B" "$C_OFF"
+          if [ "${plan_syncs:-0}" -gt 0 ]; then
+            printf '\n%sTo deploy them:%s\n' "$C_B" "$C_OFF"
+          else
+            printf '\n%sTo rebuild anyway:%s\n' "$C_B" "$C_OFF"
+          fi
           printf '  pinned deploy\n'
           exit 0
         fi
@@ -7685,7 +7725,7 @@ do_upgrade() {
   print_upgrade_plan "$scan" "$tu" "$FLAKE"
   echo
   if [ -n "$scan" ]; then
-    while IFS='|' read -r p tag st; do
+    while IFS='|' read -r p tag st _; do
       # The ancestry floor: only a forward checkout joins a ceremony. Every
       # other state is a row the plan already rendered -- refused, skipped,
       # or simply quiet -- with whatever by-hand remediation it has.
