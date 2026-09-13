@@ -731,8 +731,9 @@ one.
   before a review. Enter, `y` and `yes` continue; `n` declines every gate,
   because a gate has exactly two outcomes and one decline key is enough;
   end of input declines too, because a closed tty is not consent. Anything
-  else is not an answer at all — the gate names it back in yellow and asks
-  again, so a typo or a stray paste can never pass for a yes. A decline is
+  else is not an answer at all — the gate asks again, in yellow and without
+  echoing what was typed, so a typo or a stray paste can never pass for a
+  yes and a pasted escape sequence can never rewrite the gate. A decline is
   quiet and yellow, `<verb>; <what stays unchanged>`, and the verb says
   what was declined: `skipped` a review, before looking; `stopped` a run
   gate; `aborted` a `? [y/N]`, after looking. The state half is the same

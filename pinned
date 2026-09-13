@@ -248,10 +248,14 @@ if [ -t 1 ]; then
   # Reserved for repo identity: cyan is the workhorse accent, so the repo
   # under review gets a color nothing else uses.
   C_MAG=$'\033[35m'
-  # Option flags inside a rendered command line. Shared role with sudowhat's
-  # SGR_FLAG so one command line reads the same whichever tool drew it.
-  # BOLD is not a style choice: plain blue measures ~3.6:1 against a dark
-  # terminal ground, under the 4.5:1 floor, and the bright variant clears it.
+  # What the human may hand the program: option flags inside a rendered
+  # command line, and the keys a gate names for them to type (`Enter`, `n`,
+  # the `y`/`N` of a prompt). Shared role with sudowhat's SGR_FLAG so one
+  # command line reads the same whichever tool drew it; the two never share a
+  # line, so one colour serves both. BOLD is not a style choice: plain blue
+  # measures ~3.6:1 against a dark terminal ground, under the 4.5:1 floor,
+  # and the bright variant clears it. Carries its own 1, so a site returning
+  # to plain bold after a key must reset first ($C_OFF$C_B, never $C_B).
   C_BLU=$'\033[1;34m'
   DIFF_COLOR=always
 else
@@ -663,10 +667,12 @@ gate_answer() { # <rendered gate line> <what Enter does> <stops|skips>
     # notice, because they just answered wrong. Not red -- a correction is
     # not a refusal, and nothing has failed.
     #
-    # Truncated: what is echoed back is untrusted input, and the line has to
-    # stay one line next to the gate it is about to re-print.
-    printf '%snot an answer: "%s"; Enter or y %s, n %s%s\n' \
-      "$C_YEL" "${answer:0:20}" "$verb" "$declines" "$C_OFF"
+    # What was typed is NEVER echoed back: the terminal already showed it as
+    # it was typed, so an echo adds nothing, and a pasted control sequence
+    # printed raw can rewrite the very line the human is about to answer.
+    # The keys stay yellow here -- one role per line, and attention wins.
+    printf '%snot an answer; Enter or y %s, n %s%s\n' \
+      "$C_YEL" "$verb" "$declines" "$C_OFF"
   done
 }
 
@@ -2780,7 +2786,7 @@ do_setup() {
   if [ "$assume_yes" -ne 1 ]; then
     setup_plan "$inv"
     local answer
-    printf '%sproceed? [y/N]%s ' "$C_B" "$C_OFF"
+    printf '%sproceed? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     drain_tty
     read -r answer </dev/tty
     case "$answer" in
@@ -3023,8 +3029,15 @@ elevation_gate() { # <what-the-root-side-does> <what-stays-unchanged> argv...
       "$C2_RED" "$C2_OFF" >&2
     exit 2
   fi
-  printf -v line '%snext: %s as root; Enter runs the line above%s %s· n stops%s ' \
-    "$C_B" "$what" "$C_OFF" "$C_DIM" "$C_OFF"
+  # Bold carries only the decision (through the `;`); the mechanics that
+  # follow are plain, so the weight has something to contrast against. Every
+  # key the human types is bold blue -- the same role an option flag wears in
+  # a rendered command line, because both are things handed to the program.
+  # C_OFF clears dim as well as the key colour, so the dim tail is re-opened
+  # after each key.
+  printf -v line '%snext: %s as root;%s %sEnter%s runs the line above %s· %s%sn%s%s stops%s ' \
+    "$C_B" "$what" "$C_OFF" "$C_BLU" "$C_OFF" \
+    "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
   if ! gate_answer "$line" "runs the line above" stops; then
     printf '%sstopped; %s%s\n' "$C_YEL" "$stays" "$C_OFF"
     exit 2
@@ -3724,7 +3737,7 @@ case "$elev_action" in
         for a in "$@"; do [ "$a" = "--yes" ] && want_yes=1; done
         if [ "$want_yes" -eq 0 ]; then
           setup_plan "$(id -un)"
-          printf '%sproceed? [y/N]%s ' "$C_B" "$C_OFF"
+          printf '%sproceed? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
           drain_tty
           read -r answer </dev/tty
           case "$answer" in
@@ -4046,7 +4059,7 @@ case "$elev_action" in
           printf '    less %s-unverified\n' "$INSTALL_TARGET"
           printf '    sudo mv %s-unverified %s\n' "$INSTALL_TARGET" "$INSTALL_TARGET"
           printf '    sudo chmod 755 %s\n' "$INSTALL_TARGET"
-          printf '%scontinue? [y/N]%s ' "$C_B" "$C_OFF"
+          printf '%scontinue? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
           drain_tty
           read -r answer </dev/tty
           case "$answer" in
@@ -4193,7 +4206,7 @@ case "$elev_action" in
             elev="$(readlink -f "$0")"
             printf '%swarning: pinned is not installed at %s; about to run the\nuser-writable checkout copy as root (safe only right after a hand-read).%s\n' \
               "$C_YEL" "$INSTALL_TARGET" "$C_OFF"
-            printf '%scontinue? [y/N]%s ' "$C_B" "$C_OFF"
+            printf '%scontinue? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
             drain_tty
             read -r answer </dev/tty
             case "$answer" in
@@ -4631,10 +4644,11 @@ do_approve() {
         # Approving without the diff stays impossible.
         local n_range gate_line
         n_range="$(sgit rev-list --count "${old_hash}..${hash}")"
-        printf -v gate_line '%snext: review %s%s%s %s%.10s..%.10s%s (%s commit%s); Enter opens the diff%s %s· n skips%s ' \
+        printf -v gate_line '%snext: review %s%s%s %s%.10s..%.10s%s (%s commit%s);%s %sEnter%s opens the diff %s· %s%sn%s%s skips%s ' \
           "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
           "$C_CYN" "$old_hash" "$hash" "$C_OFF$C_B" \
-          "$n_range" "$(plural_s "$n_range")" "$C_OFF" "$C_DIM" "$C_OFF"
+          "$n_range" "$(plural_s "$n_range")" "$C_OFF" "$C_BLU" "$C_OFF" \
+          "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
         if ! gate_answer "$gate_line" "opens the diff" skips; then
           printf '%sskipped; pin unchanged%s\n' "$C_YEL" "$C_OFF"
           log_action approve "$repo" "$hash" skip
@@ -4659,9 +4673,10 @@ do_approve() {
         # Same gate as the whole-delta pager (skip included); no range
         # exists yet.
         local gate_line
-        printf -v gate_line '%snext: review %s%s%s full tree at %s%.10s%s; Enter opens the diff%s %s· n skips%s ' \
+        printf -v gate_line '%snext: review %s%s%s full tree at %s%.10s%s;%s %sEnter%s opens the diff %s· %s%sn%s%s skips%s ' \
           "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
-          "$C_CYN" "$hash" "$C_OFF$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
+          "$C_CYN" "$hash" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
+          "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
         if ! gate_answer "$gate_line" "opens the diff" skips; then
           printf '%sskipped; pin unchanged%s\n' "$C_YEL" "$C_OFF"
           log_action approve "$repo" "$hash" skip
@@ -4677,8 +4692,9 @@ do_approve() {
     echo
 
     local answer
-    printf '%sapprove %s%s%s %s%s%s? [y/N]%s ' "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
-      "$C_CYN" "$hash" "$C_OFF$C_B" "$C_OFF"
+    printf '%sapprove %s%s%s %s%s%s? [%sy%s/%sN%s]%s ' "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
+      "$C_CYN" "$hash" "$C_OFF$C_B" \
+      "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     drain_tty
     read -r answer </dev/tty
     case "$answer" in
@@ -4815,9 +4831,10 @@ EOF
     # `n` here stops the walk, exactly as a decline at the confirm does:
     # commits advance linearly, so there is no "skip this one and review
     # the next" -- the pin can never move past an unreviewed commit.
-    printf -v gate_line '%snext: review %s%s%s %s%.10s..%.10s%s (1 commit); Enter opens the diff%s %s· n skips%s ' \
+    printf -v gate_line '%snext: review %s%s%s %s%.10s..%.10s%s (1 commit);%s %sEnter%s opens the diff %s· %s%sn%s%s skips%s ' \
       "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
-      "$C_CYN" "$prev" "$c" "$C_OFF$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
+      "$C_CYN" "$prev" "$c" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
+      "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
     if ! gate_answer "$gate_line" "opens the diff" skips; then
       printf '%sskipped; the walk stops here%s\n' "$C_YEL" "$C_OFF"
       log_action approve "$repo" "$c" skip
@@ -4829,8 +4846,9 @@ EOF
     diff_out="$(sgit_diff "$prev" "$c")"
     printf '%s\n' "$diff_out" | page || true
     echo
-    printf '%sapprove %s%s%s %s%s%s? [y/N]%s ' "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
-      "$C_CYN" "$c" "$C_OFF$C_B" "$C_OFF"
+    printf '%sapprove %s%s%s %s%s%s? [%sy%s/%sN%s]%s ' "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
+      "$C_CYN" "$c" "$C_OFF$C_B" \
+      "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     drain_tty
     read -r answer </dev/tty
     case "$answer" in
@@ -5225,9 +5243,10 @@ EOF
       # is always "+A -D" (diff_shape prints both counts, either may be 0), so
       # the first word is the add count and the rest the delete count.
       gate_disp="${C_GRN}${gate_shape%% *}${C_OFF} ${C_RED}${gate_shape#* }${C_OFF}${C_B}"
-      printf -v gate_line '%snext: review %s%s%s %s; Enter opens the diff%s %s· n skips%s ' \
+      printf -v gate_line '%snext: review %s%s%s %s;%s %sEnter%s opens the diff %s· %s%sn%s%s skips%s ' \
         "$C_B" "$C_B$C_MAG" "${path##*/}" "$C_OFF$C_B" \
-        "$gate_disp" "$C_OFF" "$C_DIM" "$C_OFF"
+        "$gate_disp" "$C_OFF" "$C_BLU" "$C_OFF" \
+        "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
       if ! gate_answer "$gate_line" "opens the diff" skips; then
         printf '%sskipped; record unchanged%s\n' "$C_YEL" "$C_OFF"
         log_action approve-file "$path" "$new_digest" skip
@@ -5253,9 +5272,10 @@ EOF
       [ "$(tail -c1 -- "$fro" | wc -l)" -eq 1 ] && nl=1
       n_lines="$(LC_ALL=C wc -l <"$fro" | tr -d ' ')"
       [ -n "$nl" ] || [ ! -s "$fro" ] || n_lines=$((n_lines + 1))
-      printf -v gate_line '%snext: review %s%s%s full content %s%s line%s%s; Enter opens it%s %s· n skips%s ' \
+      printf -v gate_line '%snext: review %s%s%s full content %s%s line%s%s;%s %sEnter%s opens it %s· %s%sn%s%s skips%s ' \
         "$C_B" "$C_B$C_MAG" "${path##*/}" "$C_OFF$C_B" \
-        "$C_CYN" "$n_lines" "$(plural_s "$n_lines")" "$C_OFF$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
+        "$C_CYN" "$n_lines" "$(plural_s "$n_lines")" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
+        "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
       if ! gate_answer "$gate_line" "opens it" skips; then
         printf '%sskipped; record unchanged%s\n' "$C_YEL" "$C_OFF"
         log_action approve-file "$path" "$new_digest" skip
@@ -5276,7 +5296,8 @@ EOF
     fi
     echo
 
-    printf '%sapprove %s%s%s? [y/N]%s ' "$C_B" "$C_B$C_MAG" "$path" "$C_OFF$C_B" "$C_OFF"
+    printf '%sapprove %s%s%s? [%sy%s/%sN%s]%s ' "$C_B" "$C_B$C_MAG" "$path" "$C_OFF$C_B" \
+      "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     drain_tty
     read -r answer </dev/tty
     case "$answer" in
@@ -5382,8 +5403,9 @@ do_tombstone() {
   esac
   printf '%spath:%s       %s %s(gone)%s\n' "$C_B" "$C_OFF" "$path" "$C_DIM" "$C_OFF"
   printf '%sslot:%s       %s state: %s\n' "$C_B" "$C_OFF" "$slot" "$slot_state"
-  printf '%stombstone %s%s%s? verify will then refuse it until re-approved [y/N]%s ' \
-    "$C_B" "$C_CYN" "$path" "$C_OFF$C_B" "$C_OFF"
+  printf '%stombstone %s%s%s? verify will then refuse it until re-approved [%sy%s/%sN%s]%s ' \
+    "$C_B" "$C_CYN" "$path" "$C_OFF$C_B" \
+    "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
   drain_tty
   read -r answer </dev/tty
   case "$answer" in
@@ -5652,8 +5674,9 @@ do_rekey() {
   printf 'path it answers to does. The old path above is tombstoned by this move, so\n'
   printf 'anything reappearing there refuses until it is approved on its own.%s\n' "$C_OFF"
   echo
-  printf '%srekey %s%s%s -> %s%s%s? [y/N]%s ' \
-    "$C_B" "$C_CYN" "$old" "$C_OFF$C_B" "$C_CYN" "$new" "$C_OFF$C_B" "$C_OFF"
+  printf '%srekey %s%s%s -> %s%s%s? [%sy%s/%sN%s]%s ' \
+    "$C_B" "$C_CYN" "$old" "$C_OFF$C_B" "$C_CYN" "$new" "$C_OFF$C_B" \
+    "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
   drain_tty
   read -r answer </dev/tty
   case "$answer" in
@@ -5832,7 +5855,7 @@ do_declare() {
     printf "%sdeploy:%s     %sthe input's ref= stops being managed; it keeps whatever it says now%s\n" \
       "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
     echo
-    printf '%sclear this declaration? [y/N]%s ' "$C_B" "$C_OFF"
+    printf '%sclear this declaration? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
   else
     printf '%srelease:%s    %s -> %s%.10s%s  %s✓ names the pinned rev%s\n' \
       "$C_B" "$C_OFF" "$name" "$C_CYN" "$t_hash" "$C_OFF" "$C_GRN" "$C_OFF"
@@ -5851,7 +5874,7 @@ do_declare() {
       "$C_DIM" "$C_OFF"
     printf '            %slive tag ever stops naming the pinned rev%s\n' "$C_DIM" "$C_OFF"
     echo
-    printf '%sdeclare this release name? [y/N]%s ' "$C_B" "$C_OFF"
+    printf '%sdeclare this release name? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
   fi
   drain_tty
   read -r answer </dev/tty
@@ -7084,7 +7107,7 @@ EOF
     printf '%sentry:%s       %s\n' "$C_B" "$C_OFF" "$entry"
     printf '%sfingerprint:%s %s\n' "$C_B" "$C_OFF" "$fp"
     printf '%s(obtain the key out of band -- printed card, password manager, existing\ntrusted machine -- never from the repo it will vouch for.)%s\n' "$C_DIM" "$C_OFF"
-    printf '%strust this key to vouch? [y/N]%s ' "$C_B" "$C_OFF"
+    printf '%strust this key to vouch? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     drain_tty
     read -r answer </dev/tty
     case "$answer" in
@@ -7109,7 +7132,7 @@ EOF
     printf '%sremoving:%s\n' "$C_B" "$C_OFF"
     grep -F "$keyblob" "$target" | sed 's/^/  /'
     printf '%sfingerprint:%s %s\n' "$C_B" "$C_OFF" "$fp"
-    printf "%sremove this key's entries? [y/N]%s " "$C_B" "$C_OFF"
+    printf "%sremove this key's entries? [%sy%s/%sN%s]%s " "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     drain_tty
     read -r answer </dev/tty
     case "$answer" in
@@ -7276,9 +7299,9 @@ do_ignorable() {
     printf '            %sverdict (11) at the very next verify -- no re-ceremony needed%s\n' "$C_DIM" "$C_OFF"
   fi
   if [ "$sub" = add ]; then
-    printf '%sgrant this key? [y/N]%s ' "$C_B" "$C_OFF"
+    printf '%sgrant this key? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
   else
-    printf '%swithdraw this grant? [y/N]%s ' "$C_B" "$C_OFF"
+    printf '%swithdraw this grant? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
   fi
   drain_tty
   read -r answer </dev/tty
@@ -7690,7 +7713,7 @@ EOF
         "$C2_RED" "$C2_OFF" >&2
       exit 2
     fi
-    printf '%srebuild with the lines above? [y/N]%s ' "$C_B" "$C_OFF"
+    printf '%srebuild with the lines above? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     drain_tty
     read -r answer </dev/tty
     case "$answer" in
@@ -8117,8 +8140,9 @@ do_add() {
   printf 'interrupted add leaves an input that cannot be fetched, never one that floats%s\n\n' "$C_OFF"
 
   local answer
-  printf '%sadd this input to %s%s%s? [y/N]%s ' \
-    "$C_B" "$C_CYN" "$FLAKE" "$C_OFF$C_B" "$C_OFF"
+  printf '%sadd this input to %s%s%s? [%sy%s/%sN%s]%s ' \
+    "$C_B" "$C_CYN" "$FLAKE" "$C_OFF$C_B" \
+    "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
   drain_tty
   read -r answer </dev/tty
   case "$answer" in

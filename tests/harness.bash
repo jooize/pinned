@@ -735,10 +735,11 @@ assert_contains "$OUT" "skipped; record unchanged" "EOF takes the skip's own lin
 assert_eq "$(count_state "$EOFG_SLOT")" 0 "EOF records nothing"
 assert_missing "$OUT" "exactly the bytes being approved" "the display never opened"
 
-# Anything that is not an answer is NOT ACTED ON: the gate names it back and
-# asks again, so a typo can never open (or skip) anything. The echo is
-# truncated to 20 characters -- it is untrusted input printed next to the
-# gate it is about to reprint, and it has to stay one line.
+# Anything that is not an answer is NOT ACTED ON: the gate asks again, so a
+# typo can never open (or skip) anything. What was typed is NOT echoed back --
+# the terminal already showed it, and a pasted control sequence printed raw
+# could rewrite the very gate line the human is about to answer -- so the
+# long answer below must appear NOWHERE in the output.
 #
 # `s` is in that set now: no letter means "skip" any more, so a bare `s`
 # is garbage like any other and the gate asks again rather than declining.
@@ -752,12 +753,12 @@ y
 '
 run_pinned review --file "$SUB/a/gate-retry.txt"
 assert_exit "$RC" 0 "a gate that was re-asked still records once answered"
-assert_contains "$OUT" 'not an answer: "x"; Enter or y opens it, n skips' \
-  "the re-ask names the input back and states every valid answer"
-assert_contains "$OUT" 'not an answer: "s"; Enter or y opens it, n skips' \
-  "a bare s is unknown input at a review gate, not a skip"
-assert_contains "$OUT" 'not an answer: "abcdefghijklmnopqrst"; Enter or y opens it, n skips' \
-  "a long answer is echoed truncated to 20 characters"
+assert_contains "$OUT" 'not an answer; Enter or y opens it, n skips' \
+  "the re-ask states every valid answer"
+assert_eq "$(grep -cF 'not an answer; Enter or y opens it, n skips' "$OUT")" 3 \
+  "each of the three unknown answers re-asks, a bare s included"
+assert_missing "$OUT" 'abcdefghijklmnopqrst' \
+  "typed input is never echoed back, so a pasted escape cannot rewrite the gate"
 assert_eq "$(count_state "$RETRYG_SLOT")" 1 "y opens the gate and y records at the confirm"
 
 # --- the gates before each pager --------------------------------------------
@@ -2755,15 +2756,16 @@ if [ "$GIT_OK" -eq 1 ]; then
 
   # Anything else is NOT ACTED ON. This is the case that used to elevate:
   # the old gate matched n and let every other byte fall through into sudo,
-  # so a typo bought an authentication. Now the gate names it back and asks
-  # again, and the answer AFTER it is the one that decides.
+  # so a typo bought an authentication. Now the gate asks again without
+  # echoing what was typed, and the answer AFTER it is the one that decides.
   ANS='zzz
 n
 '
   run_preview review "$EV_STALE"
   assert_exit "$RC" 2 "an unknown answer does not elevate"
-  assert_contains "$OUT" 'not an answer: "zzz"; Enter or y runs the line above, n stops' \
-    "the re-ask names the input back and states every valid answer"
+  assert_contains "$OUT" 'not an answer; Enter or y runs the line above, n stops' \
+    "the re-ask states every valid answer without echoing what was typed"
+  assert_missing "$OUT" 'zzz' "the unknown answer is not echoed back"
   assert_contains "$OUT" "stopped; pin unchanged" "the answer after the re-ask decides"
 
   # End of input stops too: a closed tty is not consent.
