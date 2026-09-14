@@ -1046,7 +1046,11 @@ tier user as root's
 module contributes its lock account
 .IR _<user>\-lock ).
 The list is baked in at build time; a manual install has none and refuses
-such a file.
+such a file, unless the installer edits the
+.B PINNED_ROOT_ONLY_OWNERS=
+line in the copy before
+.BR setup ,
+which digest-pins the edited bytes.
 .PP
 .B cat
 answers:

@@ -845,7 +845,13 @@ for that:
    are therefore as unwritable to the tier user as root's, baked into
    the installed bytes at eval time. It is contributed by the module
    that *creates* such an account -- `locked` adds its lock account
-   `_<user>-lock` -- never typed by hand, and a manual install has none.
+   `_<user>-lock` -- so the nix route never types it by hand. A manual
+   install has none unless you put it there: edit the
+   `PINNED_ROOT_ONLY_OWNERS=` line in your copy (space-separated account
+   names) before `pinned setup`, which installs and digest-pins those
+   bytes, so the edited line is covered like every other constant. An
+   entry names an account you claim nobody can act as; one someone can
+   act as widens what `verify` tolerates.
    nix/module.nix is short: read it.
 
 3. Deploy (gated, builds the approved rev). The store-installed binary

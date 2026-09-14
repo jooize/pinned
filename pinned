@@ -236,9 +236,11 @@ PINNED_CLONES_GROUP=_pinned-clones
 # nix/module.nix from security.pinned.rootOnlyOwners, and the module of
 # whichever tool CREATES such an account is the one that declares it there
 # (locked's module contributes its per-user lock account, _<user>-lock).
-# Nobody types this list by hand. A manual install keeps it empty and refuses
-# a lock-owned file; that is the honest answer, because nothing has told this
-# script that the account is root-only by construction. Never read from the
+# The nix route never types this list by hand. A manual install starts empty
+# and refuses a lock-owned file, which is the honest answer until the
+# installer edits this line before `setup` (the digest then pins the edited
+# bytes): an entry is their claim that nobody can act as that account, the
+# same claim a module makes when it contributes one. Never read from the
 # environment or a file at run time for the same reason PINNED_ROOT is a
 # constant, and one more: an entry aimed at a writable account would WIDEN
 # what verify tolerates. The harness may rewrite this exact line, so keep it
