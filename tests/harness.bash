@@ -888,6 +888,8 @@ run_pinned review --file "$SUB/a/gate/solo.txt" --baseline "$FIX/solo-baseline.t
 assert_exit "$RC" 0 "a baseline-diff ceremony records"
 assert_contains "$OUT" "+1 -0; Enter opens the diff" "the gate states the diff's magnitude"
 assert_contains "$OUT" "diff vs the approved baseline" "and the pager is that diff"
+assert_contains "$OUT" "--- approved: " "the diff header names the baseline side by role"
+assert_contains "$OUT" "+++ candidate: " "and the candidate side by role"
 
 # --- the keys summary above a JSON baseline diff ----------------------------
 # One line naming WHICH keys changed, computed from whole-document

@@ -5259,8 +5259,12 @@ EOF
         # nothing has been promised. label_hunks then names each hunk with the
         # key path its changed lines sit under, read out of the same two
         # frozen buffers by jq's parser (see its comment); a side that does
-        # not parse simply keeps diff's plain "@@" headers.
-        line="$(diff -U1 "$FROZEN_COPY" "$fro" | label_hunks "$FROZEN_COPY" "$fro" || true)"
+        # not parse simply keeps diff's plain "@@" headers. --label names
+        # the two sides by role and by the subject path: both frozen copies
+        # are temp paths that name nothing, and the path is what the header
+        # already showed.
+        line="$(diff -U1 --label "approved: $path" --label "candidate: $path" \
+          "$FROZEN_COPY" "$fro" | label_hunks "$FROZEN_COPY" "$fro" || true)"
         shape="$(printf '%s\n' "$line" | diff_shape)"
         # The gate says the magnitude, so the shape's own "+A/-D lines" tail
         # is re-cut to the gate's spelling rather than counted a second time.
