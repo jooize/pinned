@@ -227,6 +227,24 @@ PINNED_CLONES=/var/db/pinned-clones
 # closed to root-only.
 PINNED_CLONES_GROUP=_pinned-clones
 
+# A space-separated list of accounts that NO user can act as: no shell, no
+# password, no service to reach them through. A file such an account owns is
+# therefore exactly as unwritable to the tier user as a root-owned one, which
+# is the only reason verify's owner invariant admits root at all, so these
+# are admitted on the same ground (see do_verify).
+# EMPTY IN THE SOURCE, always: the list is baked at build time by
+# nix/module.nix from security.pinned.rootOnlyOwners, and the module of
+# whichever tool CREATES such an account is the one that declares it there
+# (locked's module contributes its per-user lock account, _<user>-lock).
+# Nobody types this list by hand. A manual install keeps it empty and refuses
+# a lock-owned file; that is the honest answer, because nothing has told this
+# script that the account is root-only by construction. Never read from the
+# environment or a file at run time for the same reason PINNED_ROOT is a
+# constant, and one more: an entry aimed at a writable account would WIDEN
+# what verify tolerates. The harness may rewrite this exact line, so keep it
+# one line in this shape.
+PINNED_ROOT_ONLY_OWNERS=
+
 # The OPTIONAL machine tier of the ignorable policy. Absent = no machine
 # constraint (the user tier stands alone); the FILE is the interface, so a
 # configuration manager can declare it (nix: environment.etc) without this
@@ -434,6 +452,25 @@ verify_record_file() {
       echo "ERROR: record $f has mode $mode (group/other-writable); refusing" >&2
       return 1 ;;
   esac
+}
+
+# The owner half of the pinned-FILE invariant (the other two above are the
+# record tree's, and demand root outright). Admits the tier user, root, and
+# any account baked into PINNED_ROOT_ONLY_OWNERS -- see that constant for
+# why those three and nothing else. A named predicate rather than an inline
+# test in do_verify: an invariant this load-bearing must be drivable on its
+# own, and through a file it is not -- setting a subject's owner to a third
+# account needs root, which no test harness has.
+owner_admitted() { # <owner-name> <tier-user>
+  local o="$1" tier="$2"
+  case "$o" in "$tier"|root) return 0 ;; esac
+  # Exact word match, never a substring: both the list and the candidate are
+  # space-padded, so `_alice-loc` cannot ride in on `_alice-lock`. Guarded on
+  # both being non-empty, so an empty list (the source default) and an
+  # unreadable owner stay refusals rather than matching " " inside "  ".
+  [ -n "$PINNED_ROOT_ONLY_OWNERS" ] && [ -n "$o" ] || return 1
+  case " $PINNED_ROOT_ONLY_OWNERS " in *" $o "*) return 0 ;; esac
+  return 1
 }
 
 verify_ancestry() {
@@ -6082,12 +6119,25 @@ do_verify() {
   # root-owned file at all -- and root-owned configs are exactly the files a
   # user most wants pinned (e.g. a managed settings floor: root-owned by
   # design as the raceless anchor, yet still worth a content record so a
-  # root-side change re-enters review).
+  # root-side change re-enters review). The root-only owners baked into
+  # PINNED_ROOT_ONLY_OWNERS are admitted for exactly that reason and no
+  # other: nothing a user can act as owns them either, so their files are
+  # as unwritable to the tier user as root's. That list is a compile-time
+  # constant, never the environment and never a run-time file, because a
+  # widening of this invariant must come from the build that also created
+  # the account. The decision itself is owner_admitted, up in the library
+  # half, so it can be driven directly; only the wording of the refusal
+  # lives here, where the path and the tier are in hand.
   if [ -e "$path" ]; then
-    local owner mode
+    local owner mode o
     owner="$(stat_owner "$path")"
-    if [ "${owner%%:*}" != "$tier" ] && [ "${owner%%:*}" != root ]; then
-      echo "REFUSE: $path is owned by ${owner%%:*}, expected $tier (or root)" >&2
+    o="${owner%%:*}"
+    if ! owner_admitted "$o" "$tier"; then
+      if [ -n "$PINNED_ROOT_ONLY_OWNERS" ]; then
+        echo "REFUSE: $path is owned by $o, expected $tier, root, or a root-only owner ($PINNED_ROOT_ONLY_OWNERS)" >&2
+      else
+        echo "REFUSE: $path is owned by $o, expected $tier (or root)" >&2
+      fi
       exit 30
     fi
     mode="$(stat_mode "$path")"

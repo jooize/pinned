@@ -54,6 +54,21 @@ let
       from = "export PATH=/usr/bin:/bin:/usr/sbin:/sbin";
       to = "export PATH=/run/current-system/sw/bin:/usr/bin:/bin:/usr/sbin:/sbin";
     }
+    {
+      # The accounts whose files verify's owner invariant admits alongside
+      # root (see the constant's comment in the script). Baked here rather
+      # than read at run time, so the only thing that can widen the
+      # invariant is the build that also created the account.
+      #
+      # Anchored on the WHOLE line, newlines included: `PINNED_ROOT_ONLY_OWNERS=`
+      # on its own is a prefix of the very line this rewrite produces, so the
+      # hasInfix assertion below would keep passing after a rewrite and
+      # replaceStrings would hit the assignment inside the script's own
+      # comment block just as happily. The surrounding newlines make the
+      # match exactly one line, and only while it is still empty.
+      from = "\nPINNED_ROOT_ONLY_OWNERS=\n";
+      to = "\nPINNED_ROOT_ONLY_OWNERS=${lib.concatStringsSep " " cfg.rootOnlyOwners}\n";
+    }
   ];
   scriptText =
     assert lib.assertMsg (lib.all (a: lib.hasInfix a.from srcText) anchors)
@@ -188,6 +203,26 @@ in
       '';
     };
 
+    rootOnlyOwners = lib.mkOption {
+      type = with lib.types; listOf str;
+      default = [ ];
+      example = lib.literalExpression ''[ "_alice-lock" ]'';
+      description = ''
+        Accounts that no user can act as -- no shell, no password, no
+        service -- whose files therefore pass verify's owner invariant
+        the way root-owned ones do: the tier user cannot rewrite them
+        either. Baked into the installed bytes at eval time, so the
+        sudoers digest covers the list and nothing at run time can widen
+        the invariant.
+
+        Contributed by the module of whichever tool CREATES such an
+        account, never typed by hand: security.locked adds its per-user
+        lock account _<user>-lock here. A machine that declares no such
+        tool keeps the empty default, and pinned refuses a file owned by
+        an account it was never told about.
+      '';
+    };
+
     installPath = lib.mkOption {
       type = lib.types.str;
       default = "/run/current-system/sw/bin/pinned";
@@ -234,6 +269,15 @@ in
         {
           assertion = lib.all validUser cfg.users;
           message = "security.pinned.users: user names must match [A-Za-z_][A-Za-z0-9_-]* (they are spliced into sudoers)";
+        }
+        {
+          # Same shape as a user name, and for a stronger reason: these are
+          # spliced into a script line that the sudoers digest then commits
+          # to, so a name carrying a space would silently split into two
+          # entries and one carrying shell metacharacters would be baked
+          # into the installed bytes verbatim.
+          assertion = lib.all validUser cfg.rootOnlyOwners;
+          message = "security.pinned.rootOnlyOwners: account names must match [A-Za-z_][A-Za-z0-9_-]* (they are spliced into the installed script)";
         }
         {
           # A stray key would otherwise be a silent no-op while its group

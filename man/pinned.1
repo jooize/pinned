@@ -1037,6 +1037,17 @@ l l.
 30	mode/owner violation
 .TE
 .PP
+The owner half of 30 admits the tier user and root, plus any account the
+build named in
+.B security.pinned.rootOnlyOwners
+\(em an account no user can act as, so its files are as unwritable to the
+tier user as root's
+.RB ( locked 's
+module contributes its lock account
+.IR _<user>\-lock ).
+The list is baked in at build time; a manual install has none and refuses
+such a file.
+.PP
 .B cat
 answers:
 .TS

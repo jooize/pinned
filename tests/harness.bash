@@ -56,6 +56,13 @@
 #     root -- the stub always takes the no-group branch there too, so what
 #     S15 covers is the clone's scrubbed environment, its provenance rules
 #     and everything downstream of it, never the privilege drop itself
+#   - the OWNER half of verify's exit-30 invariant is never driven through a
+#     FILE: every fixture is owned by the harness user, who IS the tier, and
+#     chowning one to a third account needs root. The decision itself is
+#     covered as a predicate instead (S3b drives owner_admitted through the
+#     PROBE, root-only owners included) plus a source-level check that
+#     do_verify still calls it; what stays uncovered is only the stat_owner
+#     read and the wording of the two refusals. The MODE half is real (S3)
 #   - blake2b/blake3 algorithms are not exercised (sha256 only)
 #   - `show` and `status <repo>` dirty-tree warnings: only status's
 #     approved/never-approved verdicts are covered
@@ -188,6 +195,14 @@ need '^    root:\*) ;;$'                                    2 'owner allowlists'
 need '^PINNED_ROOT=/var/db/pinned$'                         1 'pin-root constant'
 need '^PINNED_CLONES=/var/db/pinned-clones$'                1 'clone-tree constant'
 need '^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json$'   1 'machine-policy constant'
+# Not stubbed for the main copy -- the fixtures want the source default
+# (empty, so the owner invariant is tier-or-root). Anchored because two
+# things rewrite this exact line: nix/module.nix, which bakes the list at
+# eval time, and S3b, which does the same to a library copy to drive
+# owner_admitted. If the shape drifts here the module silently stops
+# widening anything, and every lock-owned file starts failing verify on a
+# machine that declared one.
+need '^PINNED_ROOT_ONLY_OWNERS=$'                          1 'root-only-owners constant'
 need '^  install -d -m 755 -o root -g wheel "\$PINNED_ROOT"$'  1 'pin-root install'
 need '^  install -d -m 755 -o root -g wheel "\$PINNED_CLONES"$' 1 'clone-tree install'
 need '^    install -d -m 2775 -o root -g "\$PINNED_CLONES_GROUP" "\$CLONE_DIR"$' 1 'clone-dir install (group)'
@@ -576,6 +591,79 @@ assert_exit "$RC" 0 "remediated mode verifies again"
 run_pinned verify "$SUB/v/never/existed/at/all.txt"
 assert_exit "$RC" 10 "absent path under a MISSING parent, no slot -> 10 (launch regression)"
 assert_contains "$OUT" "no slot" "the missing-parent case still reaches the slot verdict"
+
+# ---------------------------------------------------------------------------
+say "S3b: owner_admitted (the owner half of the exit-30 invariant)"
+# ---------------------------------------------------------------------------
+# The half S3 cannot reach through a file: every fixture is owned by the
+# harness user, who IS the tier, so the check passes before it decides
+# anything, and giving a subject a third owner needs root. As a named
+# predicate it is drivable directly, through the PROBE like canon_path.
+#
+# The root-only list is set the way the NIX MODULE sets it -- by rewriting the
+# constant's assignment line in a copy of the library, anchored like every
+# other harness sed -- so each case also proves that line is still rewritable.
+# Nothing needs restoring afterwards: each call is its own process reading its
+# own copy, and $LIB (which every other probe case sources) is never touched.
+OWNLIB="$FIX/owners-lib.bash"
+cat > "$FIX/owners-probe" <<EOF
+#!$HARNESS_BASH
+set -euo pipefail
+fn="\$1"; shift
+args=("\$@")
+# shellcheck disable=SC1090
+. "$OWNLIB" probe
+"\$fn" \${args[@]+"\${args[@]}"}
+EOF
+chmod 755 "$FIX/owners-probe"
+
+run_probe_owners() { # <root-only list> <owner> <tier>
+  sed "s#^PINNED_ROOT_ONLY_OWNERS=\$#PINNED_ROOT_ONLY_OWNERS='$1'#" "$LIB" > "$OWNLIB"
+  grep -q "^PINNED_ROOT_ONLY_OWNERS='$1'\$" "$OWNLIB" || {
+    say "OWNERS SED FAILED: the list [$1] did not land in the library copy"; exit 2
+  }
+  RC=0
+  "$FIX/owners-probe" owner_admitted "$2" "$3" 2>"$ERRF" || RC=$?
+}
+assert_admits()  { run_probe_owners "$1" "$2" "$3"; assert_exit "$RC" 0 "$4"; }
+assert_refuses() { run_probe_owners "$1" "$2" "$3"; assert_exit "$RC" 1 "$4"; }
+
+# The two the invariant has always admitted, with no list in play.
+assert_admits  '' alice alice \
+  "empty list: the tier user is admitted"
+assert_admits  '' root  alice \
+  "empty list: root is admitted"
+# ...and the manual install's honest answer: nothing told it the account exists.
+assert_refuses '' _alice-lock alice \
+  "empty list: a lock-owned file is refused (the manual-install answer)"
+
+assert_admits  '_alice-lock' _alice-lock alice \
+  "a declared root-only owner is admitted"
+assert_refuses '_alice-lock' _alice-loc  alice \
+  "a trailing partial of a declared owner is refused (_alice-loc vs _alice-lock)"
+assert_refuses '_alice-lock' alice-lock  alice \
+  "a leading partial of a declared owner is refused (alice-lock vs _alice-lock)"
+assert_admits  '_alice-lock _bob-lock' _bob-lock alice \
+  "the second word of a multi-entry list is admitted"
+assert_refuses '_alice-lock' mallory alice \
+  "an account on no list is refused"
+
+# An unreadable owner is a refusal, not a match. The empty candidate is the
+# one that would slip through a naive padded-substring test: " " does occur
+# inside "  ", so both these cases would PASS without the non-empty guard.
+assert_refuses '_alice-lock' '' alice \
+  "an empty owner (stat failed) is refused with a list present"
+assert_refuses '' '' alice \
+  "an empty owner (stat failed) is refused with no list"
+
+# The call site: a correct predicate is worth nothing if do_verify stops
+# consulting it. A probe cannot reach do_verify (it wants a slot tree and a
+# real subject), so the wiring is asserted in the source.
+if grep -q '^    if ! owner_admitted "\$o" "\$tier"; then$' "$SRC"; then
+  ok "do_verify reaches the invariant through owner_admitted"
+else
+  fail "do_verify reaches the invariant through owner_admitted (call site moved or changed shape)"
+fi
 
 # ---------------------------------------------------------------------------
 say "S4: review --file ceremony"

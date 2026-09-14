@@ -840,6 +840,12 @@ for that:
    operators of the shared clone tree `pinned add <url>` fetches into.
    Neither directory is created here -- the script provisions both
    root-side, so a manual install lands on the same paths.
+   `security.pinned.rootOnlyOwners` is the one widening of `verify`'s
+   owner invariant (exit 30): accounts no user can act as, whose files
+   are therefore as unwritable to the tier user as root's, baked into
+   the installed bytes at eval time. It is contributed by the module
+   that *creates* such an account -- `locked` adds its lock account
+   `_<user>-lock` -- never typed by hand, and a manual install has none.
    nix/module.nix is short: read it.
 
 3. Deploy (gated, builds the approved rev). The store-installed binary
