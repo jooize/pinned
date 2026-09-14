@@ -743,11 +743,14 @@ ceremony_banner() {
 # means byte-identical passthrough.
 
 # Colorized unified diff. Colour is applied per line-prefix, never inside a
-# line, so the bytes stay greppable; $0 is reprinted verbatim.
+# line, so the bytes stay greppable; $0 is reprinted verbatim. The file
+# headers wear the identity magenta, the same class sgit_diff gives git's
+# meta lines: a header answers what-am-I-looking-at one level below the
+# gate line, so the accent extends the subject role rather than diluting it.
 color_diff() {
   if [ -n "$HL_ON" ]; then
-    LC_ALL=C awk -v R=$'\033[31m' -v G=$'\033[32m' -v C=$'\033[1;36m' -v B=$'\033[1m' -v O=$'\033[0m' '
-      /^(\+\+\+|---) / { print B $0 O; next }
+    LC_ALL=C awk -v R=$'\033[31m' -v G=$'\033[32m' -v C=$'\033[1;36m' -v M=$'\033[1;35m' -v O=$'\033[0m' '
+      /^(\+\+\+|---) / { print M $0 O; next }
       /^@@/            { print C $0 O; next }
       /^\+/            { print G $0 O; next }
       /^-/             { print R $0 O; next }
