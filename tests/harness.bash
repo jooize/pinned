@@ -875,6 +875,7 @@ y
 run_pinned review --file "$SUB/a/gate/solo.txt"
 assert_exit "$RC" 0 "a single-file ceremony records"
 assert_contains "$OUT" "full content 1 line; Enter opens the file" "the singular gate reads as one"
+assert_contains "$OUT" "--- end of file: 1 line ---" "the paged file leaves a closing rule, singular"
 assert_missing "$OUT" "[1/1]" "one --file is not a batch: no counter"
 
 # A VERIFIED baseline turns the pager into a diff, and the gate states the
@@ -890,6 +891,7 @@ assert_contains "$OUT" "+1 -0; Enter opens the diff" "the gate states the diff's
 assert_contains "$OUT" "diff vs the approved baseline" "and the pager is that diff"
 assert_contains "$OUT" "--- approved: " "the diff header names the baseline side by role"
 assert_contains "$OUT" "+++ candidate: " "and the candidate side by role"
+assert_contains "$OUT" "--- end of diff: +1 -0 ---" "the paged diff leaves a closing rule with the gate's magnitude"
 
 # --- the keys summary above a JSON baseline diff ----------------------------
 # One line naming WHICH keys changed, computed from whole-document
@@ -1289,6 +1291,8 @@ y
   run_pinned review "$REPO_FIX"
   assert_exit "$RC" 0 "first-ever repo approval succeeds (no slot dir pre-created)"
   assert_contains "$OUT" "full tree at" "first approval shows the full tree"
+  assert_contains "$OUT" "--- end of diff: 1 file +1 -0 ---" \
+    "the full-tree review leaves a closing rule with its totals"
   assert_contains "$OUT" "rev.git" "ceremony names the record it wrote"
   # LABEL OWNERSHIP: a source prefix names whose fact a row states, so the
   # revision under ceremony -- which is nobody's record yet -- is the
@@ -1870,6 +1874,7 @@ y
   assert_contains "$FIX/step2" "E2EDIT" "step 2 shows its own commit's edits"
   assert_missing  "$FIX/step2" "E3LINE" "step 2 does not leak the next commit"
   assert_missing  "$FIX/step2" "E1LINE" "step 2 does not repeat the approved commit"
+  assert_eq "$(grep -c -- '^--- end of diff: ' "$OUT")" 3 "every step's diff leaves its own closing rule"
 
   # The closing aggregate is the composition-risk mitigation: the whole
   # sitting's totals, exactly.
@@ -2089,6 +2094,8 @@ y
   assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_C2" "the forward pin moved to HEAD"
   assert_contains "$OUT" "--- commits since last approval ---" "forward keeps the ordinary listing"
   assert_missing "$OUT" "!!!" "a forward move raises no alarm"
+  assert_contains "$OUT" "(2 commits); Enter opens the diff" "a forward gate sizes the delta in commits"
+  assert_contains "$OUT" "--- end of diff: 2 files +2 -0 ---" "the paged diff leaves a closing rule with its totals"
 
   # A declaration on a forward candidate overrides nothing.
   seed_rev "$REPO_G" "$G_BASE"
@@ -2176,6 +2183,28 @@ y
   assert_contains "$OUT" "g2 second" "the abandoned commit is listed"
   assert_contains "$OUT" "gx side" "the arriving commit is listed"
   bgit "$REPO_G" checkout -q main
+
+  # --- diverged with no common ancestor: a history rewrite ------------------
+  # A root commit carrying C2's tree plus one file: the shape a filter-repo
+  # rewrite leaves behind. `pin..candidate` would count the candidate's whole
+  # history, so the gate sizes the move by the diff instead.
+  bgit "$REPO_G" checkout -q --orphan rewrite "$G_C2"
+  printf 'GRLINE\n' > "$REPO_G/r.txt"
+  bgit "$REPO_G" add r.txt; bgit "$REPO_G" commit -q -m "gr rewrite root"
+  G_R="$(bgit "$REPO_G" rev-parse 'HEAD^{commit}')"
+  seed_rev "$REPO_G" "$G_C2"
+  ANS='
+y
+'
+  run_pinned review "$REPO_G" --diverged
+  assert_exit "$RC" 0 "a declared rootless rewrite proceeds"
+  assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_R" "the rewrite's root commit is pinned"
+  assert_contains "$OUT" "no common ancestor in this checkout" "the listing says there is no range"
+  assert_contains "$OUT" "(no shared history; 1 file +1 -0); Enter opens the diff" \
+    "the gate sizes an ancestorless move by the diff, not by commits"
+  assert_missing "$OUT" "commit); Enter" "no commit count stands in for the delta"
+  assert_contains "$OUT" "--- end of diff: 1 file +1 -0 ---" "the paged diff leaves a closing rule"
+  bgit "$REPO_G" checkout -q -f main
 
   # --- the declarations bind to one repo, and to nothing else ---------------
   seed_rev "$REPO_G" "$G_C2"

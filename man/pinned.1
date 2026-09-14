@@ -161,6 +161,15 @@ open the diff;
 is the only other answer, and end of input takes the skip.
 Anything else is named back and the gate asks again.
 Approving a repo without its review is never offered.
+The gate states the delta's size: the commit count, or, when the pin and
+the candidate share no history in the checkout, the diff's own totals
+.RI ( N " files +" A " \-" D ),
+since a commit count there would be the candidate's whole history.
+When the pager closes, a closing rule
+.RB ( "\-\-\- end of diff: ... \-\-\-" )
+stays on screen above the confirmation and gives the diff's totals, so
+the scrollback records that a diff was shown and how large it was.
+A file pin's closing rule gives its line counts.
 .BR \-\-tag ,
 .BR \-\-signed\-tag ,
 and

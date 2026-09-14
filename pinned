@@ -1268,6 +1268,29 @@ sgit_diff() {
     diff --no-ext-diff --no-textconv "$@"
 }
 
+# The size of a two-rev diff in one phrase, "N files +A -D": the spelling
+# the step summary's total, the no-shared-history gate and every repo diff's
+# closing rule share. Binary files count as changed files and contribute
+# nothing to +/- -- what git itself reports for them ("-" in both columns).
+# Counted through sgit_diff, so the same hardened flags govern the number
+# and the diff it describes; both read the same two immutable objects.
+# $1 = from rev (or the empty tree), $2 = to rev.
+diff_totals() {
+  sgit_diff --numstat "$1" "$2" | LC_ALL=C awk '
+    { n++; if ($1 != "-") ins += $1; if ($2 != "-") del += $2 }
+    END { printf "%d file%s +%d -%d\n", n, (n == 1 ? "" : "s"), ins, del }'
+}
+
+# The closing rule a paged diff leaves behind. `less -RF` draws on the
+# terminal's alternate screen and takes the content with it on quit, so
+# without this the opening rule stands over nothing -- in scrollback it
+# reads as an empty diff, directly above the question that approves it.
+# The rule records that a body was shown and how large it was.
+# $1 = what ended ("diff", "file"), $2 = its size, already spelled.
+print_end_rule() {
+  printf '%s--- end of %s: %s ---%s\n' "$C_B" "$1" "$2" "$C_OFF"
+}
+
 sgit() {
   # Structural guard: any diff a human might read must carry --no-ext-diff
   # --no-textconv, so reaching for a rendering subcommand here is a bug, not a
@@ -4684,12 +4707,26 @@ do_approve() {
         # without looking, pin unchanged (logged as skip, counted as
         # declined). End of input takes the same path, for the same reason.
         # Approving without the diff stays impossible.
-        local n_range gate_line
-        n_range="$(sgit rev-list --count "${old_hash}..${hash}")"
-        printf -v gate_line '%snext: review %s%s%s %s%.10s..%.10s%s (%s commit%s);%s %sEnter%s opens the diff %s· %s%sn%s%s skips%s ' \
+        #
+        # The parenthesis states the delta's size. Normally that is the
+        # commit count, but two revs with no common ancestor have no range:
+        # `pin..candidate` is then the candidate's WHOLE history (a rewrite
+        # of 400 commits reads as "400 commits" when three are new), so
+        # there the size is the diff's own, in files and lines, coloured
+        # the way the file-pin gate colours its magnitude.
+        local n_range gate_line gate_size totals t_n t_files t_add t_del
+        totals="$(diff_totals "$old_hash" "$hash")"
+        if [ "$ancestry_cls" = diverged ] && [ -z "$ancestry_mb" ]; then
+          read -r t_n t_files t_add t_del <<<"$totals"
+          gate_size="no shared history; $t_n $t_files ${C_GRN}${t_add}${C_OFF}${C_B} ${C_RED}${t_del}${C_OFF}${C_B}"
+        else
+          n_range="$(sgit rev-list --count "${old_hash}..${hash}")"
+          gate_size="$n_range commit$(plural_s "$n_range")"
+        fi
+        printf -v gate_line '%snext: review %s%s%s %s%.10s..%.10s%s (%s);%s %sEnter%s opens the diff %s· %s%sn%s%s skips%s ' \
           "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
           "$C_CYN" "$old_hash" "$hash" "$C_OFF$C_B" \
-          "$n_range" "$(plural_s "$n_range")" "$C_OFF" "$C_BLU" "$C_OFF" \
+          "$gate_size" "$C_OFF" "$C_BLU" "$C_OFF" \
           "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
         if ! gate_answer "$gate_line" "opens the diff" skips; then
           printf '%sskipped; pin unchanged%s\n' "$C_YEL" "$C_OFF"
@@ -4703,6 +4740,7 @@ do_approve() {
         # reviewer's own act -- the diff itself already succeeded.
         diff_out="$(sgit_diff "$old_hash" "$hash")"
         printf '%s\n' "$diff_out" | page || true
+        print_end_rule diff "$totals"
       elif [ "$trust" -eq 1 ]; then
         printf '%spinned:%s     (none)\n' "$C_DIM" "$C_OFF"
         echo
@@ -4727,8 +4765,11 @@ do_approve() {
         fi
         printf '%s--- full tree at %.10s (diff from empty) ---%s\n' "$C_B" "$hash" "$C_OFF"
         # 4b825d... is git's well-known empty tree; this shows every approved byte.
+        local totals
         diff_out="$(sgit_diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
+        totals="$(diff_totals 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
         printf '%s\n' "$diff_out" | page || true
+        print_end_rule diff "$totals"
       fi
     fi
     echo
@@ -4886,7 +4927,9 @@ EOF
     # as reviewable; then page. Early pager quit (SIGPIPE) is the reviewer's
     # own act -- the diff itself already succeeded.
     diff_out="$(sgit_diff "$prev" "$c")"
+    totals="$(diff_totals "$prev" "$c")"
     printf '%s\n' "$diff_out" | page || true
+    print_end_rule diff "$totals"
     echo
     printf '%sapprove %s%s%s %s%s%s? [%sy%s/%sN%s]%s ' "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
       "$C_CYN" "$c" "$C_OFF$C_B" \
@@ -4933,11 +4976,7 @@ EOF
     # same total lines as one whole-delta diff, but it fragments the attention
     # that would notice mayhem split across individually innocent commits.
     # This is what the whole sitting amounted to, in one line, after the fact.
-    # Binary files count as changed files and contribute nothing to +/- --
-    # what git itself reports for them ("-" in both columns).
-    totals="$(sgit_diff --numstat "$old_hash" "$prev" | LC_ALL=C awk '
-      { n++; if ($1 != "-") ins += $1; if ($2 != "-") del += $2 }
-      END { printf "%d file%s +%d -%d\n", n, (n == 1 ? "" : "s"), ins, del }')"
+    totals="$(diff_totals "$old_hash" "$prev")"
     printf '%stotal:%s %s\n' "$C_DIM" "$C_OFF" "$totals"
   fi
   rem=$((m - approved))
@@ -5307,6 +5346,7 @@ EOF
       # entirely when there is no structural view.
       [ -z "$keys_block" ] || printf '%s\n' "$keys_block"
       printf '%s\n' "$line" | color_diff | page || true
+      print_end_rule diff "$gate_shape"
     else
       if [ -n "$base" ] && [ -n "$old_digest" ]; then
         printf '%snote: baseline does not re-hash to the approved record; showing the full file%s\n' "$C_YEL" "$C_OFF"
@@ -5339,6 +5379,7 @@ EOF
       else
         page <"$fro" || true
       fi
+      print_end_rule file "$n_lines line$(plural_s "$n_lines")"
     fi
     echo
 
