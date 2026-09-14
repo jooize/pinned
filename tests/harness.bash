@@ -753,9 +753,9 @@ y
 '
 run_pinned review --file "$SUB/a/gate-retry.txt"
 assert_exit "$RC" 0 "a gate that was re-asked still records once answered"
-assert_contains "$OUT" 'not an answer; Enter or y opens it, n skips' \
+assert_contains "$OUT" 'not an answer; Enter or y opens the file, n skips' \
   "the re-ask states every valid answer"
-assert_eq "$(grep -cF 'not an answer; Enter or y opens it, n skips' "$OUT")" 3 \
+assert_eq "$(grep -cF 'not an answer; Enter or y opens the file, n skips' "$OUT")" 3 \
   "each of the three unknown answers re-asks, a bare s included"
 assert_missing "$OUT" 'abcdefghijklmnopqrst' \
   "typed input is never echoed back, so a pasted escape cannot rewrite the gate"
@@ -777,7 +777,7 @@ run_pinned review --file "$SUB/a/gate/one.txt" --file "$SUB/a/gate/two.txt"
 assert_exit "$RC" 0 "a two-file ceremony records both"
 assert_contains "$OUT" "[1/2]" "the batch counter names the item under ceremony"
 assert_contains "$OUT" "[2/2]" "and moves on with the batch"
-assert_contains "$OUT" "full content 3 lines; Enter opens it" \
+assert_contains "$OUT" "full content 3 lines; Enter opens the file" \
                 "a first approval's gate names the size of what it opens"
 
 printf 'lonely\n' > "$SUB/a/gate/solo.txt"
@@ -786,7 +786,7 @@ y
 '
 run_pinned review --file "$SUB/a/gate/solo.txt"
 assert_exit "$RC" 0 "a single-file ceremony records"
-assert_contains "$OUT" "full content 1 line; Enter opens it" "the singular gate reads as one"
+assert_contains "$OUT" "full content 1 line; Enter opens the file" "the singular gate reads as one"
 assert_missing "$OUT" "[1/1]" "one --file is not a batch: no counter"
 
 # A VERIFIED baseline turns the pager into a diff, and the gate states the

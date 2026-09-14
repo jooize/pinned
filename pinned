@@ -5272,11 +5272,11 @@ EOF
       [ "$(tail -c1 -- "$fro" | wc -l)" -eq 1 ] && nl=1
       n_lines="$(LC_ALL=C wc -l <"$fro" | tr -d ' ')"
       [ -n "$nl" ] || [ ! -s "$fro" ] || n_lines=$((n_lines + 1))
-      printf -v gate_line '%snext: review %s%s%s full content %s%s line%s%s;%s %sEnter%s opens it %s· %s%sn%s%s skips%s ' \
+      printf -v gate_line '%snext: review %s%s%s full content %s%s line%s%s;%s %sEnter%s opens the file %s· %s%sn%s%s skips%s ' \
         "$C_B" "$C_B$C_MAG" "${path##*/}" "$C_OFF$C_B" \
         "$C_CYN" "$n_lines" "$(plural_s "$n_lines")" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
         "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
-      if ! gate_answer "$gate_line" "opens it" skips; then
+      if ! gate_answer "$gate_line" "opens the file" skips; then
         printf '%sskipped; record unchanged%s\n' "$C_YEL" "$C_OFF"
         log_action approve-file "$path" "$new_digest" skip
         declined=$((declined + 1))
