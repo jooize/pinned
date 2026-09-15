@@ -2139,6 +2139,8 @@ y
   assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_C1" "the declared backward move recorded the pin"
   assert_contains "$OUT" "!!! BACKWARD:" "the ceremony raises the backward alarm"
   assert_contains "$OUT" "--- commits being un-approved ---" "the display names the reversed range"
+  assert_contains "$OUT" "(1 commit un-approved); Enter opens the diff" \
+    "a backward gate sizes what it un-approves"
   assert_contains "$OUT" "g2 second" "the un-approved commit is listed"
   assert_contains "$OUT" "--- diff " "the honest diff of the move still runs"
 
@@ -2180,6 +2182,8 @@ y
   assert_contains "$OUT" "commits being un-approved (leaving the pinned line)" \
     "the display names the abandoned range"
   assert_contains "$OUT" "commits arriving on the new line" "the display names the arriving range"
+  assert_contains "$OUT" "(1 commit un-approved, 1 arriving); Enter opens the diff" \
+    "a diverged gate sizes both sides of the merge base"
   assert_contains "$OUT" "g2 second" "the abandoned commit is listed"
   assert_contains "$OUT" "gx side" "the arriving commit is listed"
   bgit "$REPO_G" checkout -q main

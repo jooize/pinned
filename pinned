@@ -4708,17 +4708,28 @@ do_approve() {
         # declined). End of input takes the same path, for the same reason.
         # Approving without the diff stays impossible.
         #
-        # The parenthesis states the delta's size. Normally that is the
-        # commit count, but two revs with no common ancestor have no range:
+        # The parenthesis states the delta's size, over the SAME ranges the
+        # listing headings just above name: a forward move counts what
+        # arrives, a backward one counts what it un-approves (its forward
+        # range is empty, and a move that reads as "0 commits" states the
+        # opposite of what it does), a diverged one counts both sides of the
+        # merge base. Two revs with no common ancestor have no range at all:
         # `pin..candidate` is then the candidate's WHOLE history (a rewrite
         # of 400 commits reads as "400 commits" when three are new), so
         # there the size is the diff's own, in files and lines, coloured
         # the way the file-pin gate colours its magnitude.
-        local n_range gate_line gate_size totals t_n t_files t_add t_del
+        local n_range n_undo gate_line gate_size totals t_n t_files t_add t_del
         totals="$(diff_totals "$old_hash" "$hash")"
         if [ "$ancestry_cls" = diverged ] && [ -z "$ancestry_mb" ]; then
           read -r t_n t_files t_add t_del <<<"$totals"
           gate_size="no shared history; $t_n $t_files ${C_GRN}${t_add}${C_OFF}${C_B} ${C_RED}${t_del}${C_OFF}${C_B}"
+        elif [ "$ancestry_cls" = backward ]; then
+          n_undo="$(sgit rev-list --count "${hash}..${old_hash}")"
+          gate_size="$n_undo commit$(plural_s "$n_undo") un-approved"
+        elif [ "$ancestry_cls" = diverged ]; then
+          n_undo="$(sgit rev-list --count "${ancestry_mb}..${old_hash}")"
+          n_range="$(sgit rev-list --count "${ancestry_mb}..${hash}")"
+          gate_size="$n_undo commit$(plural_s "$n_undo") un-approved, $n_range arriving"
         else
           n_range="$(sgit rev-list --count "${old_hash}..${hash}")"
           gate_size="$n_range commit$(plural_s "$n_range")"
