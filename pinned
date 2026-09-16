@@ -196,7 +196,7 @@ set -euo pipefail
 
 # The release this file IS. Bumped in the release commit the tag points at,
 # so a checkout between releases reports the release it descends from.
-PINNED_VERSION="0.23.0"
+PINNED_VERSION="0.23.1"
 
 # Set by upgrade for the round its batches share (see do_approve).
 ROUND_APPROVED=0 ROUND_DECLINED=0 ROUND_ALREADY=0
@@ -1737,6 +1737,14 @@ decode() {
       }
       printf "%s", out
     }'
+}
+# A slot path for a human's eye: each percent escape dimmed, so the repo
+# path reads through the encoding (`%2FUsers%2Fjooize` shows as the path
+# with faint separators). Display only -- the bytes are the slot's, so a
+# copied line still names the directory; off a tty C_DIM is empty and the
+# path prints plain.
+show_slot() {
+  printf '%s' "$1" | sed "s/%[0-9A-Fa-f][0-9A-Fa-f]/${C_DIM}&${C_OFF}/g"
 }
 
 # ---- slot storage ----------------------------------------------------------
@@ -4827,7 +4835,7 @@ do_approve() {
     # approve answered `y` and returned to the prompt in silence -- which reads
     # exactly like a no-op in the one place a user most needs to know a record
     # was written.
-    printf '%s✓ approved:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" "$slot/rev.git"
+    printf '%s✓ approved:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" "$(show_slot "$slot")/rev.git"
     # The declared release name (optional `release` record, repo slots
     # only): deploy syncs the input's ref= to it after cross-checking the
     # live tag still names the pinned rev. The --tag selector is the
@@ -4845,7 +4853,7 @@ do_approve() {
         rm -f "$slot/release"
       else
         write_note "$slot" release "$decl_tag"
-        printf '%s✓ declared:%s %s -> %s\n' "$C_GRN" "$C_OFF" "$decl_tag" "$slot/release"
+        printf '%s✓ declared:%s %s -> %s\n' "$C_GRN" "$C_OFF" "$decl_tag" "$(show_slot "$slot")/release"
       fi
     else
       rm -f "$slot/release"
@@ -4984,7 +4992,7 @@ EOF
     printf '%s✓ pin advanced:%s %s%s%s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$c" "$C_OFF"
     if [ -n "$sel_tag" ] && [ "$c" = "$hash" ]; then
       write_note "$slot" release "$sel_tag"
-      printf '%s✓ declared:%s %s -> %s\n' "$C_GRN" "$C_OFF" "$sel_tag" "$slot/release"
+      printf '%s✓ declared:%s %s -> %s\n' "$C_GRN" "$C_OFF" "$sel_tag" "$(show_slot "$slot")/release"
     fi
     prev="$c"
     approved=$((approved + 1))
@@ -5532,7 +5540,7 @@ do_tombstone() {
       exit 0 ;;
   esac
   printf '%spath:%s       %s %s(gone)%s\n' "$C_B" "$C_OFF" "$path" "$C_DIM" "$C_OFF"
-  printf '%sslot:%s       %s state: %s\n' "$C_B" "$C_OFF" "$slot" "$slot_state"
+  printf '%sslot:%s       %s state: %s\n' "$C_B" "$C_OFF" "$(show_slot "$slot")" "$slot_state"
   printf '%stombstone %s%s%s? verify will then refuse it until re-approved [%sy%s/%sN%s]%s ' \
     "$C_B" "$C_CYN" "$path" "$C_OFF$C_B" \
     "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
@@ -5977,7 +5985,7 @@ do_declare() {
 
   printf '%srepo:%s       %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_B$C_MAG" "${repo##*/}" "$C_OFF" \
     "$C_DIM" "$repo" "$C_OFF"
-  printf '%sslot:%s       %s\n' "$C_B" "$C_OFF" "$slot"
+  printf '%sslot:%s       %s\n' "$C_B" "$C_OFF" "$(show_slot "$slot")"
   printf '%spinned:%s     %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$rev" "$C_OFF" \
     "$C_DIM" "$(sanitize_display "$(sgit log -1 --format=%s "$rev" 2>/dev/null || echo 'commit not in repo!')")" "$C_OFF"
   if [ "$remove" -eq 1 ]; then
@@ -6023,7 +6031,7 @@ do_declare() {
     log_action declare "$repo" "$old_tag"
   else
     write_note "$slot" release "$name"
-    printf '%s✓ declared:%s %s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$name" "$slot/release"
+    printf '%s✓ declared:%s %s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$name" "$(show_slot "$slot")/release"
     printf '  %spinned deploy%s   %s(syncs ref= to refs/tags/%s, rebuilds)%s\n' \
       "$C_CYN" "$C_OFF" "$C_DIM" "$name" "$C_OFF"
     log_action declare "$repo" "$name"
@@ -6508,7 +6516,7 @@ do_status() {
 
   printf '%srepo:%s       %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_B$C_MAG" "${repo##*/}" "$C_OFF" \
     "$C_DIM" "$repo" "$C_OFF"
-  printf '%sslot:%s       %s\n' "$C_DIM" "$C_OFF" "$slot"
+  printf '%sslot:%s       %s\n' "$C_DIM" "$C_OFF" "$(show_slot "$slot")"
   # THE SLOT-NAME INVARIANT (above slot_name_actual), both halves: a record
   # naming another spelling, a directory wearing one. Either is repaired by
   # a review, and either is invisible until something says so.
@@ -6585,7 +6593,7 @@ do_status_file() {
   path="$(canon_path "$1")" || exit 1
   slot="$(slot_dir_for "$inv" "$path")"
   printf '%sfile:%s       %s\n' "$C_DIM" "$C_OFF" "$path"
-  printf '%sslot:%s       %s\n' "$C_DIM" "$C_OFF" "$slot"
+  printf '%sslot:%s       %s\n' "$C_DIM" "$C_OFF" "$(show_slot "$slot")"
   if ! inspect_slot "$slot" 2>/dev/null; then
     printf '%sstate:%s      %s✗ malformed slot -- inspect it by hand%s\n' "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF"
     exit 1
