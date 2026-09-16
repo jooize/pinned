@@ -893,6 +893,72 @@ assert_contains "$OUT" "--- approved: " "the diff header names the baseline side
 assert_contains "$OUT" "+++ candidate: " "and the candidate side by role"
 assert_contains "$OUT" "--- end of diff: +1 -0 ---" "the paged diff leaves a closing rule with the gate's magnitude"
 
+# --- the witness order ------------------------------------------------------
+# The diff's other side is chosen in verify's order: the slot's own copy
+# first, then the file's --baseline, then the ceremony's --baseline-store
+# entry at <dir>/<slot-name>/<prior digest>. Each is used only if it
+# re-hashes to the prior record.
+mkdir -p "$SUB/a/witness"
+# (a) custody: a --store slot diffs against its own copy, no --baseline given.
+printf 'w1\nw2\n' > "$SUB/a/witness/held.txt"
+ANS='
+y
+'
+run_pinned review --file "$SUB/a/witness/held.txt" --store
+assert_exit "$RC" 0 "fixture: held.txt approved with custody"
+printf 'w1\nw2\nw3\n' > "$SUB/a/witness/held.txt"
+ANS='
+y
+'
+run_pinned review --file "$SUB/a/witness/held.txt" --store
+assert_exit "$RC" 0 "a custody slot re-approves with no --baseline"
+assert_contains "$OUT" "diff vs the approved baseline" "and diffs against its own stored copy"
+assert_contains "$OUT" "+1 -0; Enter opens the diff" "at the right magnitude"
+# (b) --baseline-store: a copy-less slot finds its witness by slot name + digest.
+STORED="$SUB/a/witness/stored.txt"
+printf 's1\ns2\n' > "$STORED"
+ANS='
+y
+'
+run_pinned review --file "$STORED"
+assert_exit "$RC" 0 "fixture: stored.txt approved without custody"
+WSTORE="$FIX/witness-store"
+WENTRY="$WSTORE/$("$PROBE" encode "$STORED")"
+mkdir -p "$WENTRY"
+cp "$STORED" "$WENTRY/$(digest_of "$STORED")"
+printf 's1\ns2\ns3\n' > "$STORED"
+ANS='
+y
+'
+run_pinned review --baseline-store "$WSTORE" --file "$STORED"
+assert_exit "$RC" 0 "a --baseline-store ceremony records"
+assert_contains "$OUT" "diff vs the approved baseline" "the store entry is the diff's other side"
+assert_contains "$OUT" "+1 -0; Enter opens the diff" "at the right magnitude"
+# (c) a store with no entry for this slot shows the full file, with no note:
+# nothing was offered, so nothing failed.
+printf 's1\ns2\ns3\ns4\n' > "$STORED"
+ANS='
+y
+'
+run_pinned review --baseline-store "$FIX/empty-store" --file "$STORED"
+assert_exit "$RC" 0 "an empty store still records"
+assert_contains "$OUT" "full content 4 lines; Enter opens the file" "and the whole file is what opens"
+assert_missing "$OUT" "does not re-hash" "with no claim that a witness failed"
+# (d) a store entry that does not re-hash is refused: full file, and the note.
+printf 'forged\n' > "$WENTRY/$(digest_of "$STORED")"
+printf 's1\ns2\ns3\ns4\ns5\n' > "$STORED"
+ANS='
+y
+'
+run_pinned review --baseline-store "$WSTORE" --file "$STORED"
+assert_exit "$RC" 0 "a forged store entry still records"
+assert_contains "$OUT" "does not re-hash to the approved record" "the note says the witness failed"
+assert_contains "$OUT" "full content 5 lines; Enter opens the file" "and the whole file is what opens"
+# (e) outside the --file ceremony the flag is refused, like --store.
+run_pinned review "$SUB" --baseline-store "$WSTORE"
+assert_exit "$RC" 1 "--baseline-store outside the --file ceremony is refused"
+assert_contains "$OUT" "--baseline-store applies to the --file ceremony only" "the refusal names the ceremony"
+
 # --- the keys summary above a JSON baseline diff ----------------------------
 # One line naming WHICH keys changed, computed from whole-document
 # flattenings of the two frozen buffers (json_keys_changed) -- a summary,

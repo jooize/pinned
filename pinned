@@ -3043,7 +3043,7 @@ elevation_cmd_disp() { # elev action args...
     printf -v padded '%-*s' "$pw" "$name"       # pad flag (plain) so values align
     if [ -n "${fv[$i]}" ]; then
       case "$name" in
-        --baseline) vcol="$C_DIM" ;;
+        --baseline|--baseline-store) vcol="$C_DIM" ;;
         *)          vcol="$C_CYN" ;;
       esac
       out="$out \\"$'\n'"${ind}${padded}  ${vcol}$(elevation_quote "${fv[$i]}")${C_OFF}"
@@ -3830,7 +3830,7 @@ case "$elev_action" in
           case "$a" in
             --signed-tag) have_ev=1; preview_signed=1; skip_next=1 ;;
             --file) file_mode=1; preview_files=$((preview_files + 1)); skip_next=1 ;;
-            --baseline|--algo) skip_next=1 ;;
+            --baseline|--baseline-store|--algo) skip_next=1 ;;
             --tag) have_ev=1; want_tag=1 ;;
             --trust) have_ev=1; preview_trust=1 ;;
             # A bare flag, not evidence -- it says HOW the review is read,
@@ -4318,7 +4318,7 @@ do_approve() {
   # nothing is pinned. k-of-n is the caller demanding whichever k tags they
   # trust.
   local trust=0 repo_args sel_tag="" tag_args files file_base file_ign file_algo=sha256 algo_given=0
-  local store=0 ign_given=0 last step=0 decl_class=""
+  local store=0 ign_given=0 last step=0 decl_class="" baseline_store=""
   repo_args=(); tag_args=(); files=(); file_base=(); file_ign=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -4386,6 +4386,16 @@ do_approve() {
       # approved and feeds the next ceremony's diff, so it means something on
       # a ceremony that declares nothing.
       --store)     store=1; shift ;;
+      # The ceremony-wide witness directory: a --file that brings no
+      # --baseline of its own looks for the approved bytes to diff against
+      # at <dir>/<slot name>/<prior digest>. Both name parts are pinned's own
+      # facts, so the caller names one directory it keeps, never a digest,
+      # and the sudo line carries one recognizable path instead of one
+      # machine-derived path per file. Evidence like --baseline, never
+      # authority: a copy is used only if it re-hashes to the record.
+      --baseline-store)
+        [ $# -ge 2 ] || { echo "--baseline-store needs a directory" >&2; exit 1; }
+        baseline_store="$2"; shift 2 ;;
       --algo)
         [ $# -ge 2 ] || { echo "--algo needs a value" >&2; exit 1; }
         file_algo="$2"; algo_given=1; shift 2 ;;
@@ -4411,6 +4421,7 @@ do_approve() {
   fi
   [ "$algo_given" -eq 0 ] || { echo "--algo applies to the --file ceremony only" >&2; exit 1; }
   [ "$store" -eq 0 ] || { echo "--store applies to the --file ceremony only" >&2; exit 1; }
+  [ -z "$baseline_store" ] || { echo "--baseline-store applies to the --file ceremony only" >&2; exit 1; }
   [ "${#repo_args[@]}" -ge 1 ] || usage
   case "$sel_tag" in
     -*) echo "invalid tag name: $sel_tag" >&2; exit 1 ;;
@@ -5297,36 +5308,51 @@ EOF
     # to the prior recorded digest (the self-verifying trust-cache
     # trick, root-side). Anything else degrades to the full view --
     # never to a diff against unverified bytes.
-    base_ok=0 keys_block=""
-    if [ -n "$base" ] && [ -n "$old_digest" ] && [ -f "$base" ]; then
-      if freeze_file "$base" 2>/dev/null \
-        && [ "$(hash_file "$old_label" "$FROZEN_COPY")" = "$old_digest" ]; then
+    #
+    # THE WITNESS, in verify's order: the slot's own copy first (custody
+    # cannot be withheld or swapped between calls), then the copy this
+    # --file brought as --baseline, then the ceremony's --baseline-store
+    # entry for this slot and the prior digest. Neither storage location
+    # nor custody is what makes a witness usable, the re-hash is, so the
+    # first candidate that re-hashes wins and a wrong or forged one can
+    # only widen the display to the full file.
+    base_ok=0 keys_block="" base_tried=0
+    if [ -n "$old_digest" ]; then
+      for cand in "$slot/approved" "$base" \
+                  "${baseline_store:+$baseline_store/$(encode "$path")/$old_digest}"; do
+        [ -n "$cand" ] && [ -f "$cand" ] || continue
+        base_tried=1
+        freeze_file "$cand" 2>/dev/null || continue
+        [ "$(hash_file "$old_label" "$FROZEN_COPY")" = "$old_digest" ] || continue
         base_ok=1
-        # -U1: unified context lines are UNCHANGED content by definition, and
-        # diff prints every changed line at any -U level, so trimming context
-        # shortens the read without ever hiding an edit. Produced BEFORE the
-        # gate below announces it, so a diff that cannot be made fails while
-        # nothing has been promised. label_hunks then names each hunk with the
-        # key path its changed lines sit under, read out of the same two
-        # frozen buffers by jq's parser (see its comment); a side that does
-        # not parse simply keeps diff's plain "@@" headers. --label names
-        # the two sides by role and by the subject path: both frozen copies
-        # are temp paths that name nothing, and the path is what the header
-        # already showed.
-        line="$(diff -U1 --label "approved: $path" --label "candidate: $path" \
-          "$FROZEN_COPY" "$fro" | label_hunks "$FROZEN_COPY" "$fro" || true)"
-        shape="$(printf '%s\n' "$line" | diff_shape)"
-        # The gate says the magnitude, so the shape's own "+A/-D lines" tail
-        # is re-cut to the gate's spelling rather than counted a second time.
-        gate_shape="${shape#*, }"; gate_shape="${gate_shape% lines}"
-        gate_shape="${gate_shape/\// }"
-        # The keys block, computed here with the diff -- before the gate
-        # announces anything -- from the same two frozen buffers the diff
-        # reads (baseline = $FROZEN_COPY, candidate = $fro). An empty row
-        # set (non-JSON, malformed JSON, or no jq -- rc 1 from
-        # json_keys_changed) fails safe to NO block, never to a wrong one.
-        keys_block="$({ json_keys_changed "$FROZEN_COPY" "$fro" || true; } | render_keys_block)"
-      fi
+        break
+      done
+    fi
+    if [ "$base_ok" -eq 1 ]; then
+      # -U1: unified context lines are UNCHANGED content by definition, and
+      # diff prints every changed line at any -U level, so trimming context
+      # shortens the read without ever hiding an edit. Produced BEFORE the
+      # gate below announces it, so a diff that cannot be made fails while
+      # nothing has been promised. label_hunks then names each hunk with the
+      # key path its changed lines sit under, read out of the same two
+      # frozen buffers by jq's parser (see its comment); a side that does
+      # not parse simply keeps diff's plain "@@" headers. --label names
+      # the two sides by role and by the subject path: both frozen copies
+      # are temp paths that name nothing, and the path is what the header
+      # already showed.
+      line="$(diff -U1 --label "approved: $path" --label "candidate: $path" \
+        "$FROZEN_COPY" "$fro" | label_hunks "$FROZEN_COPY" "$fro" || true)"
+      shape="$(printf '%s\n' "$line" | diff_shape)"
+      # The gate says the magnitude, so the shape's own "+A/-D lines" tail
+      # is re-cut to the gate's spelling rather than counted a second time.
+      gate_shape="${shape#*, }"; gate_shape="${gate_shape% lines}"
+      gate_shape="${gate_shape/\// }"
+      # The keys block, computed here with the diff -- before the gate
+      # announces anything -- from the same two frozen buffers the diff
+      # reads (baseline = $FROZEN_COPY, candidate = $fro). An empty row
+      # set (non-JSON, malformed JSON, or no jq -- rc 1 from
+      # json_keys_changed) fails safe to NO block, never to a wrong one.
+      keys_block="$({ json_keys_changed "$FROZEN_COPY" "$fro" || true; } | render_keys_block)"
     fi
     # THE GATE BEFORE THE PAGER, as the repo ceremony has it: nothing
     # full-screen arrives unannounced, and what arrives is named with its
@@ -5359,7 +5385,7 @@ EOF
       printf '%s\n' "$line" | color_diff | page || true
       print_end_rule diff "$gate_shape"
     else
-      if [ -n "$base" ] && [ -n "$old_digest" ]; then
+      if [ "$base_tried" -eq 1 ]; then
         printf '%snote: baseline does not re-hash to the approved record; showing the full file%s\n' "$C_YEL" "$C_OFF"
       fi
       # Counted with wc, not awk: the frozen buffer can hold any bytes at

@@ -407,7 +407,7 @@ live, rev-only, or stale (the live tag no longer names the pin), the
 last being the early warning for a deploy that would refuse.
 .SS File approval
 .TP
-.B review \-\-file \fIpath\fP [\fB\-\-baseline\fP \fIcopy\fP] [\fB\-\-ignore\-json\-key\fP \fIkey\fP ...] [\fB\-\-file\fP \fIpath\fP ...] [\fB\-\-algo\fP \fIname\fP] [\fB\-\-store\fP] [\fB\-\-yes\fP]
+.B review \-\-file \fIpath\fP [\fB\-\-baseline\fP \fIcopy\fP] [\fB\-\-ignore\-json\-key\fP \fIkey\fP ...] [\fB\-\-file\fP \fIpath\fP ...] [\fB\-\-baseline\-store\fP \fIdir\fP] [\fB\-\-algo\fP \fIname\fP] [\fB\-\-store\fP] [\fB\-\-yes\fP]
 (sudo) File-pin ceremony: each file is frozen, displayed root-side,
 confirmed, and its hash recorded.
 Multiple
@@ -464,6 +464,30 @@ JSON, or a missing
 .BR jq ;
 every changed line is still shown either way, and the recorded digest is
 taken from the frozen bytes.
+The diff's other side is chosen in
+.BR verify 's
+order: the slot's own stored copy when it has one, then this
+.BR \-\-baseline ,
+then the
+.B \-\-baseline\-store
+entry; each is used only if it re-hashes to the prior record, and with
+no usable copy the whole file is shown.
+.TP
+.BI \-\-baseline\-store " dir"
+(once per ceremony)
+A directory of witnesses kept by the caller, laid out as
+.IR dir /\fIslot\-name\fP/\fIdigest\fP
+(the slot name as
+.B pinned slot
+prints it, the digest as the record holds it).
+A
+.B \-\-file
+without its own
+.B \-\-baseline
+diffs against the entry for its slot and its prior digest, when that
+entry re-hashes to the record.
+Both name parts are pinned's own facts, so the command line names one
+directory instead of one machine-derived path per file.
 .TP
 .BI \-\-ignore\-json\-key " key"
 (after its

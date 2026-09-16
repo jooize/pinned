@@ -50,7 +50,7 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       all naming one commit -> pin (--tag:
                                       an unsigned name that must agree)
     pinned review --file <path> [--baseline <copy>] [--ignore-json-key <key> ...]
-                   [--file <path> ...] [--algo <name>] [--store]
+                   [--file <path> ...] [--baseline-store <dir>] [--algo <name>] [--store]
                                       file-pin ceremony: freeze, display
                                       root-side, confirm, record the hash;
                                       several --file share one sudo
@@ -299,8 +299,12 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   and the recorded hash is taken from the displayed buffer -- record ==
   seen, by construction. A caller's own display (diffs, structural
   views) is pre-sudo orientation, never what the record binds to.
-  `--baseline <copy>` shows a diff instead of the full file, but only
-  when the copy re-hashes to the previously recorded digest.
+  The ceremony shows a diff instead of the full file when it has a copy
+  that re-hashes to the previously recorded digest: the slot's own stored
+  copy first, then the file's `--baseline <copy>`, then the
+  `--baseline-store <dir>` entry at `<dir>/<slot-name>/<digest>` (one
+  directory named once per ceremony; the slot name and digest are
+  pinned's own).
 - `verify` is the one state table. Consumers never re-derive slot
   semantics; they read verify's exit code (0/5/10/11/13/20/30, stable
   API). The decade is the action class and the taxonomy is shared with
