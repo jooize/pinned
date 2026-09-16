@@ -40,6 +40,9 @@
 #                                             end state and are idempotent)
 #   pinned sign <repo> <tag>                  signed release tag at the pinned hash
 #   pinned signer add|list|remove             allowed-signers ceremony
+#   pinned signer path [--repo <repo>]        the allowed-signers file a
+#                                             signed tag verifies against
+#                                             (per-repo, else the user tier)
 #   pinned ignorable add|remove|list          which keys a ceremony may declare
 #                                             ignored, and where (the policy)
 #   pinned status <repo|file>                 record vs live state
@@ -344,6 +347,7 @@ usage: pinned <action> [args]
   rev <repo> [--release]         the pinned rev (or the declared release name); fail-closed
   sign <repo> <tag>              create a signed tag at the pinned hash
   signer add|remove|list ...     (sudo) allowed-signers ceremonies
+  signer path [--repo <repo>]    the allowed-signers file a signed tag verifies against
   ignorable add|remove|list ...  (sudo) ignorable-JSON-key grants
   status <repo|file>             record vs live state
   show <file|repo> [options]     trusted re-display; files get hash + wrapper
@@ -7221,8 +7225,9 @@ key_fingerprint() {
 do_signer() {
   [ $# -ge 1 ] || usage
   local sub="$1"; shift
-  case "$sub" in add|remove|list) ;; *) usage ;; esac
-  command -v ssh-keygen >/dev/null 2>&1 \
+  case "$sub" in add|remove|list|path) ;; *) usage ;; esac
+  # path answers with a name and parses no key, so it needs no ssh-keygen.
+  [ "$sub" = "path" ] || command -v ssh-keygen >/dev/null 2>&1 \
     || { echo "ERROR: no ssh-keygen in the trusted PATH ($PATH)" >&2; exit 1; }
 
   local repo_arg="" keyfile="" keyline="" principal=""
@@ -7261,6 +7266,25 @@ do_signer() {
   if [ "$sub" = "list" ]; then
     [ -z "$keyfile$keyline$principal" ] || { echo "signer list takes only --repo" >&2; exit 1; }
     do_signer_list "$target"
+    return
+  fi
+  # path: the file a signed tag of --repo verifies against, resolved the way
+  # the ceremony resolves it -- the per-repo override when one EXISTS, else
+  # the user tier's -- so a consumer that discovers signed releases (the
+  # deployer's upgrade offer) never has to know where either lives. One
+  # line on stdout, only when such a file exists; otherwise nothing and
+  # exit 1: no signers is "nothing verifies", which the consumer reads as
+  # no offer, and never as an error. Unprivileged, like list.
+  if [ "$sub" = "path" ]; then
+    [ -z "$keyfile$keyline$principal" ] || { echo "signer path takes only --repo" >&2; exit 1; }
+    if [ -n "$repo_arg" ] && [ ! -f "$target" ]; then
+      target="$(policy_dir_for "$tier")/allowed_signers"
+    fi
+    if [ ! -f "$target" ]; then
+      echo "no signers file: $target" >&2
+      exit 1
+    fi
+    printf '%s\n' "$target"
     return
   fi
   require_root signer

@@ -655,6 +655,21 @@ skips that gate only.
 .TP
 .B signer list [\-\-repo \fIpath\fP]
 Principals, key types, fingerprints.
+.TP
+.B signer path [\-\-repo \fIpath\fP]
+The allowed\-signers file a signed tag of
+.I path
+verifies against, on stdout \(em the per\-repo override when one exists,
+else the user tier's; without
+.B \-\-repo
+the user tier's alone.
+Resolved the way the signature ceremony resolves it, so a consumer that
+discovers signed releases (the deployer's upgrade offer) never has to
+know where either file lives.
+Prints nothing and exits 1 when no such file exists: no signers means
+nothing verifies, which a consumer reads as no offer, never as an error.
+Unprivileged, like
+.BR "signer list" .
 .SS Ignorable-key policy
 .TP
 .B ignorable add \fIkey\fP [\-\-under \fIdir\fP] [\-\-yes]

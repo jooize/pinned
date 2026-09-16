@@ -112,6 +112,12 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
     pinned signer add|list|remove [--repo <path>] (--file <pubkey> | --key '<line>')
                                       allowed-signers ceremony:
                                       fingerprint, confirm, write
+    pinned signer path [--repo <path>]
+                                      the allowed-signers file a signed
+                                      tag verifies against (per-repo
+                                      override if it exists, else the
+                                      user tier); nothing and exit 1
+                                      when neither exists
     pinned ignorable add|remove <key> [--under <dir>]
                                       grant/withdraw a key that a ceremony
                                       may declare ignored; --under scopes

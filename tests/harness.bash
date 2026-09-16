@@ -4265,6 +4265,64 @@ assert_exit "$RC" 1 "no path is a usage error"
 assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
 
 # ---------------------------------------------------------------------------
+say "S12c: signer path (the signers file a consumer verifies against)"
+# ---------------------------------------------------------------------------
+# The deployer's signed-release offer must verify candidate tags against the
+# same file the signature ceremony will, without knowing where either tier
+# keeps it. `signer path` answers with that file -- per-repo override when
+# it exists, else the user tier's -- one line on stdout, or nothing and exit
+# 1 when no such file exists (no signers is "no offer", never an error).
+SP_USER="$PINNED_ROOT/$USERNAME/policy/allowed_signers"
+rm -f "$SP_USER"
+ANS=""
+run_pinned_split signer path
+assert_exit "$RC" 1 "no signers file anywhere -> 1"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+assert_contains "$ERRF" "no signers file" "the refusal names the state"
+
+mkdir -p "$(dirname "$SP_USER")"
+printf 'harness namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE\n' \
+  > "$SP_USER"
+chmod 640 "$SP_USER"
+run_pinned_split signer path
+assert_exit "$RC" 0 "the user tier's file answers -> 0"
+assert_eq "$(cat "$OUT")" "$SP_USER" "stdout is the user tier's path, one line"
+
+if [ "$GIT_OK" -eq 1 ]; then
+  SP_SLOT="$(slot_of "$REPO_FIX")"
+  rm -rf "$SP_SLOT/signers"
+  run_pinned_split signer path --repo "$REPO_FIX"
+  assert_exit "$RC" 0 "--repo with no per-repo override falls back to the user tier"
+  assert_eq "$(cat "$OUT")" "$SP_USER" "and names the user tier's file"
+
+  mkdir -p "$SP_SLOT/signers"
+  printf 'harness namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE\n' \
+    > "$SP_SLOT/signers/allowed_signers"
+  chmod 640 "$SP_SLOT/signers/allowed_signers"
+  run_pinned_split signer path --repo "$REPO_FIX"
+  assert_exit "$RC" 0 "--repo with a per-repo override answers -> 0"
+  assert_eq "$(cat "$OUT")" "$SP_SLOT/signers/allowed_signers" \
+    "the per-repo file outranks the user tier, as the ceremony resolves it"
+
+  rm -f "$SP_USER"
+  run_pinned_split signer path --repo "$REPO_FIX"
+  assert_exit "$RC" 0 "the per-repo file answers without a user tier"
+  run_pinned_split signer path
+  assert_exit "$RC" 1 "but the tier alone, without --repo, is still nothing -> 1"
+  assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+  rm -rf "$SP_SLOT/signers"
+
+  run_pinned_split signer path --repo "$REPO_FIX/no-such-subdir"
+  assert_exit "$RC" 1 "a --repo that is not a directory is refused"
+  assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+fi
+
+run_pinned_split signer path --file "$SUB/whatever"
+assert_exit "$RC" 1 "path takes only --repo"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+rm -f "$SP_USER"
+
+# ---------------------------------------------------------------------------
 say "S13: show (file rehearsal, repo re-display)"
 # ---------------------------------------------------------------------------
 # The repo branch re-displays what the pin NAMES and records nothing, so the
