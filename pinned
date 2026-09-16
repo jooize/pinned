@@ -1350,8 +1350,24 @@ sgit() {
   # --no-ext-diff --no-textconv in sgit_diff and the render guard above are the
   # second and third layers. Silently ignored by git older than ~2.40 -- which
   # is why the other two layers still carry their weight.
+  # Three more channels the repo's owner writes and git reads by default:
+  # refs/replace/<rev> makes every read of <rev> return another object (an
+  # approved rev reads back as a crafted commit, and a review diffs against
+  # the crafted base, so the change never shows); info/grafts rewrites a
+  # commit's parent list (a crafted commit claims the pinned line as its
+  # parent and passes the ancestry walk); the shallow file cuts parents off
+  # (a true descendant reads as unrelated -- a false alarm, not a false
+  # pass). All three are neutralised here, in the one environment every
+  # subcommand shares. --no-replace-objects covers only the first, which is
+  # why the env form is used. The two file switches name paths that do NOT
+  # exist rather than /dev/null: git opens the graft file when it exists and
+  # then prints its deprecation hint on every run, and an absent file is
+  # simply no grafts. Verified live on git 2.54: each channel honored by
+  # default, each inert under its switch.
   env -i PATH="$PATH" HOME=/var/empty \
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_GRAFT_FILE=/var/empty/no-grafts GIT_SHALLOW_FILE=/var/empty/no-shallow \
     git -C "$repo" --no-pager -c safe.directory="$repo" \
     -c attr.tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904 \
     -c core.fsmonitor=false -c core.pager=cat "$@"

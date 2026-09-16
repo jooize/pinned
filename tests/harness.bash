@@ -1344,6 +1344,39 @@ if [ "$GIT_OK" -eq 1 ]; then
   HEAD_HASH="$(hgit rev-parse 'HEAD^{commit}')"
   REPO_SLOT="$(slot_of "$REPO_FIX")"
 
+  # REGRESSION: sgit must not read through repo-owner-writable object
+  # rewrites. A same-UID process can plant refs/replace/<rev> (every read
+  # of <rev> returns a crafted object), info/grafts (a rewritten parent
+  # list) or a shallow file (parents cut off). Each is exercised through the
+  # probe against the real sgit, with a CONTROL through plain git proving
+  # the canary bites on this git version. Repo state is restored after.
+  printf 'crafted\n' > "$REPO_FIX/file.txt"
+  hgit add file.txt >/dev/null
+  hgit commit -q -m "crafted sibling" >/dev/null
+  CRAFT_HASH="$(hgit rev-parse 'HEAD^{commit}')"
+  hgit reset -q --hard "$HEAD_HASH"
+  hgit replace "$HEAD_HASH" "$CRAFT_HASH"
+  assert_eq "$(hgit cat-file -p "$HEAD_HASH:file.txt")" "crafted" \
+    "CONTROL: plain git reads the approved rev through the replace ref"
+  POUT="$(repo="$REPO_FIX" "$PROBE" sgit cat-file -p "$HEAD_HASH:file.txt" 2>"$ERRF")" || true
+  assert_eq "$POUT" "fixture" "sgit reads the approved rev's TRUE tree despite a replace ref"
+  hgit replace -d "$HEAD_HASH" >/dev/null
+  printf '%s %s\n' "$HEAD_HASH" "$CRAFT_HASH" > "$REPO_FIX/.git/info/grafts"
+  assert_eq "$(hgit -c advice.graftFileDeprecated=false rev-list --parents -1 "$HEAD_HASH" | wc -w | tr -d ' ')" 2 \
+    "CONTROL: plain git gives the approved rev a grafted parent"
+  POUT="$(repo="$REPO_FIX" "$PROBE" sgit rev-list --parents -1 "$HEAD_HASH" 2>"$ERRF")" || true
+  assert_eq "$(printf '%s' "$POUT" | wc -w | tr -d ' ')" 1 \
+    "sgit sees the approved rev's TRUE parents despite a graft"
+  rm -f "$REPO_FIX/.git/info/grafts"
+  printf '%s\n' "$CRAFT_HASH" > "$REPO_FIX/.git/shallow"
+  assert_eq "$(hgit rev-list --parents -1 "$CRAFT_HASH" | wc -w | tr -d ' ')" 1 \
+    "CONTROL: plain git reads the crafted rev as parentless under a shallow mark"
+  POUT="$(repo="$REPO_FIX" "$PROBE" sgit rev-list --parents -1 "$CRAFT_HASH" 2>"$ERRF")" || true
+  assert_eq "$(printf '%s' "$POUT" | wc -w | tr -d ' ')" 2 \
+    "sgit sees the crafted rev's TRUE parent despite a shallow mark"
+  rm -f "$REPO_FIX/.git/shallow"
+  assert_eq "$(hgit rev-parse 'HEAD^{commit}')" "$HEAD_HASH" "fixture repo restored to its first commit"
+
   # REGRESSION (was a KNOWN-BUG lock): a FIRST-EVER repo approval must
   # succeed with no pre-existing slot dir. do_approve used to walk ancestry
   # through the not-yet-created slot (`verify_ancestry "$slot/rev.git"`
