@@ -526,6 +526,13 @@ rt "$NFD"                                                 "UTF-8 NFD"
 assert_eq "$("$PROBE" encode "/Users/jooize/Projects/pinned")" \
           "%2FUsers%2Fjooize%2FProjects%2Fpinned" \
           "backward compat: pre-existing slot name is byte-identical"
+# show_slot: printable-byte escapes dim, control-byte escapes (%00-%1F, %7F)
+# red, the rest of the path untouched; plain when the colours are empty.
+assert_eq "$("$PROBE" eval 'C_DIM="<D>" C_OFF="<O>" C_RED="<R>"; show_slot "/s/%2FUsers%1Bx%7Fy%C3%A4z%25w%00v%7Eu"')" \
+          "/s/<D>%2F<O>Users<R>%1B<O>x<R>%7F<O>y<D>%C3<O><D>%A4<O>z<D>%25<O>w<R>%00<O>v<D>%7E<O>u" \
+          "show_slot: printable escapes dim, control escapes red, each wrapped once"
+assert_eq "$("$PROBE" show_slot "/s/%2FUsers%1B")" "/s/%2FUsers%1B" \
+          "show_slot: off a tty the slot prints byte for byte"
 assert_eq "$("$PROBE" encode "$NFC")" "%2Ftmp%2Fcaf%C3%A9%2Fsettings.json" \
           "NFC encodes its own bytes"
 if [ "$("$PROBE" encode "$NFC")" = "$("$PROBE" encode "$NFD")" ]; then

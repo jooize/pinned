@@ -1756,11 +1756,20 @@ decode() {
 }
 # A slot path for a human's eye: each percent escape dimmed, so the repo
 # path reads through the encoding (`%2FUsers%2Fjooize` shows as the path
-# with faint separators). Display only -- the bytes are the slot's, so a
-# copied line still names the directory; off a tty C_DIM is empty and the
-# path prints plain.
+# with faint separators). An escape that decodes to a control byte (%00-%1F,
+# %7F) is red instead: no path a human meant has one, and a path carrying
+# one is the kind of thing this display exists to make visible. Display only
+# -- the bytes are the slot's, so a copied line still names the directory;
+# off a tty every colour is empty and the path prints plain. Nothing here can
+# emit a control byte: the encoder admits only [A-Za-z0-9._-] and %XX, and
+# the substitutions insert only this script's own colour constants.
 show_slot() {
-  printf '%s' "$1" | sed "s/%[0-9A-Fa-f][0-9A-Fa-f]/${C_DIM}&${C_OFF}/g"
+  printf '%s' "$1" | sed \
+    -e "s/%[2-6][0-9A-Fa-f]/${C_DIM}&${C_OFF}/g" \
+    -e "s/%7[0-9A-Ea-e]/${C_DIM}&${C_OFF}/g" \
+    -e "s/%[89A-Fa-f][0-9A-Fa-f]/${C_DIM}&${C_OFF}/g" \
+    -e "s/%[01][0-9A-Fa-f]/${C_RED}&${C_OFF}/g" \
+    -e "s/%7[Ff]/${C_RED}&${C_OFF}/g"
 }
 
 # ---- slot storage ----------------------------------------------------------
