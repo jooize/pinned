@@ -606,6 +606,23 @@ Serves the approved bytes even when the live file has drifted \(em
 drift is
 .BR verify 's
 question, not this verb's.
+.TP
+.B rev \fIrepo\fP [\-\-release]
+The pinned rev on stdout, from the repo slot's record \(em no sudo,
+writes nothing; the repo counterpart of
+.BR cat ,
+and the one surface a consumer that syncs a flake input reads the pin
+through.
+Validates the record (declared VCS, digest shape, ownership and mode)
+before printing, and prints nothing at all on any failure (see EXIT
+STATUS).
+With
+.B \-\-release
+prints the declared release name instead, under the declared\-name
+grammar; whether the live tag still names the pin is the deployer's
+cross\-check at deploy time, not a fact the record holds.
+Answers about the record only: the checkout gates nothing here, and a
+record whose checkout is gone still answers.
 .SS Signing
 .TP
 .B sign \fIrepo\fP \fItag\fP
@@ -1096,6 +1113,19 @@ l l.
 20	the live file is missing
 30	slot invariant violation
 1	error
+.TE
+.PP
+.B rev
+answers:
+.TS
+l l.
+0	printed
+10	no slot
+13	tombstoned
+16	no declared release name (\-\-release only; rev\-only is a supported shape)
+17	record names another path (repair: review \fIrepo\fP)
+30	record ownership/mode violation
+1	corrupt, malformed, or a file slot
 .TE
 .SH FILES
 .TP

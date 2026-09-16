@@ -4140,6 +4140,131 @@ assert_exit "$RC" 1 "cat takes exactly one path"
 assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
 
 # ---------------------------------------------------------------------------
+say "S12b: rev (the repo record's verified reader)"
+# ---------------------------------------------------------------------------
+# cat's counterpart for repo slots, and the ONE surface a consumer that syncs
+# a flake input from the pin may read the rev through. Same stdout contract
+# as cat -- one line on 0, nothing in any failure case -- so every case runs
+# the split-stream driver. The codes are the shared decade classes; the
+# checkout gates nothing, so hand-written slots at non-repo paths answer.
+mkdir -p "$SUB/r"
+REV_A="1234567890abcdef1234567890abcdef12345678"
+seed_rev "$SUB/r/plain.repo" "$REV_A"
+REV_SLOT="$(slot_of "$SUB/r/plain.repo")"
+ANS=""
+run_pinned_split rev "$SUB/r/plain.repo"
+assert_exit "$RC" 0 "a well-formed repo record answers -> 0"
+assert_eq "$(cat "$OUT")" "$REV_A" "stdout is the rev, one line, undecorated"
+assert_eq "$(cat "$ERRF")" "" "and stderr is silent on success"
+
+# 16: a valid record with no declaration. Rev-only is a supported shape, so
+# the code says so where an empty line could be spliced into a URL.
+run_pinned_split rev "$SUB/r/plain.repo" --release
+assert_exit "$RC" 16 "--release on a rev-only slot -> 16"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+assert_contains "$ERRF" "rev-only" "16 names the state"
+assert_contains "$ERRF" "pinned declare" "16 names the remediation"
+
+printf 'v1.2.3\n' > "$REV_SLOT/release"
+chmod 640 "$REV_SLOT/release"
+run_pinned_split rev "$SUB/r/plain.repo" --release
+assert_exit "$RC" 0 "a declared release name answers -> 0"
+assert_eq "$(cat "$OUT")" "v1.2.3" "stdout is the declared name, one line"
+run_pinned_split rev --release "$SUB/r/plain.repo"
+assert_exit "$RC" 0 "the flag reads the same before the path"
+assert_eq "$(cat "$OUT")" "v1.2.3" "and answers the same"
+run_pinned_split rev "$SUB/r/plain.repo"
+assert_eq "$(cat "$OUT")" "$REV_A" "without --release the rev is still the answer"
+
+# The declared-name grammar is enforced on READ as deploy enforces it: a
+# record outside it refuses rather than reaching a sed expression.
+printf 'v1 bad\n' > "$REV_SLOT/release"
+run_pinned_split rev "$SUB/r/plain.repo" --release
+assert_exit "$RC" 1 "a declaration outside the grammar -> 1"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+assert_contains "$ERRF" "invalid release name" "the refusal names the grammar"
+printf 'v1.2.3\n' > "$REV_SLOT/release"
+
+# 30 is the record's own ownership/mode invariant, on either file read.
+chmod 660 "$REV_SLOT/release"
+run_pinned_split rev "$SUB/r/plain.repo" --release
+assert_exit "$RC" 30 "a group-writable release record -> 30"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+assert_contains "$ERRF" "group/other-writable" "30 names the invariant"
+chmod 640 "$REV_SLOT/release"
+chmod 660 "$REV_SLOT/rev.git"
+run_pinned_split rev "$SUB/r/plain.repo"
+assert_exit "$RC" 30 "a group-writable rev record -> 30"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+run_pinned_split rev "$SUB/r/plain.repo" --release
+assert_exit "$RC" 30 "and --release refuses on the rev record before reading the name"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+chmod 640 "$REV_SLOT/rev.git"
+run_pinned_split rev "$SUB/r/plain.repo"
+assert_exit "$RC" 0 "the remediated slot answers again"
+
+run_pinned_split rev "$SUB/r/never-pinned.repo"
+assert_exit "$RC" 10 "no record for the path -> 10"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+assert_contains "$ERRF" "no slot" "10 names the state"
+
+seed_tombstone "$SUB/r/retired.repo"
+run_pinned_split rev "$SUB/r/retired.repo"
+assert_exit "$RC" 13 "a tombstoned path -> 13"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+assert_contains "$ERRF" "no approved rev to serve" "13 says why there is nothing"
+
+# A file slot has no rev: verify and cat are that record's readers.
+run_pinned_split rev "$SUB/c/served.json"
+assert_exit "$RC" 1 "a file slot refuses -- rev serves repo pins"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+assert_contains "$ERRF" "file slot" "the refusal names the kind"
+assert_contains "$ERRF" "cat" "and the reader that serves it"
+
+# 17: the record names another spelling of the path. read_rev ECHOES the
+# digest on this rc for the ceremony's sake; a consumer must never see it.
+seed_state "$SUB/r/respelled.repo" rev.git "$REV_A  $SUB/r/Respelled.repo"
+run_pinned_split rev "$SUB/r/respelled.repo"
+assert_exit "$RC" 17 "a record naming another spelling -> 17"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout -- the digest read_rev echoes is dropped"
+assert_contains "$ERRF" "pinned review $SUB/r/respelled.repo" "17 names the repair ceremony"
+
+seed_rev "$SUB/r/short.repo" "deadbeef"
+run_pinned_split rev "$SUB/r/short.repo"
+assert_exit "$RC" 1 "a short rev -> 1"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+assert_contains "$ERRF" "40 or 64 hex" "the refusal names the length invariant"
+
+seed_rev "$SUB/r/corrupt.repo" "nothex"
+run_pinned_split rev "$SUB/r/corrupt.repo"
+assert_exit "$RC" 1 "a corrupt rev -> 1"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+
+seed_state "$SUB/r/hg.repo" rev.hg "$REV_A  $SUB/r/hg.repo"
+run_pinned_split rev "$SUB/r/hg.repo"
+assert_exit "$RC" 1 "an undeclared VCS -> 1"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+assert_contains "$ERRF" "unsupported VCS" "the refusal names the declaration"
+
+seed_rev "$SUB/r/twice.repo" "$REV_A"
+seed_pin "$SUB/r/twice.repo" "$(digest_of "$SUB/c/served.json")"
+assert_eq "$(count_state "$(slot_of "$SUB/r/twice.repo")")" 2 "fixture: slot really holds two state files"
+run_pinned_split rev "$SUB/r/twice.repo"
+assert_exit "$RC" 1 "a malformed slot -> 1"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+assert_contains "$ERRF" "malformed slot" "the error names the malformation"
+
+run_pinned_split rev "$SUB/r/plain.repo" "$SUB/r/short.repo"
+assert_exit "$RC" 1 "rev takes exactly one path"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+run_pinned_split rev "$SUB/r/plain.repo" --emit
+assert_exit "$RC" 1 "an unknown option is a usage error"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+run_pinned_split rev
+assert_exit "$RC" 1 "no path is a usage error"
+assert_eq "$(cat "$OUT")" "" "nothing reaches stdout"
+
+# ---------------------------------------------------------------------------
 say "S13: show (file rehearsal, repo re-display)"
 # ---------------------------------------------------------------------------
 # The repo branch re-displays what the pin NAMES and records nothing, so the

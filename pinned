@@ -145,7 +145,8 @@
 # nothing, though, so it stays a per-slot human decision, re-stated by every
 # ceremony exactly like `release`: a review without --store DROPS a copy the
 # slot holds today, loudly. `pinned cat` is custody's verified reader --
-# consumers must never open a slot file directly.
+# consumers must never open a slot file directly; `pinned rev` is the repo
+# slot's, for the consumer that syncs a flake input to the pin.
 #
 # THE IGNORABLE LADDER. What a slot may declare is itself gated, by two
 # root-owned policy tiers, and every rung is checked at review AND at
@@ -340,6 +341,7 @@ usage: pinned <action> [args]
                                  (sudo) declare the release name deploy syncs ref= to
   verify [options] <path>        file-pin verdict; quiet exit-code contract for gates
   cat <path>                     the approved bytes, from root custody; fail-closed
+  rev <repo> [--release]         the pinned rev (or the declared release name); fail-closed
   sign <repo> <tag>              create a signed tag at the pinned hash
   signer add|remove|list ...     (sudo) allowed-signers ceremonies
   ignorable add|remove|list ...  (sudo) ignorable-JSON-key grants
@@ -6382,6 +6384,103 @@ do_cat() {
   cat -- "$slot/approved"
 }
 
+# ---- rev -------------------------------------------------------------------
+
+# The repo counterpart of cat: the verified reader of a repo slot's record,
+# for a consumer that drives something FROM the pin (the flake sync) and
+# must never open a slot file itself. It answers about the RECORD only --
+# the checkout gates nothing, and a record whose checkout is gone still
+# answers (that is status's warning, not this verb's refusal). --release
+# swaps the rev for the declared release name, read under the same
+# declared-name grammar deploy reads it with; whether the LIVE tag still
+# names the pin is the deployer's cross-check, made at the moment it
+# matters, never a fact the record can hold.
+#
+# Stdout carries exactly one line, only on 0, so a caller captures it
+# blind and branches on the code. Every refusal is on stderr under the
+# decade classes verify and cat share (EXIT STATUS): 10 no slot, 13
+# tombstoned, 16 no declaration (--release only: rev-only is a supported
+# shape, and a code says so where an empty line could be spliced into a
+# URL), 17 the record names another spelling of the path, 30 the record's
+# own ownership/mode invariant, 1 corrupt, malformed or the wrong kind.
+do_rev() {
+  local release=0 path="" a
+  for a in "$@"; do
+    case "$a" in
+      --release) release=1 ;;
+      -*) echo "unknown rev option: $a" >&2; usage ;;
+      *)  [ -z "$path" ] || { echo "rev takes one repo path" >&2; usage; }
+          path="$a" ;;
+    esac
+  done
+  [ -n "$path" ] || usage
+  local tier slot line rc=0
+  tier="$(tier_user)"
+  path="$(canon_path "$path")" || exit 1
+  slot="$(slot_dir_for "$tier" "$path")"
+  if [ ! -d "$slot" ]; then
+    # Distinguish "no slot" from "cannot see the slots", exactly as verify
+    # does: an unreadable tier must never read as unapproved.
+    if [ -d "$PINNED_ROOT/$tier" ] && [ ! -r "$PINNED_ROOT/$tier" ]; then
+      echo "ERROR: cannot read $PINNED_ROOT/$tier -- are you in group $(pin_group "$tier")?" >&2
+      exit 1
+    fi
+    echo "no slot: $path" >&2
+    exit 10
+  fi
+  inspect_slot "$slot" || exit 1
+  case "$slot_state" in
+    none)
+      echo "no slot: $path" >&2
+      exit 10 ;;
+    pin)
+      echo "ERROR: $path has a file slot (pin.$slot_kind); rev serves repo pins -- verify or cat answer for a file" >&2
+      exit 1 ;;
+    tombstone)
+      IFS= read -r line <"$slot_file" || line=""
+      echo "REFUSE: $path is tombstoned ($line); there is no approved rev to serve" >&2
+      exit 13 ;;
+    rev) ;;
+  esac
+
+  # 30 before the record is parsed, cat's order: a record nothing
+  # unprivileged could have rewritten is the precondition for reading it.
+  verify_record_file "$slot_file" || exit 30
+  # read_rev re-verifies (cheap) and ECHOES the digest on rc 2 -- the
+  # ceremony that re-states a respelled record needs it. A consumer must
+  # not get it, so the capture is dropped on anything but 0.
+  local rev
+  rev="$(read_rev "$slot" "$path")" || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    echo "        re-approve to re-state the record for this path:" >&2
+    echo "        pinned review $path" >&2
+    exit 17
+  fi
+  [ "$rc" -eq 0 ] || exit 1
+  if [ "$release" -eq 0 ]; then
+    printf '%s\n' "$rev"
+    return 0
+  fi
+
+  if [ ! -e "$slot/release" ]; then
+    echo "REFUSE: $slot declares no release name; the slot is rev-only" >&2
+    echo "        (pinned declare $path --release <name> adds one)" >&2
+    exit 16
+  fi
+  [ -f "$slot/release" ] || {
+    echo "ERROR: $slot/release is not a regular file; malformed slot" >&2
+    exit 1
+  }
+  verify_record_file "$slot/release" || exit 30
+  local name
+  IFS= read -r name <"$slot/release" || name=""
+  validate_release_name "$name" || {
+    echo "ERROR: $slot/release declares an invalid release name; refusing" >&2
+    exit 1
+  }
+  printf '%s\n' "$name"
+}
+
 # ---- status ----------------------------------------------------------------
 
 do_status() {
@@ -8346,6 +8445,7 @@ case "$action" in
   declare)   do_declare "$@" ;;
   verify)    do_verify "$@" ;;
   cat)       do_cat "$@" ;;
+  rev)       do_rev "$@" ;;
   sign)      do_sign "$@" ;;
   signer)    do_signer "$@" ;;
   ignorable) do_ignorable "$@" ;;

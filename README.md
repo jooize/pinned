@@ -77,6 +77,15 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       13 tombstoned, 16 no stored copy,
                                       20 live file missing,
                                       30 slot invariant, 1 error)
+    pinned rev <repo> [--release]     the pinned rev on stdout, from the
+                                      repo slot's record, validated
+                                      first; --release prints the
+                                      declared release name instead;
+                                      nothing on stdout on any failure
+                                      (0 printed, 10 no slot,
+                                      13 tombstoned, 16 no declaration,
+                                      17 record names another path,
+                                      30 record mode, 1 error)
     pinned tombstone <path>           retire a pinned file that is gone
     pinned rekey <old> <new>          re-key a record to the path its
                                       content has moved to: the rev or
@@ -308,7 +317,8 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
 - `verify` is the one state table. Consumers never re-derive slot
   semantics; they read verify's exit code (0/5/10/11/13/20/30, stable
   API). The decade is the action class and the taxonomy is shared with
-  `cat` (which adds **16**, "no stored witness"); 12/14/15 are retired
+  `cat` (which adds **16**, "no stored witness") and `rev` (the repo
+  record's reader, where 16 is "no declared release name"); 12/14/15 are retired
   numbers that are never reused. The numbering rule, settled: renumber
   wholesale when coherence demands it (as the sweep into decade classes
   did), never backfill a retired slot piecemeal -- a retired number is
