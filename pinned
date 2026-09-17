@@ -2967,17 +2967,24 @@ if [ -f "$INSTALL_TARGET" ]; then
 fi
 
 # The program token of a displayed command line (the pre-sudo elevation
-# lines and deploy's command block). The dirname is provenance
-# and stays plain cyan; the basename is the ACT and goes bold inside that
-# cyan (C_B does not cancel a color, so the two compose). A bare name
-# carries no provenance and is bold whole. Scoped to the program token:
-# argument paths stay whole-token cyan like every other path this tool
-# prints. One helper because three call sites render such a line, and three
-# spellings of one rule drift.
+# lines), drawn the way sudowhat draws its execute: row, so the two lines
+# read alike on one screen: the directory's first segment bold cyan (where
+# the path is rooted -- /run, /nix and /usr against /Users), the rest of the
+# directory plain, the basename bold blue (the program the human sets
+# running). A bare name has no directory and is bold blue whole. Scoped to
+# the program token: arguments stay plain. Shared verbatim with pinnix.
 prog_disp() { # <program-path-or-name>
+  local dir first rest
   case "$1" in
-    */*) printf '%s%s/%s%s%s' "$C_CYN" "${1%/*}" "$C_B" "${1##*/}" "$C_OFF" ;;
-    *)   printf '%s%s%s%s' "$C_CYN" "$C_B" "$1" "$C_OFF" ;;
+    */*)
+      dir="${1%/*}/"
+      first="${dir#/}"
+      first="${first%%/*}"
+      case "$dir" in /*) first="/$first" ;; esac
+      rest="${dir#"$first"}"
+      printf '%s%s%s%s%s%s%s' "$C_CYN$C_B" "$first" "$C_OFF" "$rest" "$C_BLU" "${1##*/}" "$C_OFF" ;;
+    *)
+      printf '%s%s%s' "$C_BLU" "$1" "$C_OFF" ;;
   esac
 }
 
@@ -3016,8 +3023,9 @@ elevation_quote() { # token
 # pasteable; a blank line between groups would NOT be, which is why the
 # separation is indentation.
 #
-# Role colour as deploy renders commands -- sudo bold, command
-# name cyan, verb and flags plain, paths cyan -- plus one refinement: a
+# Role colour as sudowhat's execute: row renders commands -- sudo bold, the
+# program through prog_disp, flags bold blue, verb and values plain (paths
+# included) -- plus one refinement: a
 # --baseline value is a slot-digest path nobody typed (machine-derived), so it
 # renders dim to keep the eye on the --file path being approved. The colour
 # codes go into the DISPLAY string only; the exec sites build argv from the
@@ -3044,7 +3052,7 @@ elevation_cmd_disp() { # elev action args...
         ;;
       *)
         if [ "$seen" -eq 0 ]; then
-          lead="${lead:+$lead }${C_CYN}$(elevation_quote "$tok")${C_OFF}"
+          lead="${lead:+$lead }$(elevation_quote "$tok")"
         else
           fl+=(""); fv+=("$tok")     # stray positional after a flag: own line
         fi
@@ -3079,18 +3087,20 @@ elevation_cmd_disp() { # elev action args...
       ind="    "
       if [ -n "$group" ]; then pw=$((fw + 2)); fi
     fi
-    printf -v padded '%-*s' "$pw" "$name"       # pad flag (plain) so values align
+    # Pad OUTSIDE the colour so values align: %-*s would count escape bytes.
+    printf -v padded '%*s' "$((pw - ${#name}))" ''
+    [ -z "$name" ] || padded="${C_BLU}${name}${C_OFF}${padded}"
     if [ -n "${fv[$i]}" ]; then
       case "$name" in
         --baseline|--baseline-store) vcol="$C_DIM" ;;
-        *)          vcol="$C_CYN" ;;
+        *)          vcol="" ;;
       esac
-      out="$out \\"$'\n'"${ind}${padded}  ${vcol}$(elevation_quote "${fv[$i]}")${C_OFF}"
+      out="$out \\"$'\n'"${ind}${padded}  ${vcol}$(elevation_quote "${fv[$i]}")${vcol:+$C_OFF}"
     else
       # No value: emit the bare flag. Padding it would leave trailing blanks
       # before the ` \`, which survive a copy-paste and read as a truncated
       # value on the line the human is auditing.
-      out="$out \\"$'\n'"${ind}${name}"
+      out="$out \\"$'\n'"${ind}${C_BLU}${name}${C_OFF}"
     fi
     i=$((i + 1))
   done
