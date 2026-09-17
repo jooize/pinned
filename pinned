@@ -190,7 +190,7 @@ set -euo pipefail
 
 # The release this file IS. Bumped in the release commit the tag points at,
 # so a checkout between releases reports the release it descends from.
-PINNED_VERSION="0.24.0"
+PINNED_VERSION="0.24.1"
 
 # Where this script installs itself. Override-friendly (handy for testing);
 # a packaging that owns its own prefix rewrites this line at build time.
@@ -1332,10 +1332,23 @@ sanitize_display() { # <string> -> the same string with no terminal controls
   printf '%s' "$1" | LC_ALL=C tr '\011' ' ' | LC_ALL=C tr -d '\000-\037\177'
 }
 
-# The "commits since last approval" listing, one aligned line per commit,
-# newest first:
+# The "commits since last approval" listing, one block per commit, oldest
+# first:
 #
-#   <hash>  <subject>  <n> file(s)  +<ins> -<del>
+#   <hash>  <n> file(s)  +<ins> -<del>  <subject>
+#                                         <body line>
+#
+# The aligned columns come first and the message runs to the end of the
+# line, so the subject is never truncated and never padded. That ordering
+# is also what keeps the columns true: awk measures bytes under LC_ALL=C,
+# an em dash is three of them, and padding a subject to a byte width
+# pushed every later column out by the difference.
+#
+# The WHOLE message prints, body included, indented two past the subject.
+# The authoritative diff below carries no commit messages at all, so a
+# body cut here would be approved unread -- the same reason the file
+# counts are shown: a one-line "fix typo" that rewrites forty files, or
+# that explains itself only in a body nobody saw, must not pass as one.
 #
 # Counts pluralize ("1 file", "2 files") without breaking alignment: the
 # count right-aligns in its own digit column and the noun left-aligns
@@ -1344,14 +1357,16 @@ sanitize_display() { # <string> -> the same string with no terminal controls
 # whole-token right-align would let a lone singular drag its digit out of
 # the column.)
 #
-# Orientation before the review: how many places each commit touched, so a
-# one-line "fix typo" that rewrites forty files cannot pass as one. The
-# counts come from sgit -- the same hardened path the reviewed diff takes,
-# so attr.tree=<empty tree> holds here too and no repo-local textconv or
-# diff driver can shrink a commit to "nothing changed" in this display
-# either. `log --numstat` without -p renders no patch, which is why the
-# sgit render guard passes it; --shortstat would mean parsing a sentence,
-# so the machine-readable form is the one used.
+# Weight follows the decision: subject and body are the text being
+# approved and print in the default weight, while the counts are
+# orientation and stay dim.
+#
+# The counts come from sgit -- the same hardened path the reviewed diff
+# takes, so attr.tree=<empty tree> holds here too and no repo-local
+# textconv or diff driver can shrink a commit to "nothing changed" in this
+# display either. `log --numstat` without -p renders no patch, which is why
+# the sgit render guard passes it; --shortstat would mean parsing a
+# sentence, so the machine-readable form is the one used.
 #
 # Binary files count as changed files and contribute nothing to +/-, which
 # is exactly what git reports for them ("-" in both columns). A merge has
@@ -1366,46 +1381,74 @@ sanitize_display() { # <string> -> the same string with no terminal controls
 #
 # $1 = old rev, $2 = new rev, $3 = line prefix (default none).
 print_commit_range() {
-  # %x01 delimits the commit blocks: the subject is the last field, so it
-  # may hold tabs, and %s never holds a newline (git folds the subject).
-  sgit log --reverse --format='%x01%h%x09%s' --numstat "${1}..${2}" | LC_ALL=C awk \
-    -v pre="${3:-}" -v cyn="$C_CYN" -v dim="$C_DIM" \
+  # Delimiters a commit cannot forge. This listing prints message BODIES,
+  # which are text an attacker writes, and it prints them unpaged just above
+  # the ancestry alarm the ceremony's y/N is read against. A fixed sentinel
+  # byte would let a body open a block of its own and fabricate a whole
+  # row -- a hash, a subject and a file count that belong to no commit. The
+  # sentinels carry a nonce drawn per run instead, and a commit's bytes were
+  # fixed before the nonce existed. (Inside a block the field separator is
+  # still a bare byte: a body that plants one only moves the subject/body
+  # boundary, and every byte still prints.)
+  local nonce
+  nonce="$(LC_ALL=C od -An -N16 -tx1 /dev/urandom | LC_ALL=C tr -d ' \n')"
+  case "$nonce" in
+    [0-9a-f][0-9a-f]*) ;;
+    *) echo "pinned: internal error -- no nonce for the commit listing" >&2; exit 1 ;;
+  esac
+  sgit log --reverse --numstat \
+    --format="%x01${nonce}%x02%h%x02%s%x02%b%x01${nonce}%x03" "${1}..${2}" \
+  | LC_ALL=C awk \
+    -v pre="${3:-}" -v nonce="$nonce" -v cyn="$C_CYN" -v dim="$C_DIM" \
     -v grn="$C_GRN" -v red="$C_RED" -v off="$C_OFF" '
-    # sanitize_display, in awk: the subject is attacker-written text on its
-    # way to a terminal, and this listing prints under the same ancestry
-    # alarm the ceremony below it depends on. Byte semantics (LC_ALL=C is set
-    # on the awk invocation), tab to space so the columns hold.
+    # sanitize_display, in awk: the subject and body are on their way to a
+    # terminal under the same alarm the ceremony depends on, and an ESC[1A
+    # ESC[2K inside one erases the line above it. Byte semantics (LC_ALL=C is
+    # set on the awk invocation), tab to space so the columns hold.
     function scrub(s) {
       gsub(/[\001-\010\013-\037\177]/, "", s)
       gsub(/\t/, " ", s)
       return s
     }
-    function fit(s,   k) {                      # cap the subject column
-      if (length(s) <= 60) return s
-      k = 57
-      # awk indexes bytes here, so back off over UTF-8 continuation bytes
-      # rather than cutting a character in half.
-      while (k > 0 && substr(s, k + 1, 1) ~ /^[\200-\277]$/) k--
-      return substr(s, 1, k) "..."
-    }
-    /^\001/ {
+    function endmsg(   b, k, i, a, m) {     # one finished message block
       n++
-      line = substr($0, 2)
-      t = index(line, "\t")
-      if (t > 0) { hsh[n] = substr(line, 1, t - 1); sbj[n] = fit(scrub(substr(line, t + 1))) }
-      else       { hsh[n] = line; sbj[n] = "" }
+      b = buf
+      k = index(b, sep); if (k == 0) k = length(b) + 1
+      hsh[n] = scrub(substr(b, 1, k - 1)); b = substr(b, k + 1)
+      k = index(b, sep); if (k == 0) k = length(b) + 1
+      sbj[n] = scrub(substr(b, 1, k - 1)); b = substr(b, k + 1)
+      sub(/\n+$/, "", b)                    # %b ends with a newline
+      m = (b == "" ? 0 : split(b, a, "\n"))
+      bn[n] = m
+      for (i = 1; i <= m; i++) bdy[n, i] = scrub(a[i])
       nfl[n] = 0; ins[n] = 0; del[n] = 0; mrg[n] = 1
       # %h picks its own length per commit, so the hash gets a column too.
       if (length(hsh[n]) > hw) hw = length(hsh[n])
-      if (length(sbj[n]) > sw) sw = length(sbj[n])
-      next
     }
-    /^[0-9-]+\t/ {
-      mrg[n] = 0
-      nfl[n]++
-      if ($1 != "-") ins[n] += $1
-      if ($2 != "-") del[n] += $2
-      next
+    BEGIN {
+      sep = sprintf("%c", 2)
+      st  = sprintf("%c", 1) nonce sep
+      en  = sprintf("%c", 1) nonce sprintf("%c", 3)
+    }
+    {
+      line = $0
+      if (!inmsg) {
+        if (index(line, st) == 1) {
+          inmsg = 1; buf = ""; line = substr(line, length(st) + 1)
+        } else {
+          if (n > 0 && line ~ /^[0-9-]+\t/) {
+            mrg[n] = 0
+            nfl[n]++
+            split(line, f, "\t")
+            if (f[1] != "-") ins[n] += f[1]
+            if (f[2] != "-") del[n] += f[2]
+          }
+          next
+        }
+      }
+      p = index(line, en)
+      if (p > 0) { buf = buf substr(line, 1, p - 1); inmsg = 0; endmsg(); next }
+      buf = buf line "\n"
     }
     END {
       for (j = 1; j <= n; j++) {
@@ -1417,13 +1460,14 @@ print_commit_range() {
         if (length(del[j]) > dw) dw = length(del[j])
       }
       if (hw < 1) hw = 1
-      if (sw < 1) sw = 1
       if (cw < 1) cw = 1
       if (fw < 1) fw = 1
       if (iw < 1) iw = 1
       if (dw < 1) dw = 1
+      # Where the subject starts, so the body can hang two columns under it.
+      ind = length(pre) + hw + 2 + cw + 1 + fw + 2 + (iw + 1) + 1 + (dw + 1) + 2
       for (j = 1; j <= n; j++) {
-        out = pre cyn sprintf("%-" hw "s", hsh[j]) off "  " sprintf("%-" sw "s", sbj[j]) "  "
+        out = pre cyn sprintf("%-" hw "s", hsh[j]) off "  "
         if (mrg[j])
           out = out dim sprintf("%" cw "s %-" fw "s", "-", "") "  " \
                 sprintf("%" (iw + 1) "s", "-") " " sprintf("%" (dw + 1) "s", "-") off
@@ -1433,7 +1477,9 @@ print_commit_range() {
           out = out dim sprintf("%" cw "d %-" fw "s", nfl[j], nn[j]) off "  " \
                 grn sprintf("%" (iw + 1) "s", "+" ins[j]) off " " \
                 red sprintf("%" (dw + 1) "s", "-" del[j]) off
-        print out
+        print out "  " sbj[j]
+        for (i = 1; i <= bn[j]; i++)
+          print (bdy[j, i] == "" ? "" : sprintf("%" (ind + 2) "s", "") bdy[j, i])
       }
     }
   '

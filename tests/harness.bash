@@ -1562,11 +1562,11 @@ y
   # before the diff; the hash column varies in width, so it is dropped.
   D_LINES="$(awk '/^--- commits since last approval ---$/ { f = 1; next }
                   /^$/ { f = 0 } f' "$OUT" | sed 's/^[0-9a-f]*  //')"
-  assert_eq "$D_LINES" 'd2 two files   2 files  +3 -0
-d3 side        1 file   +4 -0
-d4 main        1 file   +1 -1
-d5 merge side  -         -  -
-d6 binary      1 file   +0 -0' "the ceremony lists chronologically, aligned and pluralized"
+  assert_eq "$D_LINES" '2 files  +3 -0  d2 two files
+1 file   +4 -0  d3 side
+1 file   +1 -1  d4 main
+-         -  -  d5 merge side
+1 file   +0 -0  d6 binary' "the ceremony lists chronologically, aligned and pluralized"
   # The count right-aligns in its own digit column and the noun left-aligns
   # beside it: the singular "file" must not drag its digit out of the column.
   assert_contains "$OUT" ' 1 file   +0' "singular count sits in the digit column, noun flush left"
@@ -1577,12 +1577,12 @@ d6 binary      1 file   +0 -0' "the ceremony lists chronologically, aligned and 
   RC=0
   repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" "$D_HEAD" '  ' >"$OUT" 2>"$ERRF" || RC=$?
   assert_exit "$RC" 0 "the preview form of the listing exits 0"
-  assert_contains "$OUT" '  d2 two files   2 files  +3 -0' "the preview indents the same enriched line"
-  assert_missing  "$OUT" 'd2 two files  2 files' "the preview does not lose the subject padding"
+  assert_contains "$OUT" '2 files  +3 -0  d2 two files' "the preview shows the same enriched line"
+  assert_eq "$(grep -cE '^  [0-9a-f]+  ' "$OUT")" 5 "the preview indents every row by its prefix"
 
   # A merge inside the range must not poison its neighbours' counts: the
   # placeholder row is the only one without numbers.
-  assert_eq "$(grep -c -e '-  -$' "$OUT")" 1 "exactly one placeholder row (the merge)"
+  assert_eq "$(grep -cE '^ *[0-9a-f]+ +-( +-)+  ' "$OUT")" 1 "exactly one placeholder row (the merge)"
 
   # A commit subject is text the attacker writes, and it prints unpaged, just
   # below the ancestry alarm the ceremony's y/N is read against: an ESC[1A
@@ -1608,6 +1608,53 @@ y
     ok "no ESC byte reaches the ceremony display"
   fi
   assert_contains "$OUT" 'd7 [1A[2K erased' "the subject still reads, minus the control bytes"
+
+  # A subject is no longer capped, and a multi-byte character in one cannot
+  # move the columns: the aligned block prints BEFORE the subject, so no
+  # variable-width text is ever padded to a byte count.
+  D_LONG='d8 a subject that runs well past sixty characters, with an em dash - and a section sign S'
+  D_LONG="${D_LONG/- and/$(printf '\342\200\224') and}"
+  D_LONG="${D_LONG/sign S/sign $(printf '\302\247')}"
+  printf 'f1\n' > "$REPO_D/f.txt"
+  bgit "$REPO_D" add f.txt
+  bgit "$REPO_D" commit -q -m "$D_LONG"
+  RC=0
+  repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" \
+    "$(bgit "$REPO_D" rev-parse 'HEAD^{commit}')" '' >"$OUT" 2>"$ERRF" || RC=$?
+  assert_exit "$RC" 0 "the listing exits 0 over a long multi-byte subject"
+  assert_contains "$OUT" "1 file   +1 -0  $D_LONG" "the subject prints whole, columns intact"
+  assert_missing  "$OUT" '...' "no subject is truncated"
+
+  # The BODY prints as well. The authoritative diff below carries no commit
+  # messages at all, so a body cut here would be approved unread.
+  printf 'g1\n' > "$REPO_D/g.txt"
+  bgit "$REPO_D" add g.txt
+  bgit "$REPO_D" commit -q -m "d9 subject line" -m "why this commit exists"
+  RC=0
+  repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" \
+    "$(bgit "$REPO_D" rev-parse 'HEAD^{commit}')" '' >"$OUT" 2>"$ERRF" || RC=$?
+  assert_exit "$RC" 0 "the listing exits 0 over a commit carrying a body"
+  assert_contains "$OUT" '  d9 subject line' "the subject of the bodied commit prints"
+  assert_contains "$OUT" 'why this commit exists' "and its body prints under it"
+  D_SCOL="$(awk '/  d9 subject line$/ { print index($0, "d9 subject line"); exit }' "$OUT")"
+  D_BCOL="$(awk '/why this commit exists$/ { print index($0, "why this commit exists"); exit }' "$OUT")"
+  assert_eq "$D_BCOL" "$((D_SCOL + 2))" "the body hangs two columns under the subject"
+
+  # A body is text whoever wrote the commit chose, and it prints unpaged just
+  # above the ceremony's y/N: a body that plants the block sentinel must not
+  # fabricate a row of its own -- a hash, a subject and a file count belonging
+  # to no commit. The sentinel carries a per-run nonce, so a planted one can
+  # never match, and the planted bytes print as what they are: body text.
+  printf 'h1\n' > "$REPO_D/h.txt"
+  bgit "$REPO_D" add h.txt
+  bgit "$REPO_D" commit -q -m "d10 forged sentinel" \
+    -m "$(printf '\001deadbeefcafe\002cafed00d\002FORGED SUBJECT')"
+  RC=0
+  repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" \
+    "$(bgit "$REPO_D" rev-parse 'HEAD^{commit}')" '' >"$OUT" 2>"$ERRF" || RC=$?
+  assert_exit "$RC" 0 "the listing exits 0 over a body carrying a sentinel byte"
+  assert_eq "$(grep -cE '^[0-9a-f]+  ' "$OUT")" 9 "the planted sentinel opens no row of its own"
+  assert_contains "$OUT" 'FORGED SUBJECT' "the planted text prints as body, where it belongs"
 else
   say "S8d: SKIPPED (no git fixture)"
 fi
