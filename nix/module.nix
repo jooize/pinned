@@ -107,30 +107,14 @@ let
 
   validUser = user: builtins.match "[A-Za-z_][A-Za-z0-9_-]*" user != null;
 
-  # The operators group of the shared clone tree `pinned add` fetches into
-  # (/var/db/pinned-clones). ONE literal spelling, matching the script's
-  # PINNED_CLONES_GROUP constant -- the script consumes this group by name
-  # and degrades to an invoker-owned clone while it is absent.
-  #
-  # The DIRECTORY is deliberately not created here: the script provisions it
-  # root-side at the first add, so a manual install lands on the same path
-  # with the same ownership. Only the group, which no script may create.
-  clonesGroup = "_pinned-clones";
-
   # Every group this module owns, one definition feeding both provisioning
-  # modes and both platforms: the per-user read groups and the shared
-  # clone-tree group differ only in name, purpose and who belongs to them.
+  # modes and both platforms: one read group per configured user.
   allGroups =
     map (user: {
       name = "_${user}-pinned";
       comment = "Root-owned pinned approval records ${user} may read";
       members = [ user ];
-    }) cfg.users
-    ++ [{
-      name = clonesGroup;
-      comment = "Operators of the shared pinned clone tree";
-      members = cfg.users;
-    }];
+    }) cfg.users;
   declaredGroups = builtins.filter (g: cfg.gids ? ${g.name}) allGroups;
   imperativeGroups = builtins.filter (g: !(cfg.gids ? ${g.name})) allGroups;
 
@@ -174,10 +158,10 @@ in
     gids = lib.mkOption {
       type = lib.types.attrsOf lib.types.int;
       default = { };
-      example = lib.literalExpression ''{ "_alice-pinned" = 411; "_pinned-clones" = 412; }'';
+      example = lib.literalExpression ''{ "_alice-pinned" = 411; }'';
       description = ''
         Optional fixed gids, keyed by group name (the per-user read
-        groups _<user>-pinned and the operators group _pinned-clones).
+        groups _<user>-pinned).
         A group named here is declared via users.groups/knownGroups with
         exactly this gid -- the preferred, declarative mode: the numbers
         live in the config, and on-disk group ownership keeps its
@@ -283,7 +267,7 @@ in
           # A stray key would otherwise be a silent no-op while its group
           # still gets an imperative first-free gid.
           assertion = lib.all (n: lib.any (g: g.name == n) allGroups) (lib.attrNames cfg.gids);
-          message = "security.pinned.gids names a group this module does not manage (expected _<user>-pinned for a configured user, or ${clonesGroup})";
+          message = "security.pinned.gids names a group this module does not manage (expected _<user>-pinned for a configured user)";
         }
         {
           # Declarative is the default expectation (the config carries
@@ -300,7 +284,7 @@ in
       environment.etc."sudoers.d/pinned".source = sudoersFile;
     }
 
-    # Two kinds of group, both CONSUMED by the script and created only here.
+    # The groups the script CONSUMES, created only here.
     #
     # Per-user read-group `_<user>-pinned`, one per security.pinned.users
     # entry. pinned chgrp's /var/db/pinned/<user> to it BY NAME during
@@ -308,12 +292,6 @@ in
     # over availability), so provisioning belongs HERE, with the tool that
     # owns the tree -- a consumer module cannot be the thing every deployment
     # depends on for its own records to be readable.
-    #
-    # Operators group `_pinned-clones`, one per machine, holding every
-    # configured user: it owns the shared clone tree, so any of them can
-    # fetch into a clone another one made. Its absence is not a privacy
-    # question -- content addressing gates trust either way -- so the script
-    # degrades to an invoker-owned clone instead of refusing.
     #
     # Per-OS split: NixOS declares groups (auto-allocated system gids);
     # Darwin creates them imperatively at activation (see darwinGroup).

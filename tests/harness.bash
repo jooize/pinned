@@ -38,24 +38,16 @@
 # is sourced, then one function is called by name.
 #
 # KNOWN COVERAGE GAPS (deliberate):
-#   - no real sudo, so the sudoers digest pin and `setup` are untested here,
-#     as is any deploy that actually rebuilds. The one piece of setup that is
-#     covered is its interpreter guard (S17), reached through the PROBE as a
-#     function plus a source-level check of where do_setup calls it
-#   - the self-elevation preview is covered for `upgrade` and `deploy` (S8h,
-#     via the preview stub): the no-op exit, the Enter-gate and their
-#     refusals, plus deploy's unprivileged --dry-run carve-out. The
-#     review/add previews -- including the preview's mirrored copies of
-#     review --step's refusals -- stay untested (S8e covers the root-side
-#     originals, which are the authoritative half)
+#   - no real sudo, so the sudoers digest pin and `setup` are untested here.
+#     The one piece of setup that is covered is its interpreter guard (S17),
+#     reached through the PROBE as a function plus a source-level check of
+#     where do_setup calls it
+#   - the preview's mirrored copies of review --step's refusals stay
+#     untested (S8e covers the root-side originals, which are the
+#     authoritative half)
 #   - signed-tag approval / `signer` / `sign` need an SSH agent and keys
 #   - the group-read tier (0750 root:_<user>-pinned) cannot be built without
 #     root: the stub always takes ensure_tree's no-group 0700 branch
-#   - `add` clones as the harness user directly: the real `sudo -u <invoker>`
-#     drop, and the clone tree's root:_pinned-clones 2775 ownership, need
-#     root -- the stub always takes the no-group branch there too, so what
-#     S15 covers is the clone's scrubbed environment, its provenance rules
-#     and everything downstream of it, never the privilege drop itself
 #   - the OWNER half of verify's exit-30 invariant is never driven through a
 #     FILE: every fixture is owned by the harness user, who IS the tier, and
 #     chowning one to a third account needs root. The decision itself is
@@ -124,16 +116,6 @@ assert_before() { # file first-needle second-needle label -- ORDER on the page
     fail "$4 (line of '$2' = ${a:-none}, of '$3' = ${b:-none})"
   fi
 }
-assert_row() { # file label path desc -- ONE output line carries both
-  # The upgrade plan is one row per input: label column, then the path. The
-  # pairing is what the assertions are about ("this path is highlighted for
-  # approval"), and the column width moves with the labels a plan happens to
-  # hold, so the two needles are matched on the same line, not on the page.
-  if grep -F -e "$3" "$1" | grep -qF -e "$2"; then ok "$4"; else fail "$4 (no '$2' row for $3)"; fi
-}
-assert_no_row() { # file label path desc
-  if grep -F -e "$3" "$1" | grep -qF -e "$2"; then fail "$4 (unexpected '$2' row for $3)"; else ok "$4"; fi
-}
 assert_file() { # path label
   if [ -f "$1" ]; then ok "$2"; else fail "$2 (no such file: $1)"; fi
 }
@@ -158,18 +140,14 @@ USERNAME="$(id -un)"
 ANS=""
 RC=0
 POUT=""
-# The preview stub's two env seams (see run_preview); empty = a tty,
-# unprivileged.
+# The preview stub's env seam (see run_preview); empty = a tty.
 NOTTY=""
-TESTROOT=""
 
 # Fixture paths for the two constants the sed below bakes into the stub. They
 # are plain shell variables here -- the harness uses them to build and inspect
 # fixture state; exporting them would do nothing, since the stub no longer
 # reads the environment for either.
 PINNED_ROOT="$FIX/pinroot"
-# The shared clone tree `add` provisions for url arguments (S15).
-PINNED_CLONES="$FIX/pinclones"
 export INSTALL_TARGET="$FIX/no-such-install"
 # The OPTIONAL machine tier of the ignorable policy, pointed at the fixture
 # instead of /etc/pinned so the harness never reads (or needs) machine state.
@@ -193,7 +171,6 @@ need '^  inv="\${SUDO_USER:-}"$'                            1 'require_root SUDO
 need '^  \[ -n "\$inv" \] ||'                               1 'require_root sudo check'
 need '^    root:\*) ;;$'                                    2 'owner allowlists'
 need '^PINNED_ROOT=/var/db/pinned$'                         1 'pin-root constant'
-need '^PINNED_CLONES=/var/db/pinned-clones$'                1 'clone-tree constant'
 need '^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json$'   1 'machine-policy constant'
 # Not stubbed for the main copy -- the fixtures want the source default
 # (empty, so the owner invariant is tier-or-root). Anchored because two
@@ -204,19 +181,15 @@ need '^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json$'   1 'machine-policy co
 # machine that declared one.
 need '^PINNED_ROOT_ONLY_OWNERS=$'                          1 'root-only-owners constant'
 need '^  install -d -m 755 -o root -g wheel "\$PINNED_ROOT"$'  1 'pin-root install'
-need '^  install -d -m 755 -o root -g wheel "\$PINNED_CLONES"$' 1 'clone-tree install'
-need '^    install -d -m 2775 -o root -g "\$PINNED_CLONES_GROUP" "\$CLONE_DIR"$' 1 'clone-dir install (group)'
-need '^    install -d -m 755 -o "\$inv" "\$CLONE_DIR"$'     1 'clone-dir install (no group)'
-need '^  sudo -u "\$inv" env -i PATH="\$PATH" \\$'          1 'clone drops to the invoker'
 need '-o root -g "\$TREE_GRP" '                             4 'slot-tree installs'
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
-need '</dev/tty'                                            20 'tty reads (15 confirms + the shared gate + 4 inside drain_tty)'
-need '^ *read -r answer </dev/tty$'                         15 'ceremony tty reads'
+need '</dev/tty'                                            18 'tty reads (13 confirms + the shared gate + 4 inside drain_tty)'
+need '^ *read -r answer </dev/tty$'                         13 'ceremony tty reads'
 need '^    if ! read -r answer </dev/tty; then$'             1 'the shared gate tty read'
 need '^gate_answer() { # <rendered gate line> <what Enter does> <stops|skips>$' 1 'the shared gate helper'
-need '^ *drain_tty$'                                        16 'a drain before every ceremony tty read'
+need '^ *drain_tty$'                                        14 'a drain before every ceremony tty read'
 need '^  saved="\$(stty -g </dev/tty 2>/dev/null)" || return 0$' 1 'drain_tty entry'
 need '^# ---- setup ---'                                    1 'library cut marker'
 need '^#!/bin/bash$'                                        1 'pinned shebang'
@@ -224,9 +197,7 @@ need '^#!/bin/bash$'                                        1 'pinned shebang'
 need 'exec sudo -- "\$elev" "\$action" "\$@"'               2 'self-elevation exec sites'
 need 'verify_ancestry "\$elev" || exit 1'                   2 'elevation-target ancestry walks'
 need '^  verify_ancestry "\$INSTALL_TARGET" || exit 1$'     1 'install-target ancestry walk'
-need 'if \[ ! -t 0 \]; then'                                2 'no-tty refusals'
-need '^  if \[ "\$EUID" -eq 0 \]; then SUDO_ARGV=(); sudo_disp=""; fi$' 1 "deploy's sudo drop"
-need '^elev_action="\$action"$'                             1 "deploy's elevation carve-out"
+need 'if \[ ! -t 0 \]; then'                                1 'no-tty refusal'
 
 # ...one of them being line 1. The script pins /bin/bash because sudo hands
 # root the caller's PATH (see the comment above its PATH export), but a
@@ -264,17 +235,12 @@ fi
 STUB_SED=(
     -e "1s#^\#!/bin/bash\$#\#!$HARNESS_BASH#"
     -e "s#^PINNED_ROOT=/var/db/pinned\$#PINNED_ROOT='$PINNED_ROOT'#"
-    -e "s#^PINNED_CLONES=/var/db/pinned-clones\$#PINNED_CLONES='$PINNED_CLONES'#"
     -e "s#^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json\$#PINNED_MACHINE_POLICY='$PINNED_MACHINE_POLICY'#"
     -e 's/^  \[ "\$EUID" -eq 0 \] ||.*/  :/'
     -e 's/^  inv="\${SUDO_USER:-}"$/  inv="$(id -un)"/'
     -e 's/^  \[ -n "\$inv" \] ||.*/  :/'
     -e "s/^    root:\\*) ;;\$/    root:*|${USERNAME}:*) ;;/"
     -e 's/^  install -d -m 755 -o root -g wheel "\$PINNED_ROOT"$/  install -d -m 755 "$PINNED_ROOT"/'
-    -e 's/^  install -d -m 755 -o root -g wheel "\$PINNED_CLONES"$/  install -d -m 755 "$PINNED_CLONES"/'
-    -e 's/^\( *\)install -d -m 2775 -o root -g "\$PINNED_CLONES_GROUP" /\1install -d -m 2775 /'
-    -e 's/^\( *\)install -d -m 755 -o "\$inv" /\1install -d -m 755 /'
-    -e 's/^  sudo -u "\$inv" env -i /  env -i /'
     -e 's/-o root -g "\$TREE_GRP" //g'
     -e 's/^\( *\)chown -R "root:\$TREE_GRP".*/\1:/'
     -e 's/^\( *\)chown "root:\$TREE_GRP".*/\1:/'
@@ -299,14 +265,8 @@ chmod 755 "$STUB"
 if grep -q '^PINNED_ROOT=/var/db/pinned$' "$STUB"; then
   say "STUB SED FAILED: the real pin root survives"; exit 2
 fi
-if grep -q '^PINNED_CLONES=/var/db/pinned-clones$' "$STUB"; then
-  say "STUB SED FAILED: the real clone tree survives"; exit 2
-fi
 if grep -q '^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json$' "$STUB"; then
   say "STUB SED FAILED: the real machine policy path survives"; exit 2
-fi
-if grep -q '^  sudo -u "\$inv" env -i ' "$STUB"; then
-  say "STUB SED FAILED: the clone still drops to the invoker via sudo"; exit 2
 fi
 if grep -q '</dev/tty' "$STUB"; then say "STUB SED FAILED: /dev/tty survives"; exit 2; fi
 if ! grep -q '^drain_tty() {$' "$STUB" || ! grep -q '^  return 0$' "$STUB"; then
@@ -320,8 +280,8 @@ fi
 
 # --- the preview stub -------------------------------------------------------
 # The main stub's `if false` elevation seam means the ceremony body runs and
-# the PRE-SUDO half never does. This second copy covers that half for
-# upgrade: the elevation gate stays LIVE (this process is not root, so the
+# the PRE-SUDO half never does. This second copy covers that half: the
+# elevation gate stays LIVE (this process is not root, so the
 # gate is taken for real) and only sudo itself is replaced -- `exec sudo ...`
 # becomes `exit 97`, a status nothing else in the script produces, so
 # "reached the elevation" is an assertion and no root command can run.
@@ -331,23 +291,14 @@ fi
 #   8. verify_ancestry on the elevation target -> no-op. INSTALL_TARGET is
 #      this stub, under $TMPDIR, whose ancestry is nobody's root-owned tree;
 #      the owner/mode check on the target ITSELF stays live (allowlist seam)
-#   9. the two no-tty refusals -> $PINNED_TEST_NOTTY, so both branches of a
-#      gate are drivable from one stub
-#  10. deploy's two EUID==0 questions -> $PINNED_TEST_ROOT: the sudo drop in
-#      the command display, and the elevation carve-out that a root deploy
-#      takes by never entering the arm. Both are what "deploy is already
-#      root" means, and seaming only one of them would stub a half-root
-#      deploy that exists nowhere. It is the only way to reach the
-#      root-context display -- and, since deploy now self-elevates, the only
-#      way to reach its rebuild confirm -- from an unprivileged harness
+#   9. the no-tty refusal -> $PINNED_TEST_NOTTY, so both branches of a gate
+#      are drivable from one stub
 PREVIEW="$FIX/pinned-preview"
 sed "${STUB_SED[@]}" \
     -e 's/exec sudo -- "\$elev" "\$action" "\$@"/exit 97/' \
-    -e 's/^elev_action="\$action"$/elev_action="$action"; [ -n "${PINNED_TEST_ROOT:-}" ] \&\& [ "$action" = deploy ] \&\& elev_action=""/' \
     -e 's/verify_ancestry "\$elev" || exit 1/:/' \
     -e 's/^  verify_ancestry "\$INSTALL_TARGET" || exit 1$/  :/' \
     -e 's/if \[ ! -t 0 \]; then/if [ -n "${PINNED_TEST_NOTTY:-}" ]; then/' \
-    -e 's/^  if \[ "\$EUID" -eq 0 \]; then SUDO_ARGV=(); sudo_disp=""; fi$/  if [ -n "${PINNED_TEST_ROOT:-}" ]; then SUDO_ARGV=(); sudo_disp=""; fi/' \
     "$SRC" > "$PREVIEW"
 chmod 755 "$PREVIEW"
 
@@ -360,11 +311,8 @@ fi
 if grep -q 'if false; then' "$PREVIEW"; then
   say "PREVIEW SED FAILED: the elevation gate was stubbed out"; exit 2
 fi
-if [ "$(grep -c 'PINNED_TEST_NOTTY' "$PREVIEW")" != 2 ]; then
-  say "PREVIEW SED FAILED: no-tty seams"; exit 2
-fi
-if [ "$(grep -c 'PINNED_TEST_ROOT' "$PREVIEW")" != 2 ]; then
-  say "PREVIEW SED FAILED: root seams"; exit 2
+if [ "$(grep -c 'PINNED_TEST_NOTTY' "$PREVIEW")" != 1 ]; then
+  say "PREVIEW SED FAILED: no-tty seam"; exit 2
 fi
 
 # The pure-function library: everything above the first action.
@@ -401,11 +349,11 @@ run_pinned_split() { # verb args... -- like run_pinned, but stderr stays in \$ER
 }
 run_preview() { # verb args... -- run_pinned against the PREVIEW stub
   # INSTALL_TARGET is this very stub, so `elev == INSTALL_TARGET` holds and
-  # the pre-sudo display block is reached. $NOTTY / $TESTROOT drive the two
-  # env seams; both default to empty, i.e. "a tty, unprivileged".
+  # the pre-sudo display block is reached. $NOTTY drives the env seam; empty
+  # means "a tty".
   printf '%s' "$ANS" > "$FIX/stdin"
   RC=0
-  INSTALL_TARGET="$PREVIEW" PINNED_TEST_NOTTY="$NOTTY" PINNED_TEST_ROOT="$TESTROOT" \
+  INSTALL_TARGET="$PREVIEW" PINNED_TEST_NOTTY="$NOTTY" \
     "$PREVIEW" "$@" <"$FIX/stdin" >"$OUT" 2>&1 || RC=$?
 }
 run_probe() { # fn args... -- stdout in \$POUT, stderr in \$ERRF
@@ -1567,262 +1515,6 @@ n
 fi
 
 # ---------------------------------------------------------------------------
-say "S8c: upgrade (review stale flake inputs, then deploy)"
-# ---------------------------------------------------------------------------
-# upgrade chains into deploy, and deploy hard-requires the per-OS rebuild
-# tool; skip the section on a machine without one (deploy itself is a
-# documented harness gap -- these cases cover upgrade's ceremony phase and
-# the dry-run/refusal surface, never an actual rebuild).
-REBUILD_TOOL="/run/current-system/sw/bin/darwin-rebuild"
-[ -x "$REBUILD_TOOL" ] || REBUILD_TOOL="/run/current-system/sw/bin/nixos-rebuild"
-if [ "$GIT_OK" -eq 1 ] && [ -x "$REBUILD_TOOL" ]; then
-  A_PIN="$(rev_in "$A_SLOT/rev.git")"
-  B_PIN="$(rev_in "$B_SLOT/rev.git")"
-  cat > "$FIX/flake.nix" <<EOF
-{
-  inputs.batch-a.url = "git+file://$REPO_A?ref=refs/heads/main&rev=$A_PIN";
-  inputs.batch-b.url = "git+file://$REPO_B?ref=refs/heads/main&rev=$B_PIN";
-}
-EOF
-
-  # Dry run: the stale repo is highlighted, the one at its pin is present
-  # but quiet, no ceremony runs, nothing recorded.
-  ANS=""
-  run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
-  assert_exit "$RC" 0 "upgrade --dry-run exits 0"
-  assert_contains "$OUT" "Inputs in $FIX/flake.nix:" "the plan names the flake it read"
-  assert_row "$OUT" "review:" "$REPO_A" "the stale repo is the highlighted row"
-  assert_row "$OUT" "at pin:" "$REPO_B" "the input at its pin is a quiet row, not an omission"
-  assert_contains "$OUT" "Dry run: no ceremonies" "no ceremony in a dry run"
-  assert_contains "$OUT" "Dry run -- nothing executed" "deploy stays a preview"
-  assert_eq "$(rev_in "$A_SLOT/rev.git")" "$A_PIN" "dry run records nothing"
-
-  # Full run: the ceremony approves the stale repo (forced batch contract:
-  # a summary even for one repo, so a decline could fall through to
-  # deploy), then deploy wants to sync the flake and stops at its
-  # confirmation gate -- the harness has no tty, so that gate is the
-  # no-tty refusal, and no root command ever runs.
-  ANS='
-y
-'
-  run_pinned upgrade --flake "$FIX/flake.nix"
-  assert_exit "$RC" 2 "deploy's confirmation gate aborts with 2"
-  assert_eq "$(rev_in "$A_SLOT/rev.git")" "$(bgit "$REPO_A" rev-parse 'HEAD^{commit}')" "the ceremony pinned the stale repo"
-  assert_contains "$OUT" "1 approved, 0 declined, 0 already pinned" "upgrade forces the batch contract for one repo"
-  assert_contains "$OUT" "no tty for confirmation" "deploy stops at its confirmation gate"
-  assert_contains "$FIX/flake.nix" "rev=$A_PIN" "the flake file was not rewritten"
-
-  # Nothing stale: the second round has no ceremonies to offer -- and says
-  # so under a list that still holds every input. But the deploy above
-  # stopped at its gate, so the flake still has A's OLD rev: A's checkout
-  # is at its pin and the flake is not, which the next deploy changes. That
-  # row must not be a quiet "at pin:" (it once was, and read as "nothing
-  # happens" over a round that moves a rev).
-  ANS=""
-  run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
-  assert_exit "$RC" 0 "an up-to-date upgrade dry run exits 0"
-  assert_contains "$OUT" "nothing to approve" "no stale inputs reported"
-  assert_contains "$OUT" "nothing to approve -- 1 approved rev not yet in the flake" \
-    "the tail counts the approval the flake does not carry"
-  assert_missing "$OUT" "every pinned input is at its approved rev" \
-    "and does not claim nothing is left to do"
-  assert_row "$OUT" "deploy:" "$REPO_A" "the approved repo the flake lags is a deploy row"
-  assert_contains "$OUT" "(approved $(bgit "$REPO_A" rev-parse 'HEAD^{commit}' | cut -c1-10); the flake still has ${A_PIN:0:10})" \
-    "naming the approved rev and the one the flake still has"
-  assert_row "$OUT" "at pin:" "$REPO_B" "the one that never moved stays quiet"
-  assert_no_row "$OUT" "review:" "$REPO_A" "with nothing highlighted for approval"
-
-  # A tag-declared slot is never plain-approved: it is listed for manual
-  # review --tag and the plain-review list stays empty. The tag is a
-  # REAL one at the approved rev -- deploy's own live-tag cross-check
-  # refuses a declared tag it cannot find (a distinct, correct refusal
-  # this case is not about).
-  printf 'b3\n' > "$REPO_B/f"; bgit "$REPO_B" commit -q -am b3
-  bgit "$REPO_B" tag v9 "$B_PIN"
-  printf 'v9\n' > "$B_SLOT/release"
-  ANS=""
-  run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
-  assert_exit "$RC" 0 "a tag-declared stale input does not break upgrade"
-  assert_contains "$OUT" "review --tag by hand" "tag-declared slot routed to manual approval"
-  assert_no_row "$OUT" "review:" "$REPO_B" "a tag-declared slot is never highlighted for a plain review"
-  assert_row "$OUT" "skipped:" "$REPO_B" "it is a skipped row instead"
-  rm -f "$B_SLOT/release"
-  bgit "$REPO_B" tag -d v9 >/dev/null
-
-  # A tag-declared slot whose HEAD carries EXACTLY ONE release tag joins
-  # the batch: the ceremony approves that commit under that name, and the
-  # declaration follows the release (v9 -> v10).
-  printf 'v9\n' > "$B_SLOT/release"
-  bgit "$REPO_B" tag v10
-  ANS='
-y
-'
-  run_pinned upgrade --flake "$FIX/flake.nix"
-  assert_exit "$RC" 2 "tagged upgrade reaches deploy's confirmation gate"
-  assert_contains "$OUT" "(release v10)" "the plan names the HEAD release"
-  assert_eq "$(rev_in "$B_SLOT/rev.git")" "$(bgit "$REPO_B" rev-parse 'HEAD^{commit}')" "the tagged repo pinned at its release"
-  assert_eq "$(cat "$B_SLOT/release")" "v10" "the declaration followed the release"
-
-  # A release behind HEAD is the common shape (tag, then keep committing).
-  # It never routes: the row is skipped, but names the newest release past
-  # the pin as the thing to type by hand, with the HEAD gap for orientation.
-  printf 'b4\n' > "$REPO_B/f"; bgit "$REPO_B" commit -q -am b4
-  bgit "$REPO_B" tag v11
-  printf 'b5\n' > "$REPO_B/f"; bgit "$REPO_B" commit -q -am b5
-  ANS=""
-  run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
-  assert_exit "$RC" 0 "a release behind HEAD does not break upgrade"
-  assert_contains "$OUT" "newest release past the pin is v11, unverified -- review --tag v11 by hand" \
-    "the by-hand hint names the release behind HEAD"
-  assert_contains "$OUT" "HEAD is 1 commit past that release" "and how far HEAD stands past it"
-  assert_missing "$OUT" "review:" "naming is not routing: nothing joins the batch"
-  assert_eq "$(rev_in "$B_SLOT/rev.git")" "$(bgit "$REPO_B" rev-parse 'v10^{commit}')" \
-    "the plan records nothing"
-
-  # Several tags at HEAD is ambiguity, never a guess: all are named, none is
-  # put in the command.
-  bgit "$REPO_B" tag v12; bgit "$REPO_B" tag v13
-  ANS=""
-  run_pinned upgrade --flake "$FIX/flake.nix" --dry-run
-  assert_exit "$RC" 0 "ambiguous HEAD tags do not break upgrade"
-  assert_contains "$OUT" "newest releases past the pin are v12, v13, unverified -- review --tag by hand" \
-    "several tags at HEAD route to manual, all named, none chosen"
-  assert_missing "$OUT" "review --tag v12" "no name is picked for the command"
-  assert_missing "$OUT" "v11" "the ancestry maximum hides the older release"
-  bgit "$REPO_B" tag -d v11 >/dev/null; bgit "$REPO_B" tag -d v12 >/dev/null; bgit "$REPO_B" tag -d v13 >/dev/null
-
-  # THE ANCESTRY FLOOR (S8f) is upgrade's admission rule: an automatic
-  # ceremony only ever covers a FORWARD checkout. A checkout sitting behind
-  # its pin, or off the pinned line entirely, is named in the plan with the
-  # flag that would declare it and never joins the batch. (The backward one
-  # is also the state the old commit-count staleness test could not see at
-  # all: `rev-list --count <pin>..HEAD` answered 0 for it.)
-  REPO_BK="$FIX/upg-back"; REPO_DV="$FIX/upg-div"; REPO_FW="$FIX/upg-fwd"
-  mkdir -p "$REPO_BK" "$REPO_DV" "$REPO_FW"
-  for ur in "$REPO_BK" "$REPO_DV" "$REPO_FW"; do
-    bgit "$ur" init -q
-    printf 'u1\n' > "$ur/f"; bgit "$ur" add f; bgit "$ur" commit -q -m u1
-    printf 'u2\n' > "$ur/f"; bgit "$ur" commit -q -am u2
-  done
-  BK_PIN="$(bgit "$REPO_BK" rev-parse 'HEAD^{commit}')"
-  DV_PIN="$(bgit "$REPO_DV" rev-parse 'HEAD^{commit}')"
-  FW_PIN="$(bgit "$REPO_FW" rev-parse 'HEAD~1^{commit}')"
-  seed_rev "$REPO_BK" "$BK_PIN"
-  seed_rev "$REPO_DV" "$DV_PIN"
-  seed_rev "$REPO_FW" "$FW_PIN"
-  bgit "$REPO_BK" reset --hard -q HEAD~1
-  bgit "$REPO_DV" checkout -q -b side HEAD~1
-  printf 'u3\n' > "$REPO_DV/f"; bgit "$REPO_DV" commit -q -am u3
-  cat > "$FIX/flake3.nix" <<EOF
-{
-  inputs.upg-back.url = "git+file://$REPO_BK?rev=$BK_PIN";
-  inputs.upg-div.url = "git+file://$REPO_DV?rev=$DV_PIN";
-  inputs.upg-fwd.url = "git+file://$REPO_FW?rev=$FW_PIN";
-}
-EOF
-  ANS=""
-  run_pinned upgrade --flake "$FIX/flake3.nix" --dry-run
-  assert_exit "$RC" 0 "a plan holding refused repos still exits 0"
-  assert_contains "$OUT" "checkout is backward of the pin -- review --backward by hand" \
-    "a backward checkout is refused in the plan"
-  assert_contains "$OUT" "checkout diverged from the pin -- review --diverged by hand" \
-    "a diverged checkout is refused in the plan"
-  assert_row "$OUT" "review:" "$REPO_FW" "the forward repo is the one highlighted for approval"
-  assert_no_row "$OUT" "review:" "$REPO_BK" "the backward one is not"
-  assert_no_row "$OUT" "review:" "$REPO_DV" "and neither is the diverged one"
-
-  ANS='
-y
-'
-  run_pinned upgrade --flake "$FIX/flake3.nix"
-  assert_exit "$RC" 2 "the mixed upgrade reaches deploy's confirmation gate"
-  assert_contains "$OUT" "1 approved, 0 declined, 0 already pinned" \
-    "only the forward repo got a ceremony"
-  assert_eq "$(rev_in "$(slot_of "$REPO_FW")/rev.git")" "$(bgit "$REPO_FW" rev-parse 'HEAD^{commit}')" \
-    "the forward repo was approved"
-  assert_eq "$(rev_in "$(slot_of "$REPO_BK")/rev.git")" "$BK_PIN" "the backward repo's pin is untouched"
-  assert_eq "$(rev_in "$(slot_of "$REPO_DV")/rev.git")" "$DV_PIN" "the diverged repo's pin is untouched"
-
-  # The round done, the forward repo is a quiet at-pin row BESIDE the two
-  # refused ones -- and a plan with nothing to approve but something refused
-  # must not claim every input is at its pin. The flake is brought up to the
-  # new pin first (what the deploy the gate stopped would have done), so
-  # this case stays about refused rows; flake lag has its own cases.
-  FW_NEW="$(bgit "$REPO_FW" rev-parse 'HEAD^{commit}')"
-  sed -i.bak "s/rev=$FW_PIN/rev=$FW_NEW/" "$FIX/flake3.nix"
-  ANS=""
-  run_pinned upgrade --flake "$FIX/flake3.nix" --dry-run
-  assert_exit "$RC" 0 "the follow-up plan exits 0"
-  assert_row "$OUT" "at pin:" "$REPO_FW" "the approved repo drops to a quiet row"
-  assert_row "$OUT" "refused:" "$REPO_BK" "beside the refused backward checkout"
-  assert_contains "$OUT" "no input above is a forward checkout upgrade may cover" \
-    "and the summary stays honest about why nothing is actionable"
-  assert_missing "$OUT" "every pinned input is at its approved rev" \
-    "the at-their-pins wording is not claimed over refused rows"
-
-  # Availability probe: a pin the checkout no longer holds is warned about
-  # EARLY (status and deploy's scan), instead of surfacing as a nix fetch
-  # error mid-rebuild. A warning, never a refusal: nix's store cache may
-  # still satisfy the input.
-  REPO_C="$FIX/batch-c"
-  mkdir -p "$REPO_C"
-  bgit "$REPO_C" init -q; printf 'c1\n' > "$REPO_C/f"; bgit "$REPO_C" add f; bgit "$REPO_C" commit -q -m c1
-  FAKE_REV="1234567890abcdef1234567890abcdef12345678"
-  seed_rev "$REPO_C" "$FAKE_REV"
-  ANS=""
-  run_pinned status "$REPO_C"
-  assert_exit "$RC" 0 "status on a repo whose pin is gone still reports"
-  assert_contains "$OUT" "missing from this checkout" "status warns the pinned rev is unfetchable"
-  cat > "$FIX/flake2.nix" <<EOF
-{
-  inputs.batch-c.url = "git+file://$REPO_C?rev=$FAKE_REV";
-}
-EOF
-  ANS=""
-  run_pinned deploy --flake "$FIX/flake2.nix" --dry-run
-  assert_exit "$RC" 0 "deploy dry run tolerates the missing rev"
-  assert_contains "$OUT" "missing from the checkout" "deploy warns early about the unfetchable pin"
-
-  # EVERY input is a row. An input with no rev=, a repo with no pin slot and
-  # a pinned path with no checkout are all states upgrade will not act on --
-  # and all states the plan must SHOW, because an omitted line is
-  # indistinguishable from a tool that never looked at the input. Deploy
-  # stays the authority on them; the plan only says they are there.
-  REPO_NR="$FIX/upg-norev"; REPO_NS="$FIX/upg-noslot"; REPO_GONE="$FIX/upg-gone"
-  mkdir -p "$REPO_NR" "$REPO_NS"
-  for ur in "$REPO_NR" "$REPO_NS"; do
-    bgit "$ur" init -q
-    printf 'n1\n' > "$ur/f"; bgit "$ur" add f; bgit "$ur" commit -q -m n1
-  done
-  NR_REV="$(bgit "$REPO_NR" rev-parse 'HEAD^{commit}')"
-  NS_REV="$(bgit "$REPO_NS" rev-parse 'HEAD^{commit}')"
-  seed_rev "$REPO_NR" "$NR_REV"
-  seed_rev "$REPO_GONE" "$NS_REV"
-  cat > "$FIX/flake4.nix" <<EOF
-{
-  inputs.upg-norev.url = "git+file://$REPO_NR?ref=refs/heads/main";
-  inputs.upg-noslot.url = "git+file://$REPO_NS?rev=$NS_REV";
-  inputs.upg-gone.url = "git+file://$REPO_GONE?rev=$NS_REV";
-}
-EOF
-  ANS=""
-  run_pinned upgrade --flake "$FIX/flake4.nix" --dry-run
-  assert_exit "$RC" 0 "a plan of inputs upgrade cannot act on exits 0"
-  assert_row "$OUT" "no pin:" "$REPO_NR" "an input without rev= is a row"
-  assert_row "$OUT" "no slot:" "$REPO_NS" "an input without a pin slot is a row"
-  assert_row "$OUT" "no checkout:" "$REPO_GONE" "a pinned path with no checkout is a row"
-  assert_contains "$OUT" "nothing to approve" "none of the three is actionable"
-  assert_contains "$OUT" "Dry run -- nothing executed" "and the round still falls through to deploy"
-
-  # Malformed argv dies before anything runs.
-  ANS=""
-  run_pinned upgrade --bogus
-  assert_exit "$RC" 1 "unknown upgrade option is usage"
-else
-  say "S8c: SKIPPED (no git fixture or no rebuild tool)"
-fi
-
-# ---------------------------------------------------------------------------
 say "S8d: per-commit diffstat in the commits-since listing"
 # ---------------------------------------------------------------------------
 # The listing is orientation a trust decision is read against, so the counts
@@ -2109,13 +1801,6 @@ n
   assert_exit "$RC" 1 "--step with --file is refused"
   assert_contains "$OUT" "its own ceremony" "the refusal names the file ceremony"
 
-  # upgrade's internal batch contract cannot host an interactive walk.
-  RC=0
-  printf '' > "$FIX/stdin"
-  APPROVE_BATCH=1 "$STUB" review "$REPO_E" --step <"$FIX/stdin" >"$OUT" 2>&1 || RC=$?
-  assert_exit "$RC" 1 "--step inside a batch review is refused"
-  assert_contains "$OUT" "does not run inside a batch review" "the refusal names the batch rule"
-
   # A first approval has no pin to step from.
   REPO_F="$FIX/stepfix-new"
   mkdir -p "$REPO_F"
@@ -2354,553 +2039,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-say "S8g: the signed-release upgrade offer"
-# ---------------------------------------------------------------------------
-# upgrade meeting a stale repo with a NEWER SIGNED release and an installed
-# signer key offers "verify the tag and pin it" instead of a review. The
-# thing under test is the SELECTION: candidates are filtered by ancestry,
-# then VERIFIED, and only the verified subset is ordered -- so no
-# attacker-writable tag name can ever choose what a ceremony covers.
-#
-# The section needs a signing key, not an agent: git's ssh format signs
-# straight from an unencrypted key FILE, so the whole path (sign, discover,
-# verify, pin) runs here. Probed rather than assumed -- a git or ssh-keygen
-# without SSHSIG skips the section instead of failing it, the GIT_OK /
-# REBUILD_TOOL pattern above.
-SIGN_OK=0
-SIGN_KEY="$FIX/signer.key"
-SIGN_KEY2="$FIX/outsider.key"
-USER_SIGNERS="$PINNED_ROOT/$USERNAME/policy/allowed_signers"
-if [ "$GIT_OK" -eq 1 ] && command -v ssh-keygen >/dev/null 2>&1 \
-   && ssh-keygen -t ed25519 -N '' -C pinned-harness -f "$SIGN_KEY" -q >/dev/null 2>&1 \
-   && ssh-keygen -t ed25519 -N '' -C pinned-outsider -f "$SIGN_KEY2" -q >/dev/null 2>&1; then
-  SIGN_PROBE="$FIX/signprobe"
-  mkdir -p "$SIGN_PROBE"
-  bgit "$SIGN_PROBE" init -q
-  printf 'p\n' > "$SIGN_PROBE/f"; bgit "$SIGN_PROBE" add f
-  bgit "$SIGN_PROBE" commit -q -m p
-  printf 'harness namespaces="git" %s\n' "$(cat "$SIGN_KEY.pub")" > "$FIX/allowed.probe"
-  if bgit "$SIGN_PROBE" -c gpg.format=ssh -c user.signingkey="$SIGN_KEY" \
-       tag -s probe -m probe >/dev/null 2>&1 \
-     && bgit "$SIGN_PROBE" -c gpg.ssh.allowedSignersFile="$FIX/allowed.probe" \
-       verify-tag probe >/dev/null 2>&1; then
-    SIGN_OK=1
-  fi
-fi
-
-sign_tag() { # repo tag [commit] -- an ordinary `git tag -s`, ssh format
-  local r="$1" t="$2"; shift 2
-  bgit "$r" -c gpg.format=ssh -c user.signingkey="$SIGN_KEY" \
-    tag -s "$t" -m "release $t" "$@"
-}
-sign_tag_outsider() { # repo tag [commit] -- signed by a key nobody installed
-  local r="$1" t="$2"; shift 2
-  bgit "$r" -c gpg.format=ssh -c user.signingkey="$SIGN_KEY2" \
-    tag -s "$t" -m "release $t" "$@"
-}
-seed_signers_user() { # pubkey-file -- as the signer ceremony would record it
-  mkdir -p "$(dirname "$USER_SIGNERS")"
-  printf 'harness namespaces="git" %s\n' "$(cat "$1")" > "$USER_SIGNERS"
-  chmod 640 "$USER_SIGNERS"
-}
-
-if [ "$GIT_OK" -eq 1 ] && [ -x "$REBUILD_TOOL" ] && [ "$SIGN_OK" -eq 1 ]; then
-  # REPO_S, rev-only slot, linear history:
-  #   s1 <- the pin
-  #   s2   tag v1        signed by the installed key
-  #   s3   tags v2, v2-vendor -- both signed by the installed key
-  #   s4   HEAD; tag v3-evil signed by an OUTSIDER, tag v4-plain unsigned
-  # The maximum of the VERIFIED set is s3, so v2 and v2-vendor are the offer;
-  # the newer names at HEAD carry no signature this machine trusts and never
-  # enter the selection at all.
-  REPO_S="$FIX/signfix"
-  mkdir -p "$REPO_S"
-  bgit "$REPO_S" init -q
-  printf 's1\n' > "$REPO_S/f"; bgit "$REPO_S" add f; bgit "$REPO_S" commit -q -m s1
-  S_PIN="$(bgit "$REPO_S" rev-parse 'HEAD^{commit}')"
-  printf 's2\n' > "$REPO_S/f"; bgit "$REPO_S" commit -q -am s2
-  sign_tag "$REPO_S" v1
-  printf 's3\n' > "$REPO_S/f"; bgit "$REPO_S" commit -q -am s3
-  S_REL="$(bgit "$REPO_S" rev-parse 'HEAD^{commit}')"
-  sign_tag "$REPO_S" v2
-  sign_tag "$REPO_S" v2-vendor
-  printf 's4\n' > "$REPO_S/f"; bgit "$REPO_S" commit -q -am s4
-  sign_tag_outsider "$REPO_S" v3-evil
-  bgit "$REPO_S" tag v4-plain
-  S_SLOT="$(slot_of "$REPO_S")"
-  seed_rev "$REPO_S" "$S_PIN"
-
-  # REPO_T, TAG-DECLARED slot: the offer covers these too, and outranks the
-  # head_release_tag rule. HEAD carries no release, so without the offer this
-  # repo would be routed to a by-hand `review --tag`.
-  REPO_T="$FIX/signfix-tagged"
-  mkdir -p "$REPO_T"
-  bgit "$REPO_T" init -q
-  printf 't1\n' > "$REPO_T/f"; bgit "$REPO_T" add f; bgit "$REPO_T" commit -q -m t1
-  T_PIN="$(bgit "$REPO_T" rev-parse 'HEAD^{commit}')"
-  bgit "$REPO_T" tag t1
-  printf 't2\n' > "$REPO_T/f"; bgit "$REPO_T" commit -q -am t2
-  T_REL="$(bgit "$REPO_T" rev-parse 'HEAD^{commit}')"
-  sign_tag "$REPO_T" t2
-  printf 't3\n' > "$REPO_T/f"; bgit "$REPO_T" commit -q -am t3
-  T_SLOT="$(slot_of "$REPO_T")"
-  seed_rev "$REPO_T" "$T_PIN"
-  seed_state "$REPO_T" release t1
-
-  cat > "$FIX/flake-signed.nix" <<EOF
-{
-  inputs.signfix.url = "git+file://$REPO_S?rev=$S_PIN";
-  inputs.signfix-tagged.url = "git+file://$REPO_T?rev=$T_PIN";
-}
-EOF
-
-  # No installed signer key: no offer at all, silently -- the repos take
-  # their ordinary routes (plain review; by-hand --tag for the declared one).
-  ANS=""
-  run_pinned upgrade --flake "$FIX/flake-signed.nix" --dry-run
-  assert_exit "$RC" 0 "the plan without a signers file exits 0"
-  assert_missing "$OUT" "signed release" "no signers file means no offer"
-  assert_contains "$OUT" "newest release past the pin is t2, unverified -- review --tag t2 by hand" \
-    "and the tag-declared repo falls back to by-hand approval, the unverified name as orientation"
-
-  seed_signers_user "$SIGN_KEY.pub"
-
-  # With the key installed the plan routes both repos to the signature gate,
-  # and says which release -- not which HEAD -- is about to be pinned.
-  ANS=""
-  run_pinned upgrade --flake "$FIX/flake-signed.nix" --dry-run
-  assert_exit "$RC" 0 "the plan with a signers file exits 0"
-  assert_contains "$OUT" "(signed release v2, v2-vendor -- signature-gated)" \
-    "both tags naming the maximum verified commit ride along"
-  assert_contains "$OUT" "HEAD is 1 commit past the release" \
-    "the orientation names the gap between HEAD and the release"
-  assert_missing "$OUT" "v3-evil" "a tag signed by an uninstalled key is not a candidate"
-  assert_missing "$OUT" "v4-plain" "an unsigned tag at HEAD is not a candidate"
-  assert_contains "$OUT" "(signed release t2 -- signature-gated)" \
-    "the offer outranks the tag-declared route"
-  assert_missing "$OUT" "review --tag t2 by hand" \
-    "so the by-hand tag skip no longer applies to it"
-  assert_eq "$(rev_in "$S_SLOT/rev.git")" "$S_PIN" "the plan records nothing"
-
-  # The ceremony IS review --signed-tag: its y/N is the offer's acceptance.
-  ANS='y
-y
-'
-  run_pinned upgrade --flake "$FIX/flake-signed.nix"
-  assert_exit "$RC" 2 "the signed upgrade reaches deploy's confirmation gate"
-  assert_contains "$OUT" "signature verified against $USER_SIGNERS" \
-    "the ceremony verified against the root-owned signers file"
-  assert_contains "$OUT" "2/2 tags agree on the commit below" \
-    "the agreeing tags are read as k-of-n agreement"
-  assert_eq "$(rev_in "$S_SLOT/rev.git")" "$S_REL" "the RELEASE is pinned, not HEAD"
-  assert_eq "$(cat "$S_SLOT/release")" "v2" "the declaration landed in the slot"
-  assert_eq "$(rev_in "$T_SLOT/rev.git")" "$T_REL" "the tag-declared repo pinned at its signed release"
-  assert_eq "$(cat "$T_SLOT/release")" "t2" "and its declaration followed the release"
-
-  # Nothing verified remains above the new pin: the only newer names are the
-  # outsider's signature and a bare name, so the repo drops back to its
-  # ordinary route rather than being offered anything.
-  ANS=""
-  run_pinned upgrade --flake "$FIX/flake-signed.nix" --dry-run
-  assert_exit "$RC" 0 "the follow-up plan exits 0"
-  assert_missing "$OUT" "signed release" "no verified tag above the pin means no offer"
-  assert_contains "$OUT" "no release tag past the pin -- review --tag by hand" \
-    "the tag-declared slot is back to by-hand approval, with nothing to name"
-
-  # A decline is the offer's refusal: the batch contract skips this repo.
-  bgit "$REPO_S" tag -d v3-evil >/dev/null
-  bgit "$REPO_S" tag -d v4-plain >/dev/null
-  sign_tag "$REPO_S" v5
-  ANS='n
-'
-  run_pinned upgrade --flake "$FIX/flake-signed.nix"
-  assert_exit "$RC" 2 "declining the offer still reaches deploy"
-  assert_contains "$OUT" "(signed release v5 -- signature-gated)" "the new release is offered"
-  assert_contains "$OUT" "0 approved, 1 declined" "the decline skipped the repo"
-  assert_contains "$OUT" "past the pin; skipped this round" \
-    "the deploy table names the skip on the declined repo's row"
-  assert_eq "$(rev_in "$S_SLOT/rev.git")" "$S_REL" "a declined offer moves no pin"
-
-  # VERIFIED TAGS THAT DO NOT ORDER: two signed releases on branches that
-  # merge into HEAD. Both descend from the pin and both are ancestors of
-  # HEAD, but neither contains the other -- there is no maximum to offer, so
-  # nothing here may choose one. Named loudly, never automatic.
-  REPO_D2="$FIX/signfix-split"
-  mkdir -p "$REPO_D2"
-  bgit "$REPO_D2" init -q
-  printf 'd0\n' > "$REPO_D2/f"; bgit "$REPO_D2" add f; bgit "$REPO_D2" commit -q -m d0
-  D2_PIN="$(bgit "$REPO_D2" rev-parse 'HEAD^{commit}')"
-  bgit "$REPO_D2" checkout -q -b sa
-  printf 'da\n' > "$REPO_D2/a"; bgit "$REPO_D2" add a; bgit "$REPO_D2" commit -q -m da
-  sign_tag "$REPO_D2" rel-a
-  bgit "$REPO_D2" checkout -q main
-  bgit "$REPO_D2" checkout -q -b sb
-  printf 'db\n' > "$REPO_D2/b"; bgit "$REPO_D2" add b; bgit "$REPO_D2" commit -q -m db
-  sign_tag "$REPO_D2" rel-b
-  bgit "$REPO_D2" checkout -q main
-  bgit "$REPO_D2" merge -q --no-ff -m ma sa
-  bgit "$REPO_D2" merge -q --no-ff -m mb sb
-  seed_rev "$REPO_D2" "$D2_PIN"
-  cat > "$FIX/flake-split.nix" <<EOF
-{
-  inputs.signfix-split.url = "git+file://$REPO_D2?rev=$D2_PIN";
-}
-EOF
-  ANS=""
-  run_pinned upgrade --flake "$FIX/flake-split.nix" --dry-run
-  assert_exit "$RC" 0 "a plan with disagreeing verified tags exits 0"
-  assert_contains "$OUT" "verified signed tags disagree -- review --signed-tag by hand" \
-    "no unique maximum is a loud skip"
-  assert_no_row "$OUT" "review:" "$REPO_D2" "and the repo joins no batch"
-  ANS='y
-'
-  run_pinned upgrade --flake "$FIX/flake-split.nix"
-  assert_exit "$RC" 2 "the run reaches deploy without a ceremony"
-  assert_eq "$(rev_in "$(slot_of "$REPO_D2")/rev.git")" "$D2_PIN" "the pin is untouched"
-
-  # A signed release BEHIND the pin is not a candidate: strictly-descends is
-  # part of the filter, so a replayed older release cannot be offered. (The
-  # ancestry floor in the ceremony would catch it too; this keeps it out of
-  # the selection in the first place.)
-  REPO_O="$FIX/signfix-old"
-  mkdir -p "$REPO_O"
-  bgit "$REPO_O" init -q
-  printf 'o1\n' > "$REPO_O/f"; bgit "$REPO_O" add f; bgit "$REPO_O" commit -q -m o1
-  sign_tag "$REPO_O" old1
-  printf 'o2\n' > "$REPO_O/f"; bgit "$REPO_O" commit -q -am o2
-  O_PIN="$(bgit "$REPO_O" rev-parse 'HEAD^{commit}')"
-  printf 'o3\n' > "$REPO_O/f"; bgit "$REPO_O" commit -q -am o3
-  seed_rev "$REPO_O" "$O_PIN"
-  cat > "$FIX/flake-old.nix" <<EOF
-{
-  inputs.signfix-old.url = "git+file://$REPO_O?rev=$O_PIN";
-}
-EOF
-  ANS=""
-  run_pinned upgrade --flake "$FIX/flake-old.nix" --dry-run
-  assert_exit "$RC" 0 "a plan whose only signed tag is behind the pin exits 0"
-  assert_missing "$OUT" "signed release" "a signed release behind the pin is no candidate"
-  assert_row "$OUT" "review:" "$REPO_O" "the repo takes the ordinary review route"
-
-  # A signed release on a SIDE branch is not a candidate either: upgrade
-  # follows the checkout's own line, and a release the checkout has not
-  # merged is by-hand work.
-  bgit "$REPO_O" checkout -q -b aside "$O_PIN"
-  printf 'ox\n' > "$REPO_O/f"; bgit "$REPO_O" commit -q -am ox
-  sign_tag "$REPO_O" side1
-  bgit "$REPO_O" checkout -q main
-  ANS=""
-  run_pinned upgrade --flake "$FIX/flake-old.nix" --dry-run
-  assert_exit "$RC" 0 "a plan with a side-branch release exits 0"
-  assert_missing "$OUT" "signed release" "a release off the checkout's line is no candidate"
-  assert_missing "$OUT" "verified signed tags disagree" \
-    "and it is filtered out before it can look like a disagreement"
-
-  rm -f "$USER_SIGNERS"
-else
-  say "S8g: SKIPPED (no git fixture, no rebuild tool, or no ssh signing)"
-fi
-
-# ---------------------------------------------------------------------------
-say "S8h: the pre-sudo upgrade preview, and deploy's elevation"
-# ---------------------------------------------------------------------------
-# The only section driven by the PREVIEW stub, where the elevation gate is
-# live: these are the lines a human meets BEFORE authenticating. `exit 97`
-# stands in for the sudo that would follow, so "would have elevated" and
-# "exited first" are two different exit codes.
-#
-# Two source-level checks first: the stub can show that deploy elevates, but
-# not that the two halves of the decision agree. The case list is what routes
-# the verb into the elevation; require_root is what refuses if it somehow
-# arrives unprivileged anyway, and it must be reached on exactly the runs the
-# case list elevates -- everything but --dry-run.
-assert_eq "$(sed -n '/^case "\$elev_action" in$/{n;p;}' "$SRC")" \
-  "  review|add|setup|tombstone|upgrade|rekey|declare|deploy)" \
-  "deploy is in the self-elevation case list"
-assert_eq "$(sed -n '/^  if \[ "\$DRY" -eq 0 \]; then$/{n;p;}' "$SRC")" \
-  "    require_root deploy" \
-  "and do_deploy requires root on every run that is not --dry-run"
-
-if [ "$GIT_OK" -eq 1 ]; then
-  PV_PIN="$FIX/pv-pin"; PV_S1="$FIX/pv-stale1"; PV_S2="$FIX/pv-stale2"
-  PV_NS="$FIX/pv-noslot"
-  mkdir -p "$PV_PIN" "$PV_S1" "$PV_S2" "$PV_NS"
-  for ur in "$PV_PIN" "$PV_S1" "$PV_S2" "$PV_NS"; do
-    bgit "$ur" init -q
-    printf 'p1\n' > "$ur/f"; bgit "$ur" add f; bgit "$ur" commit -q -m p1
-  done
-  PV_PIN_REV="$(bgit "$PV_PIN" rev-parse 'HEAD^{commit}')"
-  PV_S1_REV="$(bgit "$PV_S1" rev-parse 'HEAD^{commit}')"
-  PV_S2_REV="$(bgit "$PV_S2" rev-parse 'HEAD^{commit}')"
-  PV_NS_REV="$(bgit "$PV_NS" rev-parse 'HEAD^{commit}')"
-  printf 'p2\n' > "$PV_S1/f"; bgit "$PV_S1" commit -q -am p2
-  printf 'p2\n' > "$PV_S2/f"; bgit "$PV_S2" commit -q -am p2
-  seed_rev "$PV_PIN" "$PV_PIN_REV"
-  seed_rev "$PV_S1" "$PV_S1_REV"
-  seed_rev "$PV_S2" "$PV_S2_REV"
-  cat > "$FIX/flake-pv-quiet.nix" <<EOF
-{
-  inputs.pv-pin.url = "git+file://$PV_PIN?rev=$PV_PIN_REV";
-}
-EOF
-  cat > "$FIX/flake-pv-one.nix" <<EOF
-{
-  inputs.pv-pin.url = "git+file://$PV_PIN?rev=$PV_PIN_REV";
-  inputs.pv-stale1.url = "git+file://$PV_S1?rev=$PV_S1_REV";
-}
-EOF
-  cat > "$FIX/flake-pv-two.nix" <<EOF
-{
-  inputs.pv-stale1.url = "git+file://$PV_S1?rev=$PV_S1_REV";
-  inputs.pv-stale2.url = "git+file://$PV_S2?rev=$PV_S2_REV";
-}
-EOF
-  cat > "$FIX/flake-pv-unpinned.nix" <<EOF
-{
-  inputs.pv-pin.url = "git+file://$PV_PIN?rev=$PV_PIN_REV";
-  inputs.pv-noslot.url = "git+file://$PV_NS?rev=$PV_NS_REV";
-}
-EOF
-
-  # Nothing actionable: the round is over before it costs an authentication,
-  # and the hint names the verb that still rebuilds.
-  ANS=""
-  run_preview upgrade --flake "$FIX/flake-pv-quiet.nix"
-  assert_exit "$RC" 0 "an empty round exits 0 without reaching sudo"
-  assert_contains "$OUT" "nothing to approve" "the plan says so"
-  assert_contains "$OUT" "To rebuild anyway:" "and the hint follows it"
-  assert_contains "$OUT" "pinned deploy" "naming the verb that rebuilds"
-  assert_missing "$OUT" "Then: deploy" "the old chained-plan line is gone"
-  assert_missing "$OUT" "Will run:" "no elevation is displayed"
-  assert_missing "$OUT" "Enter runs the line above" "and no gate is offered"
-
-  # --yes and --dry-run buy nothing here: an empty round needs no root either
-  # way, so both take the same exit.
-  ANS=""
-  run_preview upgrade --flake "$FIX/flake-pv-quiet.nix" --yes
-  assert_exit "$RC" 0 "--yes does not authenticate an empty round"
-  assert_contains "$OUT" "To rebuild anyway:" "the hint prints under --yes too"
-  ANS=""
-  run_preview upgrade --flake "$FIX/flake-pv-quiet.nix" --dry-run
-  assert_exit "$RC" 0 "--dry-run exits before sudo as well"
-  assert_contains "$OUT" "To rebuild anyway:" "with the same hint"
-
-  # Nothing to review, but the flake lags an approval: still no ceremony and
-  # no authentication, but the hint is not "anyway" -- deploying is exactly
-  # what is left to do, and the row says which rev it moves. The lagging rev
-  # is made up: the fixture repos' first commits are byte-identical, so any
-  # real sibling rev would equal the pin. The plan only compares strings,
-  # and this round never reaches nix.
-  LAG_REV="0123456789abcdef0123456789abcdef01234567"
-  cat > "$FIX/flake-pv-lag.nix" <<EOF
-{
-  inputs.pv-pin.url = "git+file://$PV_PIN?rev=$LAG_REV";
-}
-EOF
-  ANS=""
-  run_preview upgrade --flake "$FIX/flake-pv-lag.nix"
-  assert_exit "$RC" 0 "a lagging flake with nothing to review exits 0 without sudo"
-  assert_row "$OUT" "deploy:" "$PV_PIN" "the lagging input is a deploy row"
-  assert_contains "$OUT" "(approved ${PV_PIN_REV:0:10}; the flake still has ${LAG_REV:0:10})" \
-    "naming both revs"
-  assert_contains "$OUT" "To deploy them:" "the hint says deploying is the point"
-  assert_missing "$OUT" "To rebuild anyway:" "not a rebuild-anyway fallback"
-  assert_missing "$OUT" "Enter runs the line above" "and no gate is offered"
-
-  # A row with a review AND a lagging flake: skipping the review still
-  # deploys the old approval, which the row says under itself.
-  cat > "$FIX/flake-pv-lag-fwd.nix" <<EOF
-{
-  inputs.pv-stale1.url = "git+file://$PV_S1?rev=$LAG_REV";
-}
-EOF
-  ANS=""
-  run_pinned upgrade --flake "$FIX/flake-pv-lag-fwd.nix" --dry-run
-  assert_exit "$RC" 0 "a lagging forward input plans cleanly"
-  assert_row "$OUT" "review:" "$PV_S1" "the forward input is still a review row"
-  assert_contains "$OUT" "the flake still has ${LAG_REV:0:10}; deploy moves it to the approved ${PV_S1_REV:0:10} even without a review" \
-    "and says what deploy does if the review is skipped"
-
-  # One stale input: the gate counts the round, the disclaimer stays, and an
-  # Enter reaches the elevation.
-  ANS='
-'
-  run_preview upgrade --flake "$FIX/flake-pv-one.nix"
-  assert_exit "$RC" 97 "an answered gate reaches the elevation"
-  assert_contains "$OUT" "next: review 1 repo + rebuild as root; Enter runs the line above" \
-    "the gate counts the round in the singular"
-  assert_contains "$OUT" "n stops" "and names the key that stops"
-  assert_contains "$OUT" "The preview above was orientation only." \
-    "the orientation disclaimer stays"
-  # upgrade takes --flake, whose value decides what the rebuild activates as
-  # root, and --yes, which removes the last confirm before it. Both must be
-  # on the page before the password prompt, like every other verb's argv.
-  assert_shows_cmd "$OUT" "sudo -- $PREVIEW upgrade --flake $FIX/flake-pv-one.nix" \
-    "upgrade discloses its exact argv pre-sudo, --flake included"
-  assert_missing "$OUT" "To rebuild anyway:" "and no no-op hint on the stale path"
-
-  # Two of them: plural_s, and the count is the plan's own review rows.
-  ANS='
-'
-  run_preview upgrade --flake "$FIX/flake-pv-two.nix"
-  assert_exit "$RC" 97 "the two-repo round reaches the elevation"
-  assert_contains "$OUT" "next: review 2 repos + rebuild as root" \
-    "the gate counts both repos"
-
-  # --yes answers the gate at the command line.
-  ANS=""
-  run_preview upgrade --flake "$FIX/flake-pv-one.nix" --yes
-  assert_exit "$RC" 97 "--yes elevates without a gate"
-  assert_missing "$OUT" "Enter runs the line above" "no gate is printed under --yes"
-  assert_shows_cmd "$OUT" "sudo -- $PREVIEW upgrade --flake $FIX/flake-pv-one.nix --yes" \
-    "--yes is on the page even when it is the flag that skipped the gate"
-
-  # Off-tty the gate cannot be answered: refuse rather than elevate unasked.
-  NOTTY=1
-  ANS=""
-  run_preview upgrade --flake "$FIX/flake-pv-one.nix"
-  assert_exit "$RC" 2 "off-tty without --yes refuses"
-  assert_contains "$OUT" "no tty for confirmation -- pass --yes to proceed non-interactively" \
-    "the refusal names the flag that proceeds"
-  ANS=""
-  run_preview upgrade --flake "$FIX/flake-pv-one.nix" --yes
-  assert_exit "$RC" 97 "off-tty WITH --yes still elevates"
-  NOTTY=""
-
-  if [ -x "$REBUILD_TOOL" ]; then
-    # deploy self-elevates like every other root verb: the table and the
-    # rebuild confirm are the ROOT side's, so what an unprivileged deploy
-    # meets is the argv and the gate, nothing else. Composing the sed
-    # expressions that rewrite rev= in a process the invoker's environment
-    # can steer was the thing this removed.
-    ANS='
-'
-    run_preview deploy --flake "$FIX/flake-pv-quiet.nix"
-    assert_exit "$RC" 97 "deploy reaches the elevation"
-    assert_shows_cmd "$OUT" "sudo -- $PREVIEW deploy --flake $FIX/flake-pv-quiet.nix" \
-      "deploy discloses its exact argv pre-sudo, --flake included"
-    assert_contains "$OUT" "next: sync the flake + rebuild as root; Enter runs the line above" \
-      "the gate names what the authentication buys"
-    assert_missing "$OUT" "The preview above was orientation only." \
-      "and claims no preview, having printed none"
-    assert_missing "$OUT" "Will run:" "the command table belongs to the root side now"
-
-    # deploy's decline names the STATE, and deploy is the one verb whose
-    # state is the machine rather than a record: nothing is pinned here, a
-    # rebuild is what the authentication buys, and stopping leaves the
-    # system as it stands.
-    ANS='n
-'
-    run_preview deploy --flake "$FIX/flake-pv-quiet.nix"
-    assert_exit "$RC" 2 "n stops deploy before the elevation"
-    assert_contains "$OUT" "stopped; system unchanged" \
-      "and names the machine, not a record, as what it left alone"
-
-    ANS=""
-    run_preview deploy --flake "$FIX/flake-pv-quiet.nix" --yes
-    assert_exit "$RC" 97 "--yes elevates without a gate"
-    assert_missing "$OUT" "Enter runs the line above" "no gate is printed under --yes"
-    assert_shows_cmd "$OUT" "sudo -- $PREVIEW deploy --flake $FIX/flake-pv-quiet.nix --yes" \
-      "--yes is on the page even when it is the flag that skipped the gate"
-
-    NOTTY=1
-    ANS=""
-    run_preview deploy --flake "$FIX/flake-pv-quiet.nix"
-    assert_exit "$RC" 2 "off-tty without --yes refuses"
-    assert_contains "$OUT" "no tty for confirmation -- pass --yes to proceed non-interactively" \
-      "the refusal names the flag that proceeds"
-    NOTTY=""
-
-    # Malformed argv, and a flake nobody can read, die BEFORE the
-    # authentication -- neither can ever reach anything but the same refusal
-    # on the root side.
-    ANS=""
-    run_preview deploy --bogus
-    assert_exit "$RC" 1 "an unknown deploy option is a usage error"
-    assert_contains "$OUT" "usage: pinned" "and says so as a usage error"
-    assert_missing "$OUT" "Enter runs the line above" "with no gate offered"
-    ANS=""
-    run_preview deploy --flake "$FIX/no-such-flake.nix"
-    assert_exit "$RC" 1 "an unreadable --flake dies pre-sudo"
-    assert_contains "$OUT" "cannot read $FIX/no-such-flake.nix -- pass --flake" \
-      "naming the file and the flag"
-    assert_missing "$OUT" "Enter runs the line above" "and never reaches the gate"
-
-    ANS=""
-    run_preview deploy --flake "$FIX/flake-pv-unpinned.nix" --dry-run
-    assert_exit "$RC" 0 "a dry run with an unpinned input exits 0"
-    assert_missing "$OUT" "Enter runs the line above" "--dry-run runs nothing, so it authenticates nothing"
-    assert_contains "$OUT" "pinned inputs all at their approved revs" \
-      "the mixed verdict is lowercase too"
-    assert_contains "$OUT" "sudo $REBUILD_TOOL switch --flake" \
-      "and the unprivileged preview keeps the sudo tokens the root run drops"
-
-    # The root context: deploy's own elevation and `pinned upgrade` both land
-    # here, where sudo is an admitted no-op, so the displayed command and the
-    # argv stay the same line. The confirm is reachable only here now.
-    TESTROOT=1
-    ANS='n
-'
-    run_preview deploy --flake "$FIX/flake-pv-quiet.nix"
-    assert_exit "$RC" 2 "declining the root-context confirm exits 2"
-    assert_contains "$OUT" "rebuild with the lines above? [y/N]" "the confirm names what a yes does"
-    assert_missing "$OUT" "proceed? [y/N]" "the old wording is gone"
-    assert_contains "$OUT" "all inputs at their approved revs" "the verdict is a label, not a sentence"
-    assert_contains "$OUT" "(converges the running system to the flake -- changes nothing if already current)" \
-      "the unconditional rebuild carries its reason on the command"
-    assert_missing "$OUT" "Rebuilding anyway" "the paragraph that used to carry it is gone"
-    assert_missing "$OUT" "Will run:" "no label in the root context either: the confirm names the lines"
-    assert_contains "$OUT" "$REBUILD_TOOL switch --flake" "the rebuild command is unchanged"
-    assert_missing "$OUT" "sudo $REBUILD_TOOL" "but sudo is dropped from the displayed line"
-    TESTROOT=""
-
-    # A pinned repo's OWN .git/config must never choose code that deploy
-    # runs. `git diff` refreshes the index, and refreshing executes the
-    # core.fsmonitor hook named in the repo-local config -- which is
-    # attacker-writable in this tool's threat model, and which `pinned
-    # upgrade` would run AS ROOT (upgrade self-elevates, then calls the same
-    # deploy loop). The canary proves the hook was REACHED, not merely
-    # configured, so the assertion cannot pass by the fixture being inert:
-    # the control below fires it through a plain git first.
-    FSM_CANARY="$FIX/fsmonitor-fired"
-    FSM_HOOK="$FIX/fsmonitor-hook"
-    cat > "$FSM_HOOK" <<HOOKEOF
-#!/bin/sh
-: > "$FSM_CANARY"
-printf '/'
-exit 0
-HOOKEOF
-    chmod 755 "$FSM_HOOK"
-    bgit "$PV_PIN" config core.fsmonitor "$FSM_HOOK"
-    printf 'dirty\n' > "$PV_PIN/f"
-    FSM_CONTROL=0
-    git -C "$PV_PIN" -c safe.directory="$PV_PIN" diff --quiet >/dev/null 2>&1 || true
-    if [ -e "$FSM_CANARY" ]; then
-      FSM_CONTROL=1
-      ok "control: the fixture's core.fsmonitor fires under a plain git diff"
-      rm -f "$FSM_CANARY"
-    else
-      say "  (this git does not run core.fsmonitor hooks -- the control is inert,"
-      say "   so the assertion below proves only that deploy created no canary)"
-    fi
-    ANS=""
-    run_preview deploy --flake "$FIX/flake-pv-quiet.nix" --dry-run
-    assert_exit "$RC" 0 "a dry run over an fsmonitor-planted repo still exits 0"
-    assert_contains "$OUT" "work tree is dirty" "and the dirty check still answers"
-    assert_absent "$FSM_CANARY" \
-      "the repo's core.fsmonitor never executes during deploy"
-    [ "$FSM_CONTROL" -eq 1 ] || say "   (canary assertion above was unfalsifiable on this git)"
-    bgit "$PV_PIN" config --unset core.fsmonitor
-    bgit "$PV_PIN" checkout -q -- f
-  fi
-else
-  say "S8h: SKIPPED (no git fixture)"
-fi
-
-# ---------------------------------------------------------------------------
 say "S8i: the pre-sudo elevation display and its gate"
 # ---------------------------------------------------------------------------
-# The rest of the PREVIEW stub's territory: what review, add, signer and
+# The PREVIEW stub's territory: what review, the record verbs, signer and
 # ignorable put on screen before sudo is asked for anything.
 #
 # THE COMMAND LINE IS THE ASSERTION THAT MATTERS. The prose header over it is
@@ -2916,8 +2057,7 @@ say "S8i: the pre-sudo elevation display and its gate"
 # is what terminates the gate line here.
 if [ "$GIT_OK" -eq 1 ]; then
   EV_STALE="$FIX/ev-stale"; EV_STALE2="$FIX/ev-stale2"; EV_PINNED="$FIX/ev-pinned"
-  EV_ADD="$FIX/ev-add"; EV_ADDPIN="$FIX/ev-addpin"
-  for ur in "$EV_STALE" "$EV_STALE2" "$EV_PINNED" "$EV_ADD" "$EV_ADDPIN"; do
+  for ur in "$EV_STALE" "$EV_STALE2" "$EV_PINNED"; do
     mkdir -p "$ur"
     bgit "$ur" init -q
     printf 'e1\n' > "$ur/f"; bgit "$ur" add f; bgit "$ur" commit -q -m e1
@@ -2926,11 +2066,8 @@ if [ "$GIT_OK" -eq 1 ]; then
   seed_state "$EV_STALE"  rev.git "$(bgit "$EV_STALE"  rev-parse 'HEAD^{commit}')"
   seed_rev "$EV_STALE2" "$(bgit "$EV_STALE2" rev-parse 'HEAD^{commit}')"
   seed_rev "$EV_PINNED" "$(bgit "$EV_PINNED" rev-parse 'HEAD^{commit}')"
-  seed_rev "$EV_ADDPIN" "$(bgit "$EV_ADDPIN" rev-parse 'HEAD^{commit}')"
   printf 'e2\n' > "$EV_STALE/f";  bgit "$EV_STALE"  commit -q -am e2
   printf 'e2\n' > "$EV_STALE2/f"; bgit "$EV_STALE2" commit -q -am e2
-  EV_FLAKE="$FIX/flake-ev.nix"
-  printf '{ inputs = { }; }\n' > "$EV_FLAKE"
 
   # --- review <repo> --------------------------------------------------------
   ANS='
@@ -3090,27 +2227,6 @@ n
   else
     ok "no --file groups -> one flat flag level"
   fi
-
-  # --- add ------------------------------------------------------------------
-  ANS='
-'
-  run_preview add "$EV_ADD" --flake "$EV_FLAKE"
-  assert_exit "$RC" 97 "an answered add gate reaches the elevation"
-  assert_missing "$OUT" "Will run:" "add prints no prose header"
-  assert_shows_cmd "$OUT" "sudo -- $PREVIEW add $EV_ADD --flake $EV_FLAKE" \
-    "add's argv stays on screen"
-  assert_contains "$OUT" "next: approve ev-add + edit the flake as root; Enter runs the line above" \
-    "the gate names the input the ceremony will approve"
-
-  # Already pinned: the round is the flake edit alone, and the gate says so
-  # rather than promising a review that will not happen.
-  ANS='
-'
-  run_preview add "$EV_ADDPIN" --flake "$EV_FLAKE"
-  assert_exit "$RC" 97 "an already-pinned checkout still elevates for the flake edit"
-  assert_contains "$OUT" "next: edit the flake as root; Enter runs the line above" \
-    "the gate promises only the edit"
-  assert_missing "$OUT" "next: approve" "and no approval it will not perform"
 
   # --- signer / ignorable ---------------------------------------------------
   ANS='
@@ -3360,7 +2476,6 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_contains "$OUT" "names the pinned rev" "the display shows the invariant holding"
   assert_contains "$OUT" "(none) -> v1" "the declared row shows the transition"
   assert_contains "$OUT" "ref=refs/tags/v1" "the deploy row states the effect on the anchor"
-  assert_contains "$OUT" "pinned deploy" "the follow-up points at deploy"
   assert_file "$DC_SLOT/release" "the declaration was written"
   assert_eq "$(cat "$DC_SLOT/release")" "v1" "and holds exactly the name"
   assert_eq "$(rev_in "$DC_SLOT/rev.git")" "$DC_C2" "the pin itself is untouched"
@@ -3490,40 +2605,6 @@ if [ "$GIT_OK" -eq 1 ]; then
   run_pinned declare "$REPO_DC" --release v1
   assert_exit "$RC" 0 "the hand-fix restores the ceremony"
   assert_missing "$OUT" "renamed the declared" "with nothing left to heal"
-
-  # Integration, the case that proves the point: declare, then deploy
-  # --dry-run shows the ref= sed expression for that input alone -- and no
-  # rev change, because declare never touches the rev.
-  if [ -x "$REBUILD_TOOL" ]; then
-    cat > "$FIX/flake-dc.nix" <<EOF
-{
-  inputs.decl-repo.url = "git+file://$REPO_DC?ref=refs/heads/main&rev=$DC_C2";
-}
-EOF
-    ANS=""
-    run_pinned deploy --flake "$FIX/flake-dc.nix" --dry-run
-    assert_exit "$RC" 0 "deploy --dry-run exits 0 over the declared slot"
-    assert_contains "$OUT" "ref=refs/tags/v1" "the sed expression syncs ref= to the declared name"
-    assert_missing "$OUT" "s/rev=" "and no rev expression rides along"
-    assert_contains "$OUT" "Dry run -- nothing executed" "nothing ran"
-    assert_contains "$FIX/flake-dc.nix" "ref=refs/heads/main" "the flake file itself is untouched"
-
-    # A root deploy heals the tree BEFORE it reads a slot: a legacy record
-    # is renamed first, so the declaration is seen and its ref= synced,
-    # never mistaken for a rev-only slot. The gate is declined, so nothing
-    # runs; the heal and the read are what this proves.
-    mv "$DC_SLOT/release" "$DC_SLOT/tag"
-    ANS=""
-    run_pinned deploy --flake "$FIX/flake-dc.nix"
-    assert_exit "$RC" 2 "a declined deploy gate exits 2"
-    assert_contains "$OUT" "renamed the declared release name record" "deploy healed the record first"
-    assert_contains "$OUT" "ref=refs/tags/v1" "and then read the declaration it had just renamed"
-    assert_absent "$DC_SLOT/tag" "the old record is gone"
-    assert_eq "$(cat "$DC_SLOT/release")" "v1" "the new one holds the name"
-    assert_contains "$FIX/flake-dc.nix" "ref=refs/heads/main" "the declined deploy touched nothing"
-  else
-    say "S8j: SKIPPED deploy integration (no rebuild tool)"
-  fi
 else
   say "S8j: SKIPPED (no git fixture)"
 fi
@@ -4754,342 +3835,6 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-say "S15: add (checkout -> pin -> flake input)"
-# ---------------------------------------------------------------------------
-# add composes three idempotent parts, and the assertions below are mostly
-# about the SEAMS between them: which part is skipped when it is already
-# satisfied, which refusals arrive before a ceremony is ever offered, and
-# what the flake looks like afterwards -- including the placeholder dance
-# (an all-zero rev goes in, the approved rev replaces it), whose whole point
-# is that an interrupted add cannot leave a fetchable-but-unapproved input.
-#
-# The pin ceremony itself is do_approve's and is covered by S8/S8b; here it
-# is driven only far enough to produce the record part 3 reads.
-
-# --- the argument grammar, unit-driven ------------------------------------
-run_probe add_input_name "/Users/x/Projects/pinned"
-assert_eq "$POUT" "pinned" "name: a local path is its last component"
-run_probe add_input_name "https://example.invalid/o/repo.git"
-assert_eq "$POUT" "repo" "name: a url loses its .git suffix"
-run_probe add_input_name "git@example.invalid:owner/thing.git"
-assert_eq "$POUT" "thing" "name: an scp-like remote resolves the same way"
-run_probe add_input_name "ssh://git@example.invalid/a/b/"
-assert_eq "$POUT" "b" "name: a trailing slash names the same repo"
-run_probe add_input_name "git@example.invalid:solo.git"
-assert_eq "$POUT" "solo" "name: an scp-like remote with no slash still resolves"
-
-run_probe validate_input_name "good_name-1"
-assert_exit "$RC" 0 "name grammar: letters, digits, underscore and dash pass"
-run_probe validate_input_name "9lives"
-assert_exit "$RC" 1 "name grammar: a leading digit is refused"
-run_probe validate_input_name "has.dot"
-assert_exit "$RC" 1 "name grammar: a dot is refused (it would split a nix attr path)"
-run_probe validate_input_name "has/slash"
-assert_exit "$RC" 1 "name grammar: a slash is refused (it becomes a directory name)"
-run_probe validate_input_name ""
-assert_exit "$RC" 1 "name grammar: the empty name is refused"
-
-run_probe add_arg_kind "$SUB"
-assert_eq "$POUT" "path" "classify: an existing directory is a checkout"
-run_probe add_arg_kind "https://example.invalid/o/repo.git"
-assert_eq "$POUT" "url" "classify: a scheme url is cloned"
-run_probe add_arg_kind "git@example.invalid:o/repo.git"
-assert_eq "$POUT" "url" "classify: an scp-like remote is cloned"
-run_probe add_arg_kind "$SUB/no-such-dir"
-assert_exit "$RC" 1 "classify: neither reading applies -> refusal"
-assert_contains "$ERRF" "neither an existing directory nor a clonable url" \
-  "the refusal names both readings"
-run_probe add_arg_kind "$SUB/a:b"
-assert_exit "$RC" 1 "classify: a colon after a slash is not a host"
-
-if printf '  nixpkgs.url = "github:NixOS/nixpkgs";\n' | "$PROBE" flake_declares_input nixpkgs; then
-  ok "input detection: <name>.url = ... reads as a declaration"
-else
-  fail "input detection: <name>.url = ... reads as a declaration"
-fi
-if printf '  inputs.nixpkgs.url = "github:NixOS/nixpkgs";\n' | "$PROBE" flake_declares_input nixpkgs; then
-  ok "input detection: inputs.<name>.url = ... reads as a declaration"
-else
-  fail "input detection: inputs.<name>.url = ... reads as a declaration"
-fi
-if printf '  nixpkgs = {\n    url = "x";\n  };\n' | "$PROBE" flake_declares_input nixpkgs; then
-  ok "input detection: <name> = { ... } reads as a declaration"
-else
-  fail "input detection: <name> = { ... } reads as a declaration"
-fi
-if printf '  outputs = { self, nixpkgs }: { };\n' | "$PROBE" flake_declares_input nixpkgs; then
-  fail "input detection: an outputs argument is not a declaration"
-else
-  ok "input detection: an outputs argument is not a declaration"
-fi
-
-if [ "$GIT_OK" -eq 1 ]; then
-  ZEROS=0000000000000000000000000000000000000000
-  new_flake() { # path -- a fixture system flake with the inputs anchor
-    cat > "$1" <<'EOF'
-{
-  description = "harness fixture system flake";
-
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  };
-
-  outputs = { self, nixpkgs }: { };
-}
-EOF
-  }
-
-  # A repo whose COMMITTED flake.nix declares nixpkgs, plus a work tree that
-  # says otherwise: the block must follow the approved tree, never the
-  # editable one.
-  ADD_A="$FIX/add-a"
-  mkdir -p "$ADD_A"
-  bgit "$ADD_A" init -q
-  cat > "$ADD_A/flake.nix" <<'EOF'
-{
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  outputs = { self, nixpkgs }: { };
-}
-EOF
-  bgit "$ADD_A" add flake.nix; bgit "$ADD_A" commit -q -m "flake with nixpkgs"
-  A_REV="$(bgit "$ADD_A" rev-parse 'HEAD^{commit}')"
-  printf '{ outputs = { self }: { }; }\n' > "$ADD_A/flake.nix"   # dirty, not approved
-
-  FL_A="$FIX/add-flake-a.nix"
-  new_flake "$FL_A"
-  ANS='
-y
-y
-'
-  run_pinned add "$ADD_A" --flake "$FL_A"
-  assert_exit "$RC" 0 "add on a fresh repo exits 0"
-  assert_contains "$OUT" "used in place" "part 1 says the checkout is used as it stands"
-  assert_contains "$OUT" "full tree at" "part 2 is do_approve's own first-approval review"
-  assert_eq "$(rev_in "$(slot_of "$ADD_A")/rev.git")" "$A_REV" "the ceremony pinned the repo"
-  assert_contains "$OUT" "inputs.nixpkgs.follows" \
-    "the block follows nixpkgs, read from the APPROVED tree (the work tree says otherwise)"
-  assert_contains "$FL_A" "add-a = {" "the input landed under its derived name"
-  assert_contains "$FL_A" "git+file://$ADD_A?ref=refs/heads/main&rev=$A_REV" \
-    "the input url carries the approved rev and the checkout's branch"
-  assert_missing "$FL_A" "rev=$ZEROS" "the placeholder rev is gone"
-  assert_contains "$FL_A" "  inputs = {" "the anchor line survives"
-  assert_eq "$(grep -c 'add-a = {' "$FL_A")" 1 "the block was inserted exactly once"
-  # Insertion point: the block's first line is the one right after the anchor.
-  assert_eq "$(grep -A1 '^  inputs = {$' "$FL_A" | tail -n1)" "    add-a = {" \
-    "the block sits immediately after the inputs anchor"
-  assert_contains "$OUT" "Consuming it stays yours" \
-    "the close says the consuming edit is the human's"
-  assert_contains "$OUT" "pinned deploy" "and names the verb that builds from it"
-
-  # Idempotence: every part already satisfied costs nothing and asks nothing.
-  FL_A_BEFORE="$(digest_of "$FL_A")"
-  ANS=""
-  run_pinned add "$ADD_A" --flake "$FL_A"
-  assert_exit "$RC" 0 "a second add is a no-op that exits 0"
-  assert_contains "$OUT" "nothing to do" "and says so"
-  assert_contains "$OUT" "already approved" "the pin is reported, not re-asked"
-  assert_contains "$OUT" "already names this repo" "and so is the input"
-  assert_eq "$(digest_of "$FL_A")" "$FL_A_BEFORE" "the flake is untouched"
-
-  # The elevation gate's --yes rides through in the argv the display showed
-  # (S8i), so the root side must take it as the no-op it is rather than turn
-  # the documented non-interactive path into a usage error after the
-  # authentication.
-  ANS=""
-  run_pinned add "$ADD_A" --flake "$FL_A" --yes
-  assert_exit "$RC" 0 "the root side adds with --yes in its argv"
-  assert_contains "$OUT" "nothing to do" "reaching the same no-op"
-  assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there"
-
-  # An add interrupted between its insert and its rev sync leaves the
-  # placeholder behind. The rerun does not re-edit the flake -- syncing revs
-  # is deploy's one job -- but it must not report that state as "nothing to
-  # do" either. Simulated by putting the placeholder back.
-  sed_i_fix() { if sed --version >/dev/null 2>&1; then sed -i "$@"; else sed -i '' "$@"; fi; }
-  sed_i_fix -e "s/rev=$A_REV/rev=$ZEROS/" "$FL_A"
-  ANS=""
-  run_pinned add "$ADD_A" --flake "$FL_A"
-  assert_exit "$RC" 0 "a flake still holding the placeholder exits 0"
-  assert_contains "$OUT" "does not name the approved rev yet" "the unsynced rev is named"
-  assert_contains "$OUT" "pinned deploy" "and the verb that syncs it is pointed at"
-  assert_contains "$FL_A" "rev=$ZEROS" "add does not do deploy's job behind its back"
-  sed_i_fix -e "s/rev=$ZEROS/rev=$A_REV/" "$FL_A"
-
-  # A name already spoken for, by another path, is the human's to resolve.
-  ADD_B="$FIX/add-b"
-  mkdir -p "$ADD_B"
-  bgit "$ADD_B" init -q; printf 'b\n' > "$ADD_B/f"; bgit "$ADD_B" add f; bgit "$ADD_B" commit -q -m b
-  ANS=""
-  run_pinned add "$ADD_B" --input add-a --flake "$FL_A"
-  assert_exit "$RC" 1 "a name collision is refused"
-  assert_contains "$OUT" "already declares an input named 'add-a'" "the refusal names the collision"
-  assert_eq "$(digest_of "$FL_A")" "$FL_A_BEFORE" "and the flake is untouched"
-  assert_absent "$(slot_of "$ADD_B")/rev.git" "the collision refused BEFORE any ceremony"
-
-  # A repo with no nixpkgs input gets no follows line -- and a decline leaves
-  # the flake byte-identical.
-  FL_B="$FIX/add-flake-b.nix"
-  new_flake "$FL_B"
-  FL_B_BEFORE="$(digest_of "$FL_B")"
-  ANS='
-y
-n
-'
-  run_pinned add "$ADD_B" --flake "$FL_B"
-  assert_exit "$RC" 2 "declining the input block exits 2"
-  assert_contains "$OUT" "aborted; flake unchanged" "the decline names what stayed put"
-  assert_eq "$(digest_of "$FL_B")" "$FL_B_BEFORE" "the flake is byte-identical after a decline"
-  assert_missing "$OUT" "inputs.nixpkgs.follows" \
-    "a repo with no flake.nix gets no follows line"
-  assert_contains "$OUT" "no flake.nix" "and the note says why nix will refuse it"
-  # The pin the declined run recorded is real trust: it stays.
-  assert_file "$(slot_of "$ADD_B")/rev.git" "the pin the ceremony wrote survives the decline"
-
-  # Rerunning after the decline: the pin is skipped, only the input is asked
-  # for -- one y, not two.
-  ANS='y
-'
-  run_pinned add "$ADD_B" --flake "$FL_B"
-  assert_exit "$RC" 0 "the rerun needs only the input confirmation"
-  assert_contains "$OUT" "no ceremony" "the recorded pin is not re-reviewed"
-  assert_contains "$FL_B" "rev=$(bgit "$ADD_B" rev-parse 'HEAD^{commit}')" \
-    "the input carries the pin recorded earlier"
-
-  # A slot that declares a release name pins the input to that ref.
-  ADD_T="$FIX/add-tagged"
-  mkdir -p "$ADD_T"
-  bgit "$ADD_T" init -q; printf 't\n' > "$ADD_T/f"; bgit "$ADD_T" add f; bgit "$ADD_T" commit -q -m t
-  bgit "$ADD_T" tag v3
-  T_REV="$(bgit "$ADD_T" rev-parse 'HEAD^{commit}')"
-  seed_rev "$ADD_T" "$T_REV"
-  printf 'v3\n' > "$(slot_of "$ADD_T")/release"
-  FL_T="$FIX/add-flake-t.nix"
-  new_flake "$FL_T"
-  ANS='y
-'
-  run_pinned add "$ADD_T" --flake "$FL_T"
-  assert_exit "$RC" 0 "a tag-declared slot adds fine"
-  assert_contains "$FL_T" "?ref=refs/tags/v3&rev=$T_REV" \
-    "the input's ref names the declared release, not a branch"
-  # The deploy table reads that input as current state: the declared name
-  # and the fact that its tag still names the pin, never as an offer.
-  ANS=""
-  run_pinned deploy --flake "$FL_T" --dry-run
-  assert_exit "$RC" 0 "a dry-run deploy over the added input exits 0"
-  assert_contains "$OUT" "declared v3; tag still at the pin" \
-    "a declared release at the pin reads as current state, not an offer"
-
-  # A detached HEAD with no declared name leaves nothing honest to write.
-  ADD_D="$FIX/add-detached"
-  mkdir -p "$ADD_D"
-  bgit "$ADD_D" init -q; printf 'd1\n' > "$ADD_D/f"; bgit "$ADD_D" add f; bgit "$ADD_D" commit -q -m d1
-  printf 'd2\n' > "$ADD_D/f"; bgit "$ADD_D" commit -q -am d2
-  bgit "$ADD_D" checkout -q --detach HEAD
-  seed_rev "$ADD_D" "$(bgit "$ADD_D" rev-parse 'HEAD^{commit}')"
-  FL_D="$FIX/add-flake-d.nix"
-  new_flake "$FL_D"
-  FL_D_BEFORE="$(digest_of "$FL_D")"
-  ANS=""
-  run_pinned add "$ADD_D" --flake "$FL_D"
-  assert_exit "$RC" 1 "a detached HEAD with no declared tag is refused"
-  assert_contains "$OUT" "detached HEAD" "the refusal names the state"
-  assert_contains "$OUT" "an input needs a ref" "and why an input cannot be written"
-  assert_eq "$(digest_of "$FL_D")" "$FL_D_BEFORE" "the flake is untouched"
-
-  # No anchor, no guessing: the block is printed for by-hand placement.
-  FL_N="$FIX/add-flake-noanchor.nix"
-  printf '{\n  inputs.nixpkgs.url = "github:NixOS/nixpkgs";\n}\n' > "$FL_N"
-  FL_N_BEFORE="$(digest_of "$FL_N")"
-  ANS=""
-  run_pinned add "$ADD_T" --flake "$FL_N"
-  assert_exit "$RC" 1 "a flake without the inputs anchor is refused"
-  assert_contains "$OUT" "refusing to guess where an input belongs" "the refusal says why"
-  assert_contains "$OUT" "rev=$ZEROS" "and prints the block, placeholder and all, to place by hand"
-  assert_eq "$(digest_of "$FL_N")" "$FL_N_BEFORE" "the flake is untouched"
-
-  # A subdirectory is not a repo: resolve_repo's rule holds here too.
-  mkdir -p "$ADD_B/sub"
-  ANS=""
-  run_pinned add "$ADD_B/sub" --flake "$FL_B"
-  assert_exit "$RC" 1 "a subdirectory argument is refused"
-  assert_contains "$OUT" "not the work-tree root" "with the work-tree rule named"
-
-  # --- the url case: a real clone into the shared tree ---------------------
-  # file:// keeps it local while still going through git's transport layer
-  # (a plain path would hardlink instead of fetching).
-  ADD_SRC="$FIX/add-src"
-  mkdir -p "$ADD_SRC"
-  bgit "$ADD_SRC" init -q
-  printf '{\n  inputs.nixpkgs.url = "github:NixOS/nixpkgs";\n  outputs = { self, nixpkgs }: { };\n}\n' > "$ADD_SRC/flake.nix"
-  bgit "$ADD_SRC" add flake.nix; bgit "$ADD_SRC" commit -q -m "src flake"
-  SRC_URL="file://$ADD_SRC"
-  FL_U="$FIX/add-flake-u.nix"
-  new_flake "$FL_U"
-  ANS='
-y
-y
-'
-  run_pinned add "$SRC_URL" --input cloned --flake "$FL_U"
-  assert_exit "$RC" 0 "add from a url exits 0"
-  assert_contains "$OUT" "cloning:" "the clone is announced before it runs"
-  assert_file "$PINNED_CLONES/cloned/.git/config" "the clone landed in the shared tree"
-  # git lowercases the key when it writes it -- the value is what matters.
-  assert_contains "$PINNED_CLONES/cloned/.git/config" "sharedrepository = group" \
-    "the clone is group-shared at init time"
-  assert_contains "$FL_U" "cloned = {" "the input took the --input name"
-  assert_contains "$FL_U" "git+file://$PINNED_CLONES/cloned?ref=" \
-    "the input names the clone in the shared tree, not the url"
-  assert_missing "$FL_U" "rev=$ZEROS" "the placeholder was synced away"
-  assert_eq "$(rev_in "$(slot_of "$PINNED_CLONES/cloned")/rev.git")" \
-    "$(bgit "$ADD_SRC" rev-parse 'HEAD^{commit}')" "the clone was pinned at the source's commit"
-
-  # Second run: the destination is reused because its origin matches.
-  ANS=""
-  run_pinned add "$SRC_URL" --input cloned --flake "$FL_U"
-  assert_exit "$RC" 0 "a second url add is a no-op"
-  assert_contains "$OUT" "origin matches, nothing fetched" "the existing clone is reused"
-  assert_contains "$OUT" "nothing to do" "and every part is already satisfied"
-
-  # A destination holding somebody else's clone is never adopted.
-  ANS=""
-  run_pinned add "file://$ADD_B" --input cloned --flake "$FL_U"
-  assert_exit "$RC" 1 "a clone of another remote at the destination is refused"
-  assert_contains "$OUT" "holds a clone of another remote" "the refusal names the mismatch"
-  assert_contains "$OUT" "you asked for: file://$ADD_B" "and both urls"
-
-  # And neither is a directory that is no repository of its own. Git's
-  # discovery walks UP, so a plain directory inside another checkout answers
-  # for THAT checkout -- the clone tree is made a repository here so the
-  # fall-through is deterministic rather than a property of $TMPDIR.
-  mkdir -p "$PINNED_CLONES/squatter"
-  bgit "$PINNED_CLONES" init -q
-  ANS=""
-  run_pinned add "file://$ADD_B" --input squatter --flake "$FL_U"
-  assert_exit "$RC" 1 "a non-repository at the destination is refused"
-  assert_contains "$OUT" "is not a git repository of its own" "the refusal says what it found"
-  rm -rf "$PINNED_CLONES/.git"
-
-  # Bad argv dies before anything is created.
-  ANS=""
-  run_pinned add "$ADD_B" --input "bad name" --flake "$FL_B"
-  assert_exit "$RC" 1 "an out-of-grammar --input is refused"
-  assert_contains "$OUT" "outside the name grammar" "the refusal names the grammar"
-  ANS=""
-  run_pinned add "$ADD_B" "$ADD_A" --flake "$FL_B"
-  assert_exit "$RC" 1 "two positionals are refused"
-  assert_contains "$OUT" "add takes one repo or url" "with the one-argument rule named"
-  ANS=""
-  run_pinned add --flake "$FL_B"
-  assert_exit "$RC" 1 "add with no argument is usage"
-  ANS=""
-  run_pinned add "$ADD_B" --flake "$FIX/no-such-flake.nix"
-  assert_exit "$RC" 1 "an unreadable flake is refused"
-  assert_contains "$OUT" "cannot read" "naming the file it could not read"
-else
-  say "S15: SKIPPED (no git fixture)"
-fi
-
-# ---------------------------------------------------------------------------
 say "S16: the frozen syslog vocabulary"
 # ---------------------------------------------------------------------------
 # The audit log is append-only, so its action tags are FROZEN NOUNS, not UI
@@ -5110,7 +3855,7 @@ LOG_TAGS="$(grep -v '^[[:space:]]*#' "$SRC" \
   | grep -o 'log_action "\{0,1\}[A-Za-z][A-Za-z0-9$_-]*' \
   | sed 's/^log_action "\{0,1\}//' | LC_ALL=C sort -u | tr '\n' ' ')"
 assert_eq "$LOG_TAGS" \
-  'add approve approve-file declare ignorable-$sub mv respell setup show sign signer-add signer-remove tombstone ' \
+  'approve approve-file declare ignorable-$sub mv respell setup show sign signer-add signer-remove tombstone ' \
   "the syslog action tags are exactly the frozen set (see log_action's comment)"
 
 # ---------------------------------------------------------------------------
@@ -5214,62 +3959,6 @@ if [ -n "$GUARD_LINE" ] && [ -n "$DIGEST_LINE" ] && [ "$GUARD_LINE" -lt "$DIGEST
 else
   fail "setup runs the interpreter guard before it computes the sudoers digest (guard='$GUARD_LINE' digest='$DIGEST_LINE')"
 fi
-
-# ---------------------------------------------------------------------------
-say "S17b: the root-owned flake gate (upgrade's --flake)"
-# ---------------------------------------------------------------------------
-# `upgrade` self-elevates through the sudoers digest grant and ends in
-# `<rebuild> switch --flake <dirname>`, which ACTIVATES whatever that
-# directory says -- root code chosen by an argument the invoker typed, with
-# --yes removing the last confirm. verify_root_flake is the root side's
-# refusal; it is driven through the PROBE because the EUID==0 branch that
-# calls it cannot be reached without real root (see the coverage gaps).
-#
-# The stub widens the OWNER allowlist to the harness user in both
-# verify_record_file and verify_root_owned_path, so what these cases exercise
-# is the MODE half of each: a flake nothing non-root may rewrite, reachable
-# only through directories nothing non-root may rewrite. The owner half is
-# the same code path every other ownership check in this file rides on.
-VRF="$FIX/vrf"
-mkdir -p "$VRF/ok"
-printf '{ }\n' > "$VRF/ok/flake.nix"; chmod 644 "$VRF/ok/flake.nix"
-chmod 755 "$VRF/ok"
-run_probe verify_root_flake "$VRF/ok/flake.nix"
-assert_exit "$RC" 0 "a 644 flake under a 755 dir passes (the default flake's shape)"
-assert_eq "$(wc -c <"$ERRF" | tr -d ' ')" "0" "and says nothing while passing"
-
-# The file itself: group-writable means someone who is not root can rewrite
-# what root is about to activate.
-mkdir -p "$VRF/loosefile"
-printf '{ }\n' > "$VRF/loosefile/flake.nix"; chmod 664 "$VRF/loosefile/flake.nix"
-chmod 755 "$VRF/loosefile"
-run_probe verify_root_flake "$VRF/loosefile/flake.nix"
-assert_exit "$RC" 1 "a group-writable flake file is refused"
-assert_contains "$ERRF" "group/other-writable" "the record-file check names the mode"
-assert_contains "$ERRF" "the root side will not build from it" \
-  "and the refusal says what it is refusing to do"
-
-# The directory: the file may be perfect and still sit where anyone can
-# replace it, or beside a flake.lock and modules that decide as much as it does.
-mkdir -p "$VRF/loosedir"
-printf '{ }\n' > "$VRF/loosedir/flake.nix"; chmod 644 "$VRF/loosedir/flake.nix"
-chmod 777 "$VRF/loosedir"
-run_probe verify_root_flake "$VRF/loosedir/flake.nix"
-assert_exit "$RC" 1 "a flake under a world-writable directory is refused"
-assert_contains "$ERRF" "expected 755 or stricter" "the ancestry walk names the mode"
-assert_contains "$ERRF" "reachable through a directory that is not root-owned" \
-  "and the refusal names the ancestry, not the file"
-chmod 755 "$VRF/loosedir"
-
-# The call sites: a probe cannot reach either EUID==0 branch, so their
-# presence is asserted in the source. deploy gates the rebuild it runs;
-# upgrade gates it BEFORE the ceremonies, so a flake the rebuild would refuse
-# never drives a batch of review gates chosen by its own input list.
-assert_eq "$(grep -c '^    verify_root_flake "\$FLAKE" || exit 1$' "$SRC")" 2 \
-  "both do_deploy and do_upgrade call the gate"
-assert_eq "$(grep -B1 '^    verify_root_flake "\$FLAKE" || exit 1$' "$SRC" \
-             | grep -c '^  if \[ "\$EUID" -eq 0 \]; then$')" 2 \
-  "each call sits under the EUID==0 branch, leaving unprivileged deploy unchanged"
 
 # ---------------------------------------------------------------------------
 say "S18: --version"

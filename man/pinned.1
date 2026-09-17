@@ -23,12 +23,9 @@ Actions marked
 .B (sudo)
 run as root.
 .BR review ,
-.BR add ,
 .BR tombstone ,
 .BR rekey ,
-.BR declare ,
-.BR deploy ,
-.B upgrade
+.B declare
 and
 .B setup
 self-elevate when invoked unprivileged: they re-exec the installed,
@@ -37,9 +34,6 @@ root-owned binary under
 whose sudoers entry is digest-pinned to the installed bytes (a swapped
 binary makes sudo refuse).
 There is no NOPASSWD \(em sudo authenticates every invocation.
-.B deploy \-\-dry\-run
-is the one carve\-out: it displays and runs nothing, so it stays
-unprivileged and costs no authentication.
 The
 .B signer
 and
@@ -86,9 +80,9 @@ decides nothing); off a tty, a verb whose gate cannot be answered
 refuses with exit 2 rather than elevate unasked.
 The gate applies to
 .BR review ,
-.BR add ,
-.BR deploy ,
-.BR upgrade ,
+.BR tombstone ,
+.BR rekey ,
+.BR declare ,
 and the
 .B signer
 and
@@ -96,10 +90,6 @@ and
 add/remove ceremonies;
 .B setup
 takes its own confirmation instead, before any authentication.
-.B deploy
-takes both: the gate before sudo, and its
-.RB \(dq rebuild? " [y/N]" \(dq
-after it, over the commands root is about to run.
 .SH COMMANDS
 .SS Repository approval
 .TP
@@ -227,7 +217,7 @@ nothing else:
 .BR verify ,
 .B status
 and
-.B deploy
+.B rev
 answer about a pin already recorded and are unaffected.
 .RS
 .TP
@@ -333,8 +323,7 @@ same commit.
 name.
 The declaration is the slot's
 .B release
-record: the release name
-.B deploy
+record: the release name a deployer
 syncs the input's
 .B ref=
 to, after cross-checking that the live tag still names the approved
@@ -347,8 +336,8 @@ pinned gains a declaration \(em or gives one up \(em without waiting
 for the next release.
 .IP
 A declaration may only name a tag that already resolves to the slot's
-pinned rev \(em deploy's own cross-check, run at declaration time, so
-declare can never write a record deploy would refuse.
+pinned rev \(em a deployer's own cross-check, run at declaration time,
+so declare can never write a record a deployer would refuse.
 It cannot change what is built: the rev is the trust decision and
 declare never touches it \(em
 .B ref=
@@ -356,8 +345,8 @@ only tells nix where to fetch a rev it verifies anyway, so a wrong ref
 is a fetch failure, never a different build.
 It cannot invent provenance: "this rev is also known as \fIname\fP" is
 checked, not taken.
-And a name that moves later fails closed, because deploy re-runs the
-same check on every sync.
+And a name that moves later fails closed, because a deployer re-runs
+the same check on every sync.
 A tag missing from the checkout, a tag naming another commit, a name
 outside the declared-name grammar, and an unpinned or tombstoned slot
 all refuse before anything is written.
@@ -368,18 +357,15 @@ beyond "this name currently points at the already-approved commit",
 which is checked directly.
 Repos that sign keep the stronger path they already have:
 .B review \-\-signed\-tag
-writes the declaration as a side effect, and
-.B upgrade
-offers it automatically.
-.B upgrade
-never promotes a rev-only slot on its own \(em tag names are repo
-content, and content must never choose the shape of a slot; once a
+writes the declaration as a side effect, and a deployer may offer it
+automatically.
+Nothing should promote a rev-only slot on its own \(em tag names are
+repo content, and content must never choose the shape of a slot; once a
 slot is declared, the tagged and signed routes maintain the name at
 every release.
 .IP
 .B \-\-no\-release
-clears the declaration and the slot goes rev-only:
-.B deploy
+clears the declaration and the slot goes rev-only: a deployer
 stops managing the input's
 .BR ref= ,
 which keeps whatever it says.
@@ -664,7 +650,7 @@ else the user tier's; without
 .B \-\-repo
 the user tier's alone.
 Resolved the way the signature ceremony resolves it, so a consumer that
-discovers signed releases (the deployer's upgrade offer) never has to
+discovers signed releases (a deployer's signed-release offer) never has to
 know where either file lives.
 Prints nothing and exits 1 when no such file exists: no signers means
 nothing verifies, which a consumer reads as no offer, never as an error.
@@ -792,279 +778,7 @@ Print the release version as
 and exit 0.
 The version is bumped in the release commit its tag points at, so a
 checkout between releases reports the release it descends from.
-.SS Adding a repository
-.TP
-.B add \fIrepo\fP|\fIurl\fP [\fB\-\-input\fP \fIname\fP] [\fB\-\-signed\-tag\fP \fItag\fP] [\fB\-\-flake\fP \fIpath\fP] [\fB\-\-yes\fP]
-(sudo) Take a repository from "it exists somewhere" to "pinned, and
-wired in as an input of the system flake", in three idempotent parts:
-a checkout, a pin, a wired input.
-Each part is skipped with a note when it is already satisfied, so a
-rerun after an interruption picks up exactly where it stopped, and all
-three satisfied is a no-op that exits 0.
-An unprivileged preview names the checkout, the input, the flake and
-the ceremony before the sudo prompt, and closes with the pre-sudo
-handoff: the gate promises the approval and the flake edit
-.RB ( "next: approve " \fIname\fP " + edit the flake as root" ),
-or the edit alone when the checkout is already at a pin.
-.B \-\-yes
-skips that gate; the input block is still shown and confirmed as root
-before the flake is touched.
-.RS
-.PP
-.B 1. The checkout.
-An argument that is an existing directory is used in place \(em add
-never copies a checkout and never edits one.
-Anything else must be a url
-.RI ( scheme://host/path
-or the scp\-like
-.IR [user@]host:path )
-and is cloned into the shared clone tree,
-.IR /var/db/pinned\-clones/<name> .
-The clone runs as the invoking user, never as root, with a scrubbed
-environment: no user or system git config, no credential helper, and
-.I GIT_ALLOW_PROTOCOL
-limited to file, git, http, https and ssh, which is what shuts out
-.I ext::
-remote helpers (a remote helper is a command line).
-So public https and git remotes work, an agent\-backed ssh remote works
-when your sudoers keeps
-.IR SSH_AUTH_SOCK ,
-and a credentialed https remote does not \(em clone that one by hand and
-add the checkout.
-The url is transport only: trust binds after the fetch, at the ceremony,
-so a wrong or hostile remote is bounded by the review that follows.
-An existing directory at the destination is reused only when it is a
-git repository of its own whose
-.I origin
-is the very url asked for; anything else there is refused rather than
-adopted.
-The clone tree is created root\-owned at the first add; the directory
-itself is group\-writable to the
-.I _pinned\-clones
-operators group, so any configured user can fetch into it later.
-Without that group (a manual install) the clone is owned by the invoker
-alone, which is said loudly \(em content addressing gates trust either
-way, ownership only decides who may update.
-There is no shallow clone: the ancestry lattice and a first approval's
-full\-tree review both need real history.
-.PP
-.B 2. The pin.
-The first\-approval ceremony, run by
-.B review
-itself \(em add is not a second review path.
-.B \-\-signed\-tag
-rides through to it unchanged, with review's own semantics (repeatable,
-every named tag must verify and name the same commit), so a repository
-whose release is signed by an installed signer key can be added without
-reading the tree.
-A repository that already carries a pin keeps it: the ceremony is
-skipped, and the input is wired at the rev already approved.
-.PP
-.B 3. The wiring.
-The system flake gains one input block, shown in full and confirmed
-before a byte of the file is touched:
-.PP
-.nf
-    <name> = {
-      url = "git+file://<path>?ref=<ref>&rev=<rev>";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-.fi
-.PP
-.I <name>
-is
-.B \-\-input
-or, by default, the last path component of the argument without a
-trailing
-.IR .git ;
-it must match
-.I [A\-Za\-z_][A\-Za\-z0\-9_\-]*
-because it becomes both a nix attribute and a directory name.
-.I <ref>
-is the release the slot declares
-.RI ( refs/tags/<tag> )
-or else the checkout's own branch; a detached HEAD with no declared tag
-is refused, because an input needs a ref.
-The follows line is present only when the approved tree's own
-.I flake.nix
-declares a nixpkgs input \(em read from the object store at the pinned
-rev, never from the work tree.
-The block goes in immediately after the flake's
-.RI \(dq "  inputs = {" \(dq
-line; without that anchor add refuses and prints the block for you to
-place by hand.
-Everything outside the inserted block is preserved byte for byte.
-.PP
-.B The placeholder dance.
-The block is written with an all\-zero rev and only then synced to the
-approved one, through the same in\-place editor
-.B deploy
-uses.
-An add interrupted between the two leaves an input that can never be
-fetched, so the next rebuild fails loudly \(em an interruption cannot
-leave a floating ref that quietly builds unapproved content.
-A rerun says the wired input does not name the approved rev yet and
-points at
-.BR deploy ,
-whose one job is syncing revs; add never does that job behind its back.
-.PP
-Consuming the input stays a human edit: add wires it in and never writes
-into the repositories it gates, because a tool that edited them would be
-approving its own changes.
-Wire the input up (a module import, an overlay, whatever it feeds), then
-run
-.B pinned deploy
-to build from it.
-Declining the input block exits 2 with the flake unchanged; a pin
-recorded by part 2 stays, because the trust it records is real.
-.RE
-.SS Deployment
-.TP
-.B deploy [\-\-dry\-run] [\-\-yes] [\-\-flake \fIpath\fP]
-(sudo)
-Sync every git+file input of the system flake to its approved rev and
-rebuild.
-deploy self\-elevates like the ceremonies above, then shows the exact
-root commands and confirms with
-.B rebuild? [y/N]
-before any of them runs \(em composing those commands unprivileged
-would rest the display on the invoker's environment, when every input
-they are built from is root\-owned.
-Inputs whose git HEAD has moved past the pin are reported unapproved,
-and one pasteable
-.B pinned review
-line naming all of them closes the report \(em a single authentication
-covers the whole batch, but approval stays a separate ceremony, never
-a deploy flag.
-.IP
-.B \-\-flake
-names the flake file to sync, defaulting to
-.I /etc/nix\-darwin/flake.nix
-on macOS and
-.I /etc/nixos/flake.nix
-elsewhere.
-Under
-.B \-\-dry\-run
-\(em which runs unprivileged, executes nothing, and displays the commands
-with the
-.BR sudo (8)
-tokens a root run drops \(em any readable path is allowed.
-On every other run the flake must be root\-owned and not group\- or
-other\-writable, and every directory on the way to it must be root\-owned
-with mode 755 or stricter; anything else is refused before a rebuild
-starts.
-Malformed argv, and a
-.B \-\-flake
-nobody can read, are refused before the authentication rather than after
-it.
-.TP
-.B upgrade [\-\-dry\-run] [\-\-yes] [\-\-flake \fIpath\fP]
-(sudo)
-.B review
-+
-.BR deploy ,
-chained: every git+file input whose checkout moved past its pin gets
-the same ceremony
-.B review
-runs \(em upgrade removes typing, never scrutiny \(em then deploy
-syncs the flake to the approved revs and rebuilds, all behind one
-authentication.
-An unprivileged plan precedes the sudo prompt, and decides whether there
-is one: with nothing to approve, upgrade exits there \(em before any
-authentication \(em pointing at
-.BR "pinned deploy" ,
-which is what rebuilds from the pins already recorded.
-An input whose approved rev the flake does not carry yet is a highlighted
-.B deploy:
-row, never a quiet one, since the next deploy moves it; with nothing to
-review, the plan then says how many such revs are waiting.
-With work to do, a gate naming the round is the last line before
-.BR sudo (8);
-.B \-\-yes
-skips it, and off a tty upgrade refuses rather than elevate unanswered.
-The gate is preceded by the exact
-.BR sudo (8)
-argv upgrade is about to run, flags included: the value of
-.B \-\-flake
-decides what the rebuild activates as root, and
-.B \-\-yes
-removes the last confirm before it, so neither may reach the password
-prompt undisclosed.
-.IP
-Like deploy's, upgrade's
-.B \-\-flake
-is subject to the root\-side rule described under
-.BR deploy :
-the flake file must be root\-owned and not group\- or other\-writable, and
-so must every directory on the way to it.
-The default flake satisfies this by construction, which is why it is the
-default; a user\-owned path is refused before any ceremony runs, rather
-than after a round of approvals has already been driven by its input list.
-The plan lists every git+file input of the flake, one aligned row each in
-flake order, and highlights only the rows a ceremony will cover
-.RB ( review: ).
-The rest are present but quiet, each saying why it is not actionable: at
-its pin, refused, skipped for by-hand work, without a
-.BR rev= ,
-without a slot, or without a checkout \(em an input the plan omitted would
-read as one this tool never looked at.
-A declined repo is skipped, not fatal: deploy keeps its old rev.
-A slot that declares a release tag is never plain-approved (that would
-clear the declaration and strand the input's ref=).
-When its HEAD carries exactly one release tag, upgrade approves that
-commit under that name \(em the release-at-HEAD rule, the same commit a
-plain review would cover; otherwise (no tag at HEAD, several, or an
-out-of-grammar name) the repo is listed for a manual
-.B review \-\-tag
-instead, and the plan names the newest release past the pin \(em by
-ancestry on the checkout's own line of history, unverified \(em so the
-command has a name to copy, and says how far HEAD stands past it.
-Naming is not choosing: there is deliberately no latest-tag search that
-routes anything, because version sort is a convention and the tag
-namespace is repo content \(em content must never choose what a
-ceremony reviews.
-Several names on that commit are all shown and none is put in the
-command.
-.IP
-A stale repo carrying a newer signed release, and an installed signer
-key that verifies it, is offered the signature gate instead: the plan
-marks it
-.RB \(dq "signed release " \fIt\fP " \(em signature-gated" \(dq
-and the ceremony is
-.B review \-\-signed\-tag
-\(em its
-.RB \(dq [y/N] \(dq
-is the offer's acceptance, and declining skips that repo like any other.
-The offer outranks both the release-at-HEAD rule and a plain review
-(a signature is stronger evidence than a name), and it applies to
-rev-only and tag-declared slots alike.
-Candidates are the repo's tags that pass the declared-name grammar,
-strictly descend from the pin, and are an ancestor of (or equal to) the
-checkout's HEAD; each is then verified, and only the verified subset is
-ordered \(em by ancestry over the commit graph, never by name.
-The offer is the unique ancestry maximum of that subset; every verified
-tag naming that same commit rides along, which the ceremony's
-all-tags-agree rule reads as k-of-n agreement.
-This is why selection is allowed here at all: someone without the signer
-key cannot enter a candidate, so no attacker-writable name ever chooses
-what the ceremony covers.
-Verified tags on lines that do not contain one another have no maximum
-and are listed for a manual
-.BR "review \-\-signed\-tag" .
-When the offered release is not HEAD, the plan says how far HEAD stands
-past it \(em the release is what gets pinned.
-.IP
-The ancestry lattice is upgrade's admission rule: only a forward checkout
-joins an automatic ceremony.
-A checkout sitting behind its pin, or off the pinned line entirely, is
-listed as refused with the declaration flag that would approve it by hand
-.RB ( "review \-\-backward" ,
-.BR "review \-\-diverged" ).
-A backward checkout was invisible before the lattice \(em the commit-count
-staleness test answered "nothing to do" for it.
-With
-.B \-\-dry\-run
-no ceremony runs and deploy only previews.
+.SS Installation
 .TP
 .B setup [\-\-yes]
 (sudo) Provision the sudoers digest pin; self-install.
@@ -1198,19 +912,10 @@ Written by a review that carries one and by
 .BR declare ,
 cleared by a plain review and by
 .BR "declare \-\-no\-release" ;
-.B deploy
-syncs the input's
+a deployer syncs the input's
 .B ref=
 to it after cross-checking that the live tag still names the pinned
 rev.
-.TP
-.I /var/db/pinned\-clones
-Shared clone tree, one directory per input added by url.
-Created root-owned at the first
-.BR add ,
-group
-.I _pinned\-clones
-where that group exists.
 .TP
 .I /etc/pinned/ignorable.json
 Machine tier of the ignorable-key policy.
@@ -1236,33 +941,11 @@ On macOS:
     log show \-\-predicate 'eventMessage CONTAINS "pinned:"'
 .fi
 .SH EXAMPLES
-Bring the system up to date \(em review every stale input, one
-ceremony per repo, one authentication, then rebuild:
-.PP
-.nf
-    pinned upgrade
-.fi
-.PP
-The same, selectively:
-.PP
-.nf
-    pinned review ~/Projects/some\-repo ~/Projects/other\-repo
-    pinned deploy
-.fi
-.PP
-Take a new repository all the way to a wired flake input \(em clone,
-review, wire:
-.PP
-.nf
-    pinned add https://example.org/o/thing.git
-.fi
-.PP
-Name the release an already-pinned rev is, so deploy manages the
+Name the release an already-pinned rev is, so a deployer manages the
 input's ref= from now on:
 .PP
 .nf
-    pinned declare ~/Projects/some\-repo \-\-tag v0.12.0
-    pinned deploy
+    pinned declare ~/Projects/some\-repo \-\-release v0.12.0
 .fi
 .PP
 Pin a config file, keeping a served witness and tolerating one key:

@@ -103,7 +103,7 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       already is: the tag must already
                                       resolve to the pinned rev (checked,
                                       not taken -- the rev never moves),
-                                      and deploy then syncs the input's
+                                      and a deployer syncs the input's
                                       ref= to it; --no-release clears the
                                       declaration and the slot goes
                                       rev-only; both state an end state
@@ -138,99 +138,11 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       answer (exit 1 only if the path
                                       cannot be resolved)
 
-    pinned add <repo|url> [--input <name>] [--signed-tag <tag>] [--flake <path>]
-                                      checkout -> pin -> flake input, in
-                                      three idempotent parts, each skipped
-                                      with a note when already satisfied
-                                      (all three satisfied: nothing to do):
-                                      an existing directory is used in
-                                      place, a url is cloned into
-                                      /var/db/pinned-clones as you (never
-                                      as root, scrubbed environment); the
-                                      pin comes from review's own
-                                      ceremony (--signed-tag rides through
-                                      to it); the input block is shown in
-                                      full and confirmed before the system
-                                      flake is touched -- written with an
-                                      all-zero rev and synced to the pin
-                                      right after, so an interrupted add
-                                      leaves an input that cannot be
-                                      fetched rather than one that floats.
-                                      Wiring the input into a
-                                      configuration stays your edit:
-                                      pinned never writes into the repos
-                                      it gates
-
-    pinned deploy [--dry-run] [--yes] [--flake <path>]
-                                      sync every git+file input of the
-                                      system flake to its approved rev
-                                      (and declared tag ref), rebuild;
-                                      self-elevates via sudo, then shows
-                                      the root commands and confirms
-                                      before any of them runs. --dry-run
-                                      runs unprivileged and shows those
-                                      commands with their sudo tokens,
-                                      executing nothing. --flake defaults
-                                      to /etc/nix-darwin/flake.nix (macOS)
-                                      or /etc/nixos/flake.nix; on every
-                                      run but --dry-run the flake must be
-                                      root-owned and not group- or
-                                      other-writable, and so must every
-                                      directory on the way to it
-
-    pinned upgrade [--dry-run] [--yes] [--flake <path>]
-                                      review every stale flake input
-                                      (the same per-repo ceremonies),
-                                      then deploy -- one authentication
-                                      for the whole round; the plan runs
-                                      unprivileged and decides whether
-                                      there is an authentication at all:
-                                      with nothing to approve upgrade
-                                      exits there, pointing at `pinned
-                                      deploy`, and with work to do a gate
-                                      naming the round is the last line
-                                      before sudo (--yes skips it),
-                                      preceded by the exact sudo argv --
-                                      --flake decides what the rebuild
-                                      activates as root and --yes removes
-                                      the last confirm, so neither reaches
-                                      the password prompt undisclosed;
-                                      upgrade's --flake obeys deploy's
-                                      root-side rule and a user-owned path
-                                      is refused before any ceremony runs;
-                                      the plan lists every input, one row
-                                      each, and highlights the ones a
-                                      ceremony will cover and, as
-                                      `deploy:`, any whose approved rev
-                                      the flake does not carry yet (with
-                                      nothing to review, upgrade then
-                                      points at `pinned deploy` to
-                                      deploy them) -- the rest stay
-                                      visible but quiet (at pin, no
-                                      rev=, no slot, no checkout); a
-                                      stale repo with a newer signed
-                                      release an installed key verifies
-                                      is offered the signature gate
-                                      instead of a review; a
-                                      tag-declared slot
-                                      otherwise joins only when HEAD
-                                      carries exactly one release tag
-                                      (approved under that name), else it
-                                      is listed for a manual review
-                                      --tag with the newest release past
-                                      the pin named (by ancestry,
-                                      unverified) as the name to copy;
-                                      only forward checkouts join
-                                      a ceremony, backward and diverged
-                                      ones are listed as refused with the
-                                      flag that would declare them
-
     pinned --version                  print the release version
 
-review, add, setup, tombstone, rekey, declare, deploy, upgrade, signer
-add/remove and ignorable add/remove self-elevate via sudo (re-exec of
-the installed root-owned binary); `deploy --dry-run` is the exception --
-it runs nothing, so it stays unprivileged.
+review, setup, tombstone, rekey, declare, signer add/remove and
+ignorable add/remove self-elevate via sudo (re-exec of the installed
+root-owned binary).
 sign, show and cat
 run as you: sign needs your SSH agent, show and cat write nothing. The
 verb triple: `show` rehearses (no record), `review` records, `verify`
@@ -306,7 +218,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   signature says who vouched, never which way the pin is moving, so a
   replayed signed release of an older version is exactly what it
   catches. It governs ceremonies only -- `verify`, `status` and
-  `deploy` answer about a pin already recorded and are untouched.
+  `rev` answer about a pin already recorded and are untouched.
 - The file-pin ceremony (`review --file`) takes no hash argument, ever.
   A hash handoff would let a caller in a poisoned environment feed root
   an opaque digest to record sight-unseen; instead the file is frozen
@@ -490,92 +402,14 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   (`review <repo> --signed-tag v1.2.3-alice --signed-tag v1.2.3-bob`) -- every
   named tag must verify and name the same commit or nothing is pinned;
   k-of-n is the consumer demanding whichever k tags they trust.
-- `upgrade` offers that gate. A stale repo whose tags include a newer
-  signed release this machine's allowed signers verify is routed to
-  `review --signed-tag` instead of a plain review -- the plan says
-  `(signed release <t> -- signature-gated)`, and the ceremony's own
-  `[y/N]` is the offer's acceptance (declining skips that repo, like any
-  batch decline). It outranks both the release-at-HEAD rule and a plain
-  review, for rev-only and tag-declared slots alike. There is still no
-  latest-tag search: candidates must pass the declared-name grammar,
-  strictly descend from the pin, and be an ancestor of the checkout's
-  HEAD; each is then verified, and only the verified subset is ordered --
-  by ancestry over the commit graph, never by name. The offer is that
-  subset's unique ancestry maximum, and every verified tag naming that
-  same commit rides along as the k-of-n agreement above. Selection is
-  safe here precisely because nobody without the signer key can enter a
-  candidate: an attacker-writable name never chooses what a ceremony
-  covers. Verified tags on lines that do not contain one another have no
-  maximum and are listed for a manual `review --signed-tag`.
-- The pin-stating paths never execute what they approve; `deploy` is
-  the one acting subcommand -- the bundled consumer for a nix system
-  (a machine has exactly one configuration mechanism; any other
-  consumer is the same primitive: read the pin, act on exactly that
-  rev) -- and it acts by composing and showing the commands that change
-  the system, self-elevating to do it. Composing them unprivileged was
-  honest only for as long as the invoking process was: every input is
-  root-owned, so it rested on the invoker's environment and on a human
-  checking a 40-hex rev by eye. It scans the system flake for
-  `git+file://` inputs, syncs each stale `rev=` to its approved hash,
-  and rebuilds -- the rebuild runs even when every rev is already in
-  sync, because the flake matching the pins says nothing about what the
-  system runs. A
-  slot that declares a release tag also gets its `ref=` synced to
-  `refs/tags/<tag>` -- after cross-checking that the live tag still
-  names the approved rev; a moved or deleted tag is a clean fail-closed
-  refusal, never a nix fetch error. `pinned declare` is how an
-  already-pinned slot gains (or gives up) that name -- a review that
-  moves the pin writes it too, and a plain review clears it. Inputs without a pin slot are
-  surfaced loudly (they deploy as hand-edited); non-local inputs are
-  not pinned's to speak for. One binary for gate and consumer is
-  deliberate: one file to hand-read at bootstrap, and the sudoers
-  digest attests the deployer too. The elevation re-execs the installed
-  root-owned copy, which is what makes the composition root's own work
-  rather than a user-writable command line handed to sudo.
-- **`add` composes; it decides nothing.** One verb carries a repo from
-  "it exists somewhere" to "pinned and wired in as a flake input", in
-  three idempotent parts -- checkout, pin, wired input -- each skipped
-  with a note when it is already satisfied, so an interrupted run is
-  resumed by rerunning it. The pin is `review`'s own ceremony, called
-  as-is (`--signed-tag` rides through to it): a second review path
-  would be a second thing to audit. The flake edit reuses deploy's
-  in-place editor. What add adds is the seams between them, and each
-  seam is a refusal: a name already spoken for by another path, a
-  detached HEAD with no declared tag (an input needs a ref), a flake
-  with no `inputs = {` anchor (the block is printed for by-hand
-  placement instead), a clone destination whose `origin` is not the url
-  asked for. The `follows` line is written only when the *approved*
-  tree's `flake.nix` declares a nixpkgs input -- read from the object
-  store at the pinned rev, never from the editable work tree.
-- **The placeholder dance.** `add` writes its input block with a rev of
-  forty zeros and only then syncs it to the approved hash. A crash
-  between the two leaves an input that can never be fetched, so the
-  next rebuild fails loudly -- where a floating `ref=` would have
-  quietly built whatever the branch happened to point at. Fail closed
-  is cheaper than fail correct. A rerun of `add` reports the unsynced
-  input and points at `deploy`, whose one job is syncing revs; add
-  never does that job behind its back.
-- **A url is transport; the ceremony is trust.** `add <url>` clones into
-  the shared tree `/var/db/pinned-clones/<name>` -- as the invoking
-  user, never as root: root supervises the directory, git does the
-  networking unprivileged, with no user config, no credential helper,
-  and `GIT_ALLOW_PROTOCOL` cut down to file/git/http/https/ssh (which
-  is what shuts out `ext::`, where a "url" is a command line). A
-  redirected or hostile remote is bounded by the review that follows,
-  because trust binds after the fetch. The destination is reused only
-  when it already holds a repository of its own whose `origin` is the
-  url asked for; anything else is refused, never adopted. Clones are
-  group-owned (`_pinned-clones`, declared by the nix module) so several
-  operators share one checkout; without the group the clone belongs to
-  the invoker and says so -- content addressing gates trust either way,
-  so availability wins here, unlike the record tree, where an absent
-  group fails closed to root-only.
-- **`add` never edits a consuming repo.** It wires the input in and
-  stops. Wiring that input into a configuration -- a module import, an
-  overlay, an anchor template's mirror -- stays a human edit, because a
-  tool that wrote into the repositories it gates would be approving its
-  own changes. The close of a successful add says so and points at
-  `pinned deploy`.
+  A deployer may offer that gate: route a stale repo whose newer signed
+  release verifies against the file `pinned signer path` names to
+  `review --signed-tag`, where the ceremony's own `[y/N]` is the
+  acceptance.
+- pinned never executes what it approves, and it deploys nothing. A
+  consumer reads the record through `pinned rev <repo>` (`--release` for
+  the declared name) and acts on exactly that rev, re-checking that a
+  declared tag still names it; it never opens a slot directly.
 - Rendered diffs are never trusted blindly, in three layers: every git
   call sets `attr.tree` to the empty tree (so no `.gitattributes` can
   select a driver or filter for any subcommand -- the only repo-wide
@@ -854,12 +688,10 @@ for that:
    build, so they can never disagree. It rewrites the shebang to the
    store bash at build time, which is the same interpreter pinning the
    manual route does by hand, done by the packaging that knows its own
-   root-owned prefix. It also declares the two groups
-   the script consumes but never creates: `_<user>-pinned`, which makes
-   that user's record tier readable, and `_pinned-clones`, the
-   operators of the shared clone tree `pinned add <url>` fetches into.
-   Neither directory is created here -- the script provisions both
-   root-side, so a manual install lands on the same paths.
+   root-owned prefix. It also declares the group the script consumes
+   but never creates: `_<user>-pinned`, which makes that user's record
+   tier readable. The directory is not created here -- the script
+   provisions it root-side, so a manual install lands on the same path.
    `security.pinned.rootOnlyOwners` is the one widening of `verify`'s
    owner invariant (exit 30): accounts no user can act as, whose files
    are therefore as unwritable to the tier user as root's, baked into
