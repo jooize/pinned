@@ -573,6 +573,30 @@ page() {
   fi
 }
 
+# The width of the controlling terminal, in columns, or nothing at all.
+#
+# Asked of the terminal itself: COLUMNS is a shell variable nothing here
+# maintains, and tput reads TERM and a terminfo database, which are plain
+# user environment. A process with no controlling terminal fails the
+# /dev/tty redirect ("device not configured"), which reads as no width. So
+# does a width that is not a positive integer: unwrapped output is always
+# readable, a wrap computed from nonsense is not.
+#
+# WHETHER THE OUTPUT IS GOING TO A TERMINAL IS THE CALLER'S QUESTION, not
+# this function's: it is called from a command substitution, where fd 1 is
+# the capture pipe and `[ -t 1 ]` would answer about that pipe. The caller
+# tests its own stdout, where the listing actually lands.
+listing_width() { # -> the terminal width in columns, or empty
+  local size rows cols
+  size="$(stty size </dev/tty 2>/dev/null)" || return 0
+  read -r rows cols <<<"$size"
+  case "${cols:-}" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  [ "$cols" -gt 0 ] || return 0
+  printf '%s' "$cols"
+}
+
 # INPUT THAT ARRIVED BEFORE THE QUESTION IS NOT AN ANSWER. Every gate in this
 # script reads ONE line from /dev/tty, and a line read is a line the terminal
 # was already holding: a paste, a stuck key, or a script that wrote into the
@@ -1332,23 +1356,38 @@ sanitize_display() { # <string> -> the same string with no terminal controls
   printf '%s' "$1" | LC_ALL=C tr '\011' ' ' | LC_ALL=C tr -d '\000-\037\177'
 }
 
-# The "commits since last approval" listing, one block per commit, oldest
+# The "commits since last approval" listing, one line per commit, oldest
 # first:
 #
 #   <hash>  <n> file(s)  +<ins> -<del>  <subject>
-#                                         <body line>
+#                                         <subject, wrapped>
 #
-# The aligned columns come first and the message runs to the end of the
-# line, so the subject is never truncated and never padded. That ordering
-# is also what keeps the columns true: awk measures bytes under LC_ALL=C,
-# an em dash is three of them, and padding a subject to a byte width
-# pushed every later column out by the difference.
+# The aligned columns come first and the subject runs to the end of the
+# line, so it is never truncated and never padded. That ordering is also
+# what keeps the columns true: awk measures bytes under LC_ALL=C, an em
+# dash is three of them, and padding a subject to a byte width pushed every
+# later column out by the difference.
 #
-# The WHOLE message prints, body included, indented two past the subject.
-# The authoritative diff below carries no commit messages at all, so a
-# body cut here would be approved unread -- the same reason the file
-# counts are shown: a one-line "fix typo" that rewrites forty files, or
-# that explains itself only in a body nobody saw, must not pass as one.
+# SUBJECTS ONLY -- no message bodies. A body is prose its author wrote, and
+# printing it here meant printing it unpaged, right above the y/N the
+# ancestry alarm is read against; keeping that safe took a per-run nonce in
+# the block sentinels, so that a body could not open a block of its own and
+# fabricate a row -- a hash, a subject and a file count belonging to no
+# commit.
+#
+# It never carried the decision either: the diff below is the authoritative
+# account of what the commits do, and the file and +/- counts are what
+# catch a one-line "fix typo" that rewrites forty files. Without bodies
+# every commit is exactly one message line, no text out of the repo can
+# open a block, and no sentinel or nonce is needed at all.
+#
+# A long subject WRAPS to the terminal width, hanging two columns under
+# where the subject starts, rather than running off the screen or being
+# cut. Width is measured in characters as bytes that do not continue a
+# UTF-8 sequence, in awk -- not with `fold`, which in a UTF-8 locale stops
+# silently at the first invalid byte and would drop the rest of a subject
+# from the display (measured). No terminal width (not a tty, or too few
+# columns left for the subject) means no wrapping.
 #
 # Counts pluralize ("1 file", "2 files") without breaking alignment: the
 # count right-aligns in its own digit column and the noun left-aligns
@@ -1357,9 +1396,9 @@ sanitize_display() { # <string> -> the same string with no terminal controls
 # whole-token right-align would let a lone singular drag its digit out of
 # the column.)
 #
-# Weight follows the decision: subject and body are the text being
-# approved and print in the default weight, while the counts are
-# orientation and stay dim.
+# Weight follows the decision: the subject is the text being approved and
+# prints in the default weight, while the counts are orientation and stay
+# dim.
 #
 # The counts come from sgit -- the same hardened path the reviewed diff
 # takes, so attr.tree=<empty tree> holds here too and no repo-local
@@ -1379,107 +1418,158 @@ sanitize_display() { # <string> -> the same string with no terminal controls
 # reads and --step walks. git's newest-first default serves open-ended
 # paging, not a bounded range read in full.
 #
-# $1 = old rev, $2 = new rev, $3 = line prefix (default none).
+# $1 = old rev, $2 = new rev, $3 = line prefix (default none), $4 = width in
+# columns to wrap to (default: the terminal's, when output goes to one;
+# empty = do not wrap).
 print_commit_range() {
-  # Delimiters a commit cannot forge. This listing prints message BODIES,
-  # which are text an attacker writes, and it prints them unpaged just above
-  # the ancestry alarm the ceremony's y/N is read against. A fixed sentinel
-  # byte would let a body open a block of its own and fabricate a whole
-  # row -- a hash, a subject and a file count that belong to no commit. The
-  # sentinels carry a nonce drawn per run instead, and a commit's bytes were
-  # fixed before the nonce existed. (Inside a block the field separator is
-  # still a bare byte: a body that plants one only moves the subject/body
-  # boundary, and every byte still prints.)
-  local nonce
-  nonce="$(LC_ALL=C od -An -N16 -tx1 /dev/urandom | LC_ALL=C tr -d ' \n')"
-  case "$nonce" in
-    [0-9a-f][0-9a-f]*) ;;
-    *) echo "pinned: internal error -- no nonce for the commit listing" >&2; exit 1 ;;
-  esac
-  sgit log --reverse --numstat \
-    --format="%x01${nonce}%x02%h%x02%s%x02%b%x01${nonce}%x03" "${1}..${2}" \
+  # Exactly one message line per commit, then that commit's numstat rows.
+  # A subject is a single line by construction (git folds the whole first
+  # paragraph into %s), so only a line that STARTS with SOH is a message
+  # line and a numstat row -- which starts with a digit or "-" -- can never
+  # be mistaken for one. The hash/subject split is on the FIRST STX only:
+  # a hash is hex and cannot carry one, so an STX planted in a subject
+  # stays in the subject, where it is scrubbed with the other controls.
+  #
+  # No width given means "ask the terminal", and the asking is gated on
+  # THIS function's stdout: that is where the listing lands, and it is the
+  # only place the question can be answered (inside the substitution below,
+  # fd 1 is the capture pipe). An explicit empty $4 says do not wrap.
+  local cols=""
+  if [ "$#" -ge 4 ]; then
+    cols="$4"
+  elif [ -t 1 ]; then
+    cols="$(listing_width)"
+  fi
+  sgit log --reverse --numstat --format='%x01%h%x02%s' "${1}..${2}" \
   | LC_ALL=C awk \
-    -v pre="${3:-}" -v nonce="$nonce" -v cyn="$C_CYN" -v dim="$C_DIM" \
+    -v pre="${3:-}" -v cols="$cols" -v cyn="$C_CYN" -v dim="$C_DIM" \
     -v grn="$C_GRN" -v red="$C_RED" -v off="$C_OFF" '
-    # sanitize_display, in awk: the subject and body are on their way to a
-    # terminal under the same alarm the ceremony depends on, and an ESC[1A
-    # ESC[2K inside one erases the line above it. Byte semantics (LC_ALL=C is
-    # set on the awk invocation), tab to space so the columns hold.
+    # sanitize_display, in awk: the subject is on its way to a terminal under
+    # the same alarm the ceremony depends on, and an ESC[1A ESC[2K inside one
+    # erases the line above it. Byte semantics (LC_ALL=C is set on the awk
+    # invocation), tab to space so the columns hold.
     function scrub(s) {
       gsub(/[\001-\010\013-\037\177]/, "", s)
       gsub(/\t/, " ", s)
       return s
     }
-    function endmsg(   b, k, i, a, m) {     # one finished message block
+    # Width of a byte string in COLUMNS: every byte that does not continue a
+    # UTF-8 sequence starts a character and takes one. Exact for valid UTF-8,
+    # one column per stray byte in anything else (so an invalid sequence
+    # still prints, it just measures wide), and one for an East Asian wide
+    # character -- the single case this under-counts, which shortens a line
+    # cosmetically and loses nothing.
+    function cw(s,   t) {
+      t = s
+      gsub(/[\200-\277]/, "", t)
+      return length(t)
+    }
+    # The longest prefix of s that fits n columns, cut BETWEEN characters:
+    # a hard split must never land inside a multi-byte sequence.
+    function head(s, n,   i, k) {
+      k = 0
+      for (i = 1; i <= length(s); i++) {
+        if (substr(s, i, 1) !~ /[\200-\277]/) {
+          if (k == n) return substr(s, 1, i - 1)
+          k++
+        }
+      }
+      return s
+    }
+    BEGIN {
+      soh = sprintf("%c", 1)
+      sep = sprintf("%c", 2)
+    }
+    index($0, soh) == 1 {                   # the message line of a commit
       n++
-      b = buf
+      b = substr($0, 2)
       k = index(b, sep); if (k == 0) k = length(b) + 1
-      hsh[n] = scrub(substr(b, 1, k - 1)); b = substr(b, k + 1)
-      k = index(b, sep); if (k == 0) k = length(b) + 1
-      sbj[n] = scrub(substr(b, 1, k - 1)); b = substr(b, k + 1)
-      sub(/\n+$/, "", b)                    # %b ends with a newline
-      m = (b == "" ? 0 : split(b, a, "\n"))
-      bn[n] = m
-      for (i = 1; i <= m; i++) bdy[n, i] = scrub(a[i])
+      hsh[n] = scrub(substr(b, 1, k - 1))
+      sbj[n] = scrub(substr(b, k + 1))
       nfl[n] = 0; ins[n] = 0; del[n] = 0; mrg[n] = 1
       # %h picks its own length per commit, so the hash gets a column too.
       if (length(hsh[n]) > hw) hw = length(hsh[n])
+      next
     }
-    BEGIN {
-      sep = sprintf("%c", 2)
-      st  = sprintf("%c", 1) nonce sep
-      en  = sprintf("%c", 1) nonce sprintf("%c", 3)
-    }
-    {
-      line = $0
-      if (!inmsg) {
-        if (index(line, st) == 1) {
-          inmsg = 1; buf = ""; line = substr(line, length(st) + 1)
-        } else {
-          if (n > 0 && line ~ /^[0-9-]+\t/) {
-            mrg[n] = 0
-            nfl[n]++
-            split(line, f, "\t")
-            if (f[1] != "-") ins[n] += f[1]
-            if (f[2] != "-") del[n] += f[2]
-          }
-          next
-        }
-      }
-      p = index(line, en)
-      if (p > 0) { buf = buf substr(line, 1, p - 1); inmsg = 0; endmsg(); next }
-      buf = buf line "\n"
+    n > 0 && /^[0-9-]+\t/ {                 # a numstat row of that commit
+      mrg[n] = 0
+      nfl[n]++
+      split($0, f, "\t")
+      if (f[1] != "-") ins[n] += f[1]
+      if (f[2] != "-") del[n] += f[2]
     }
     END {
       for (j = 1; j <= n; j++) {
         if (mrg[j]) continue
         nn[j] = (nfl[j] == 1 ? "file" : "files")
-        if (length(nfl[j]) > cw) cw = length(nfl[j])
+        if (length(nfl[j]) > nw) nw = length(nfl[j])
         if (length(nn[j]) > fw) fw = length(nn[j])
         if (length(ins[j]) > iw) iw = length(ins[j])
         if (length(del[j]) > dw) dw = length(del[j])
       }
       if (hw < 1) hw = 1
-      if (cw < 1) cw = 1
+      if (nw < 1) nw = 1
       if (fw < 1) fw = 1
       if (iw < 1) iw = 1
       if (dw < 1) dw = 1
-      # Where the subject starts, so the body can hang two columns under it.
-      ind = length(pre) + hw + 2 + cw + 1 + fw + 2 + (iw + 1) + 1 + (dw + 1) + 2
+      # Where the subject starts, so a wrapped line hangs two columns under
+      # it.
+      ind = length(pre) + hw + 2 + nw + 1 + fw + 2 + (iw + 1) + 1 + (dw + 1) + 2
+      # One column short of the terminal: a line that reaches the last one
+      # makes some terminals emit a newline of their own. With no width, or
+      # with too little room left beside the columns, nothing wraps -- a
+      # subject squeezed into a handful of columns reads worse than one that
+      # runs off the edge.
+      av1 = 0
+      if (cols + 0 > 0) {
+        av1 = cols - 1 - ind
+        if (av1 < 20) av1 = 0
+      }
+      av2 = av1 - 2
+      pad = sprintf("%" (ind + 2) "s", "")
       for (j = 1; j <= n; j++) {
         out = pre cyn sprintf("%-" hw "s", hsh[j]) off "  "
         if (mrg[j])
-          out = out dim sprintf("%" cw "s %-" fw "s", "-", "") "  " \
+          out = out dim sprintf("%" nw "s %-" fw "s", "-", "") "  " \
                 sprintf("%" (iw + 1) "s", "-") " " sprintf("%" (dw + 1) "s", "-") off
         else
           # The sign is part of the token, right-aligned with it: "+103"
           # over "  +2", never a "+" stranded from its digits.
-          out = out dim sprintf("%" cw "d %-" fw "s", nfl[j], nn[j]) off "  " \
+          out = out dim sprintf("%" nw "d %-" fw "s", nfl[j], nn[j]) off "  " \
                 grn sprintf("%" (iw + 1) "s", "+" ins[j]) off " " \
                 red sprintf("%" (dw + 1) "s", "-" del[j]) off
-        print out "  " sbj[j]
-        for (i = 1; i <= bn[j]; i++)
-          print (bdy[j, i] == "" ? "" : sprintf("%" (ind + 2) "s", "") bdy[j, i])
+        if (av1 <= 0) { print out "  " sbj[j]; continue }
+        # Greedy fill, word by word; a word too long for a whole line is
+        # cut at the limit instead of being allowed to run off.
+        nl = 0; line = ""; w = av1
+        wc = split(sbj[j], word, "[ ]")
+        for (i = 1; i <= wc; i++) {
+          t = word[i]
+          while (1) {
+            if (line == "") {
+              if (cw(t) > w) {
+                piece = head(t, w)
+                wrp[++nl] = piece
+                t = substr(t, length(piece) + 1)
+                w = av2
+                continue
+              }
+              line = t
+              break
+            }
+            if (cw(line " " t) <= w) { line = line " " t; break }
+            wrp[++nl] = line
+            line = ""; w = av2
+          }
+        }
+        # A subject ending in blanks (git strips them, a crafted object
+        # need not) leaves an empty last piece; it is not a line.
+        if (nl == 0 || line != "") wrp[++nl] = line
+        for (i = 1; i <= nl; i++) {
+          s = (i == 1 ? out "  " wrp[i] : pad wrp[i])
+          sub(/ +$/, "", s)               # no line ends in blanks
+          print s
+        }
       }
     }
   '

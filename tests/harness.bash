@@ -185,7 +185,7 @@ need '-o root -g "\$TREE_GRP" '                             4 'slot-tree install
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
-need '</dev/tty'                                            18 'tty reads (13 confirms + the shared gate + 4 inside drain_tty)'
+need '</dev/tty'                                            19 'tty reads (13 confirms + the shared gate + 4 inside drain_tty + the listing width)'
 need '^ *read -r answer </dev/tty$'                         13 'ceremony tty reads'
 need '^    if ! read -r answer </dev/tty; then$'             1 'the shared gate tty read'
 need '^gate_answer() { # <rendered gate line> <what Enter does> <stops|skips>$' 1 'the shared gate helper'
@@ -1611,22 +1611,86 @@ y
 
   # A subject is no longer capped, and a multi-byte character in one cannot
   # move the columns: the aligned block prints BEFORE the subject, so no
-  # variable-width text is ever padded to a byte count.
+  # variable-width text is ever padded to a byte count. With no width given
+  # -- the harness has no tty, so listing_width yields nothing -- the subject
+  # runs to the end of one line, exactly as it did before wrapping existed.
   D_LONG='d8 a subject that runs well past sixty characters, with an em dash - and a section sign S'
   D_LONG="${D_LONG/- and/$(printf '\342\200\224') and}"
   D_LONG="${D_LONG/sign S/sign $(printf '\302\247')}"
   printf 'f1\n' > "$REPO_D/f.txt"
   bgit "$REPO_D" add f.txt
   bgit "$REPO_D" commit -q -m "$D_LONG"
+  D_LONGC="$(bgit "$REPO_D" rev-parse 'HEAD^{commit}')"
   RC=0
-  repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" \
-    "$(bgit "$REPO_D" rev-parse 'HEAD^{commit}')" '' >"$OUT" 2>"$ERRF" || RC=$?
+  repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" "$D_LONGC" '' >"$OUT" 2>"$ERRF" || RC=$?
   assert_exit "$RC" 0 "the listing exits 0 over a long multi-byte subject"
   assert_contains "$OUT" "1 file   +1 -0  $D_LONG" "the subject prints whole, columns intact"
   assert_missing  "$OUT" '...' "no subject is truncated"
+  assert_eq "$(grep -c '^ ' "$OUT" || true)" 0 "with no width, nothing wraps: every line opens a row"
 
-  # The BODY prints as well. The authoritative diff below carries no commit
-  # messages at all, so a body cut here would be approved unread.
+  # WRAPPING. Given a width, a long subject folds under itself with a hanging
+  # indent instead of running off the screen. Nothing may be lost to the fold:
+  # the pieces rejoined with single spaces must be the subject, byte for byte,
+  # multi-byte characters included, and no line may reach the last column (a
+  # line that fills it makes some terminals wrap a second time).
+  D_COLS=60
+  RC=0
+  repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" "$D_LONGC" '' "$D_COLS" \
+    >"$OUT" 2>"$ERRF" || RC=$?
+  assert_exit "$RC" 0 "the listing exits 0 with a terminal width"
+  D_SCOL="$(awk '{ k = index($0, "d8 a subject"); if (k) { print k; exit } }' "$OUT")"
+  D_CCOL="$(awk 'match($0, /[^ ]/) > 1 { print RSTART; exit }' "$OUT")"
+  assert_eq "$D_CCOL" "$((D_SCOL + 2))" "a wrapped line hangs two columns under the subject"
+  # The widest line, in columns: bytes that do not continue a UTF-8 sequence.
+  D_WIDE="$(LC_ALL=C awk '{ t = $0; gsub(/[\200-\277]/, "", t)
+                            if (length(t) > m) m = length(t) }
+                          END { print m + 0 }' "$OUT")"
+  if [ "$D_WIDE" -le $((D_COLS - 1)) ]; then
+    ok "every wrapped line stays inside the terminal width"
+  else
+    fail "every wrapped line stays inside the terminal width (widest $D_WIDE, want <= $((D_COLS - 1)))"
+  fi
+  # The long subject is the last commit in the range, so its row runs to the
+  # end of the output.
+  D_JOIN="$(awk '{ k = index($0, "d8 a subject")
+                   if (k) { out = substr($0, k); f = 1; next }
+                   if (f) { t = $0; sub(/^ +/, "", t); out = out " " t } }
+                 END { print out }' "$OUT")"
+  assert_eq "$D_JOIN" "$D_LONG" "the wrapped pieces rejoin to the subject, byte for byte"
+  assert_contains "$OUT" "$(printf '\342\200\224')" "the em dash survives the wrap"
+  assert_contains "$OUT" "$(printf '\302\247')" "the section sign survives the wrap"
+
+  # A word with no space to break at is cut at the column limit rather than
+  # left to run off, and the pieces still concatenate to the original word.
+  D_SPACELESS="$(awk 'BEGIN { s = ""; while (length(s) < 70) s = s "x"; print s }')"
+  printf 'i1\n' > "$REPO_D/i.txt"
+  bgit "$REPO_D" add i.txt
+  bgit "$REPO_D" commit -q -m "$D_SPACELESS"
+  RC=0
+  repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" \
+    "$(bgit "$REPO_D" rev-parse 'HEAD^{commit}')" '' "$D_COLS" >"$OUT" 2>"$ERRF" || RC=$?
+  assert_exit "$RC" 0 "the listing exits 0 over a subject with no spaces"
+  D_NP="$(grep -c 'xxx' "$OUT" || true)"
+  if [ "$D_NP" -ge 2 ]; then
+    ok "the unbreakable word is cut into pieces"
+  else
+    fail "the unbreakable word is cut into pieces (got $D_NP line(s))"
+  fi
+  D_CAT="$(awk '{ k = index($0, "xxx"); if (k) out = out substr($0, k) }
+                END { print out }' "$OUT")"
+  assert_eq "$D_CAT" "$D_SPACELESS" "the pieces concatenate to the whole word"
+  D_WIDE="$(LC_ALL=C awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }' "$OUT")"
+  if [ "$D_WIDE" -le $((D_COLS - 1)) ]; then
+    ok "a hard-split line stays inside the terminal width"
+  else
+    fail "a hard-split line stays inside the terminal width (widest $D_WIDE)"
+  fi
+
+  # NO BODIES. The authoritative diff below carries no commit messages at
+  # all, but a body is prose its author wrote, printed unpaged right above
+  # the y/N, and the file and +/- counts are what the decision actually
+  # needs. One line per commit is also what leaves nothing out of the repo
+  # able to open a block of its own.
   printf 'g1\n' > "$REPO_D/g.txt"
   bgit "$REPO_D" add g.txt
   bgit "$REPO_D" commit -q -m "d9 subject line" -m "why this commit exists"
@@ -1635,26 +1699,8 @@ y
     "$(bgit "$REPO_D" rev-parse 'HEAD^{commit}')" '' >"$OUT" 2>"$ERRF" || RC=$?
   assert_exit "$RC" 0 "the listing exits 0 over a commit carrying a body"
   assert_contains "$OUT" '  d9 subject line' "the subject of the bodied commit prints"
-  assert_contains "$OUT" 'why this commit exists' "and its body prints under it"
-  D_SCOL="$(awk '/  d9 subject line$/ { print index($0, "d9 subject line"); exit }' "$OUT")"
-  D_BCOL="$(awk '/why this commit exists$/ { print index($0, "why this commit exists"); exit }' "$OUT")"
-  assert_eq "$D_BCOL" "$((D_SCOL + 2))" "the body hangs two columns under the subject"
-
-  # A body is text whoever wrote the commit chose, and it prints unpaged just
-  # above the ceremony's y/N: a body that plants the block sentinel must not
-  # fabricate a row of its own -- a hash, a subject and a file count belonging
-  # to no commit. The sentinel carries a per-run nonce, so a planted one can
-  # never match, and the planted bytes print as what they are: body text.
-  printf 'h1\n' > "$REPO_D/h.txt"
-  bgit "$REPO_D" add h.txt
-  bgit "$REPO_D" commit -q -m "d10 forged sentinel" \
-    -m "$(printf '\001deadbeefcafe\002cafed00d\002FORGED SUBJECT')"
-  RC=0
-  repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" \
-    "$(bgit "$REPO_D" rev-parse 'HEAD^{commit}')" '' >"$OUT" 2>"$ERRF" || RC=$?
-  assert_exit "$RC" 0 "the listing exits 0 over a body carrying a sentinel byte"
-  assert_eq "$(grep -cE '^[0-9a-f]+  ' "$OUT")" 9 "the planted sentinel opens no row of its own"
-  assert_contains "$OUT" 'FORGED SUBJECT' "the planted text prints as body, where it belongs"
+  assert_missing "$OUT" 'why this commit exists' "the body does not print"
+  assert_eq "$(grep -c '^ ' "$OUT" || true)" 0 "one line per commit, body or not"
 else
   say "S8d: SKIPPED (no git fixture)"
 fi
