@@ -24,7 +24,7 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
 
     pinned setup [--yes]              self-install + digest-pinned sudoers
     pinned review <repo>... [--tag <tag>] [--trust] [--step]
-                             [--backward | --diverged]
+                             [--messages] [--backward | --diverged]
                                       human gate: review diff -> pin
                                       (--tag: the tag's commit, not HEAD,
                                       and the declared release name;
@@ -44,7 +44,11 @@ Full reference: `man pinned` — installed by the nix module; in-repo:
                                       summary; ends at HEAD or at --tag's
                                       commit, declaring the name only if
                                       reached; one whole-delta diff stays
-                                      the default)
+                                      the default;
+                                      --messages: print each commit's whole
+                                      message under its subject in the
+                                      commits listing; the default is the
+                                      subject only)
     pinned review <repo> --signed-tag <tag> [--signed-tag <tag> ...] [--tag <tag>]
                                       signature gate: verify each signed tag,
                                       all naming one commit -> pin (--tag:

@@ -1686,21 +1686,85 @@ y
     fail "a hard-split line stays inside the terminal width (widest $D_WIDE)"
   fi
 
-  # NO BODIES. The authoritative diff below carries no commit messages at
-  # all, but a body is prose its author wrote, printed unpaged right above
-  # the y/N, and the file and +/- counts are what the decision actually
-  # needs. One line per commit is also what leaves nothing out of the repo
-  # able to open a block of its own.
+  # NO BODIES BY DEFAULT. The counts and the diff below are what the
+  # decision rests on; a body is prose its author wrote, and it prints only
+  # when the reviewer asks for it.
   printf 'g1\n' > "$REPO_D/g.txt"
   bgit "$REPO_D" add g.txt
   bgit "$REPO_D" commit -q -m "d9 subject line" -m "why this commit exists"
+  D_BODYC="$(bgit "$REPO_D" rev-parse 'HEAD^{commit}')"
   RC=0
-  repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" \
-    "$(bgit "$REPO_D" rev-parse 'HEAD^{commit}')" '' >"$OUT" 2>"$ERRF" || RC=$?
+  repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" "$D_BODYC" '' >"$OUT" 2>"$ERRF" || RC=$?
   assert_exit "$RC" 0 "the listing exits 0 over a commit carrying a body"
   assert_contains "$OUT" '  d9 subject line' "the subject of the bodied commit prints"
   assert_missing "$OUT" 'why this commit exists' "the body does not print"
   assert_eq "$(grep -c '^ ' "$OUT" || true)" 0 "one line per commit, body or not"
+
+  # A BODY IS TEXT WHOEVER WROTE THE COMMIT CHOSE, and under --messages it
+  # prints unpaged just above the ceremony's y/N. A body that plants the
+  # block sentinel must not fabricate a row of its own -- a hash, a subject
+  # and a file count belonging to no commit. The sentinel carries a per-run
+  # nonce, so a planted one can never match, and the planted bytes print as
+  # what they are: body text, its control bytes scrubbed.
+  printf 'h1\n' > "$REPO_D/h.txt"
+  bgit "$REPO_D" add h.txt
+  bgit "$REPO_D" commit -q -m "d10 forged sentinel" \
+    -m "$(printf '\001deadbeefcafe\002cafed00d\002FORGED SUBJECT')"
+  D_FORGEC="$(bgit "$REPO_D" rev-parse 'HEAD^{commit}')"
+  # The row count is the range's own commit count -- a fabricated row would
+  # be one more, a swallowed commit one fewer.
+  D_ROWS="$(bgit "$REPO_D" rev-list --count "$D_PIN..$D_FORGEC")"
+  RC=0
+  repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" "$D_FORGEC" '' '' messages \
+    >"$OUT" 2>"$ERRF" || RC=$?
+  assert_exit "$RC" 0 "the listing exits 0 with --messages over a planted sentinel"
+  assert_eq "$(grep -cE '^[0-9a-f]+  ' "$OUT")" "$D_ROWS" \
+    "the planted sentinel opens no row of its own"
+  assert_contains "$OUT" 'FORGED SUBJECT' "the planted text prints as body, where it belongs"
+  assert_eq "$(grep -c '^deadbeefcafecafed00dFORGED SUBJECT$' "$OUT" || true)" 1 \
+    "the planted bytes print as one body line, controls scrubbed"
+  # The body sits at column zero, as its author laid it out, and ONE blank
+  # line closes it before the next commit's row.
+  D_BLOCK="$(awk '/  d9 subject line$/ { f = 1 }
+                  f { print }
+                  /  d10 forged sentinel$/ { exit }' "$OUT" | sed 's/^[0-9a-f]*  //')"
+  assert_eq "$D_BLOCK" '1 file   +1 -0  d9 subject line
+why this commit exists
+
+1 file   +1 -0  d10 forged sentinel' "the body prints at column zero, closed by one blank line"
+  # The last body in a listing ends it: what follows is the caller's spacing.
+  assert_eq "$(tail -n 1 "$OUT")" 'deadbeefcafecafed00dFORGED SUBJECT' \
+    "the listing never ends on a blank line"
+
+  # Subjects only, over the same range: neither body reaches the display,
+  # and the rows are the same rows.
+  RC=0
+  repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" "$D_FORGEC" '' >"$OUT" 2>"$ERRF" || RC=$?
+  assert_exit "$RC" 0 "the subject-only listing exits 0 over the same range"
+  assert_eq "$(grep -cE '^[0-9a-f]+  ' "$OUT")" "$D_ROWS" "it prints the same rows"
+  assert_missing "$OUT" 'FORGED SUBJECT' "no planted text reaches a subject-only listing"
+  assert_missing "$OUT" 'why this commit exists' "and no ordinary body either"
+
+  # End to end: the flag rides the ceremony, not just the helper.
+  ANS='
+y
+'
+  run_pinned review "$REPO_D" --messages
+  assert_exit "$RC" 0 "review --messages exits 0"
+  assert_contains "$OUT" 'why this commit exists' "the ceremony listing carries the body"
+
+  # ONE REFUSAL: a file ceremony lists no commits, so the flag would
+  # silently do nothing. Root-side (the authority) and pre-sudo (which only
+  # saves the authentication) refuse the same combination.
+  ANS=""
+  run_pinned review --file "$REPO_D/a.txt" --messages
+  assert_exit "$RC" 1 "--messages with --file is refused"
+  assert_contains "$OUT" "--file is its own ceremony" "the refusal names the ceremony"
+  ANS=""
+  run_preview review --file "$REPO_D/a.txt" --messages
+  assert_exit "$RC" 1 "--messages with --file is refused pre-sudo too"
+  assert_contains "$OUT" "--messages does not combine with it" \
+    "the pre-sudo refusal names the flag"
 else
   say "S8d: SKIPPED (no git fixture)"
 fi

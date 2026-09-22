@@ -93,7 +93,7 @@ takes its own confirmation instead, before any authentication.
 .SH COMMANDS
 .SS Repository approval
 .TP
-.B review \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP] [\fB\-\-step\fP] [\fB\-\-backward\fP|\fB\-\-diverged\fP] [\fB\-\-yes\fP]
+.B review \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP] [\fB\-\-step\fP] [\fB\-\-messages\fP] [\fB\-\-backward\fP|\fB\-\-diverged\fP] [\fB\-\-yes\fP]
 (sudo) Review the diff since the last pin (the full tree on a first
 approval), approve, write the pin.
 .I repo
@@ -109,6 +109,9 @@ deletion counts, so a subject line cannot pass a large commit off as a
 small one.
 A merge shows "\-" for all three: git keeps no per-commit diff for it,
 and the review below covers the merged content anyway.
+The listing shows subject lines;
+.B \-\-messages
+prints the whole message of each commit under its subject.
 .IP
 That preview closes with the pre-sudo handoff: the exact command, then a
 gate counting the repos that still need a ceremony \(em a repo already at
@@ -280,6 +283,22 @@ the full tree \(em there is nothing to step from).
 A backward or diverged endpoint is refused by the lattice before the walk
 begins: the commits a walk replays only exist going forward, and the
 whole-delta diff of a declared move renders that situation honestly.
+.TP
+.B \-\-messages
+Print each commit's whole message under its subject in the commits
+listing; the default is the subject only.
+A body prints at column zero, as its author wrote it: unwrapped,
+unindented, trailers included, one blank line before the next commit.
+The diff below the listing carries no commit messages at all, so a
+commit that explains itself only in its body is read here or nowhere.
+Combines with every other
+.B review
+flag, including
+.BR \-\-step ,
+whose per-commit listings print bodies too; it binds to no repo and
+refuses only
+.BR \-\-file ,
+a ceremony that lists no commits.
 .TP
 .B \-\-backward
 Declare that the candidate is an ancestor of the current pin \(em that
