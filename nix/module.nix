@@ -83,6 +83,14 @@ let
     install -D -m 444 ${../man/pinned.1} $out/share/man/man1/pinned.1
   '';
 
+  # Shell completions, their own store path for the same reason: a completion
+  # edit must never move the sudoers digest either. Each lands at its shell's
+  # vendor path, which the system profile links while that shell is enabled.
+  completions = pkgs.runCommand "pinned-completions" { } ''
+    install -D -m 444 ${../completions/pinned.fish} $out/share/fish/vendor_completions.d/pinned.fish
+    install -D -m 444 ${../completions/_pinned} $out/share/zsh/site-functions/_pinned
+  '';
+
   digest = builtins.hashString "sha256" scriptText;
 
   sudoersText = lib.concatMapStrings
@@ -279,7 +287,7 @@ in
         }
       ];
 
-      environment.systemPackages = [ package manPage ];
+      environment.systemPackages = [ package manPage completions ];
 
       environment.etc."sudoers.d/pinned".source = sudoersFile;
     }

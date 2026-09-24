@@ -4602,6 +4602,47 @@ if command -v jq >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
+say "S22: shell completions (present, installed, parse, cover every action)"
+# ---------------------------------------------------------------------------
+# Static files, so the checks are static too. The harness builds nothing, so
+# the module's install lines stand in for the build: both files exist, both
+# are installed at the shells' vendor paths, each parses under its own shell,
+# and each offers exactly the actions usage() lists -- a verb added to the
+# script without its completion fails here.
+COMP="$(dirname "$HERE")/completions"
+MOD="$(dirname "$HERE")/nix/module.nix"
+USAGE_ACTIONS="$(sed -n '/^usage() {$/,/^}$/p' "$SRC" | sed -n '/^usage: /,/^EOF$/p' \
+  | sed -n 's/^  \([a-z][a-z]*\) .*/\1/p' | LC_ALL=C sort -u | tr '\n' ' ')"
+assert_file "$COMP/pinned.fish" "the fish completion exists"
+assert_file "$COMP/_pinned" "the zsh completion exists"
+assert_contains "$MOD" '$out/share/fish/vendor_completions.d/pinned.fish' "the module installs the fish completion"
+assert_contains "$MOD" '$out/share/zsh/site-functions/_pinned' "the module installs the zsh completion"
+if command -v fish >/dev/null 2>&1; then
+  RC=0
+  fish --no-config -n "$COMP/pinned.fish" >"$OUT" 2>&1 || RC=$?
+  assert_exit "$RC" 0 "fish -n parses the fish completion"
+  FISH_ACTIONS="$(fish --no-config -c "set fish_complete_path '$COMP' \$__fish_data_dir/completions; complete -C 'pinned '" \
+    | cut -f1 | LC_ALL=C sort -u | tr '\n' ' ')" || true   # a fish error fails the assert, not the run
+  assert_eq "$FISH_ACTIONS" "$USAGE_ACTIONS" "fish offers exactly the actions usage lists"
+else
+  say "  (no fish -- the fish half is SKIPPED)"
+fi
+if command -v zsh >/dev/null 2>&1; then
+  RC=0
+  zsh -n "$COMP/_pinned" >"$OUT" 2>&1 || RC=$?
+  assert_exit "$RC" 0 "zsh -n parses the zsh completion"
+  RC=0
+  zsh -f -c 'fpath=("$1" $fpath); autoload -Uz compinit; compinit -D -u
+    [[ $_comps[pinned] == _pinned ]]' zsh "$COMP" >"$OUT" 2>&1 || RC=$?
+  assert_exit "$RC" 0 "compinit binds pinned to _pinned"
+  ZSH_ACTIONS="$(sed -n "/^      actions=($/,/^      )$/s/^ *'\([a-z][a-z]*\):.*/\1/p" "$COMP/_pinned" \
+    | LC_ALL=C sort -u | tr '\n' ' ')"
+  assert_eq "$ZSH_ACTIONS" "$USAGE_ACTIONS" "zsh offers exactly the actions usage lists"
+else
+  say "  (no zsh -- the zsh half is SKIPPED)"
+fi
+
+# ---------------------------------------------------------------------------
 say ""
 if [ "$FAIL" -eq 0 ]; then
   rm -rf "$FIX"

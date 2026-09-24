@@ -21,6 +21,8 @@ unknown declarations refuse outright.
 
 Full reference: `man pinned` — installed by the nix module; in-repo:
 `man man/pinned.1`.
+Tab completion for fish and zsh lives in `completions/`, also installed by
+the nix module; a manual install copies it onto `fish_complete_path` / `fpath`.
 
     pinned setup [--yes]              self-install + digest-pinned sudoers
     pinned review <repo>... [--tag <tag>] [--trust] [--step]

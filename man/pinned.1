@@ -949,6 +949,16 @@ Default manual install target.
 The nix module installs
 .I /run/current-system/sw/bin/pinned
 instead.
+.TP
+.I /run/current-system/sw/share/fish/vendor_completions.d/pinned.fish
+.PD 0
+.TP
+.I /run/current-system/sw/share/zsh/site-functions/_pinned
+.PD
+Tab completion for fish and zsh, installed by the nix module.
+A manual install copies them from the repository's
+.I completions/
+directory.
 .SH APPROVAL HISTORY
 Every ceremony logs through
 .BR logger (1)

@@ -1,0 +1,199 @@
+#compdef pinned
+# zsh completion for pinned.
+#
+# Static on purpose: nothing here runs pinned or reads its record tree, so
+# completing a word never touches /var/db/pinned and never asks for sudo.
+# Actions, flags and fixed value sets mirror the script's argument parsers
+# and man pinned; keep them in step when a verb or flag changes.
+
+_pinned() {
+  local curcontext="$curcontext" state line ret=1
+  typeset -A opt_args
+  local -a algos
+  algos=(sha256 sha384 sha512 blake2b-256 blake2b-384 blake2b-512 blake3)
+
+  _arguments -C \
+    '(- :)--version[print the release version]' \
+    '1: :->action' \
+    '*:: :->args' && ret=0
+
+  case $state in
+    action)
+      local -a actions
+      actions=(
+        'review:(sudo) review the diff since the last pin, write pin'
+        'tombstone:(sudo) retire a pinned file that is gone'
+        'rekey:(sudo) re-key a record to a moved path'
+        'declare:(sudo) declare the release name a deployer syncs ref= to'
+        'verify:file-pin verdict, exit-code contract for gates'
+        'cat:the approved bytes, from root custody'
+        'rev:the pinned rev or the declared release name'
+        'sign:create a signed tag at the pinned hash'
+        'signer:allowed-signers ceremonies and lookups'
+        'ignorable:ignorable-JSON-key grants'
+        'status:record vs live state'
+        'show:trusted re-display, records nothing'
+        'list:live pins in your tier'
+        'slot:print the slot directory for a path'
+        'setup:(sudo) provision sudoers digest pin, self-install'
+      )
+      _describe -t actions 'pinned action' actions && ret=0
+      ;;
+    args)
+      curcontext="${curcontext%:*:*}:pinned-$words[1]:"
+      case $words[1] in
+        review)
+          _arguments -S \
+            "--tag[review and pin this tag's commit, not HEAD]:tag: " \
+            '*--signed-tag[tag that must verify against allowed signers]:tag: ' \
+            "--trust[skip a first approval's full-tree review, loudly]" \
+            '--step[walk the commits since the pin one at a time]' \
+            '--messages[print each commit message whole in the listing]' \
+            '(--diverged)--backward[declare the candidate an ancestor of the pin]' \
+            '(--backward)--diverged[declare the candidate off the pinned line]' \
+            '*--file[file-pin ceremony for this path]:file:_files' \
+            '*--baseline[copy of the prior approved bytes for the preceding --file]:copy:_files' \
+            '--baseline-store[directory of stored witnesses]:directory:_directories' \
+            '*--ignore-json-key[dotted JSON key the preceding --file may drift]:key: ' \
+            "--algo[hash algorithm for file pins]:algorithm:(${algos[*]})" \
+            '--store[keep the approved bytes in root custody]' \
+            '--yes[skip the pre-sudo gate]' \
+            '*:repository:_directories' && ret=0
+          ;;
+        tombstone)
+          _arguments \
+            '--yes[skip the pre-sudo gate]' \
+            '1:path:_files' && ret=0
+          ;;
+        rekey)
+          _arguments \
+            '--yes[skip the pre-sudo gate]' \
+            '1:old path:_files' \
+            '2:new path:_files' && ret=0
+          ;;
+        declare)
+          _arguments \
+            '(--no-release)--release[release name to declare]:name: ' \
+            '(--release)--no-release[clear the declared release name]' \
+            '--yes[skip the pre-sudo gate]' \
+            '1:repository:_directories' && ret=0
+          ;;
+        verify)
+          _arguments \
+            '(--frozen)--emit[print the verified bytes on stdout]' \
+            '(--emit)--frozen[verify this caller-frozen copy against the record]:copy:_files' \
+            '--baseline[your own witness for the ignored-key comparison]:copy:_files' \
+            '1:path:_files' && ret=0
+          ;;
+        cat|slot)
+          _arguments '1:path:_files' && ret=0
+          ;;
+        status)
+          _arguments '1:repository or file:_files' && ret=0
+          ;;
+        rev)
+          _arguments \
+            '--release[print the declared release name instead]' \
+            '1:repository:_directories' && ret=0
+          ;;
+        sign)
+          _arguments \
+            '1:repository:_directories' \
+            '2:tag: ' && ret=0
+          ;;
+        show)
+          _arguments \
+            "(-a --algo)"{-a,--algo}"[hash algorithm]:algorithm:(${algos[*]})" \
+            '(-l --length)'{-l,--length}'[output length in bits (blake3 only)]:bits: ' \
+            '1:file or repository:_files' && ret=0
+          ;;
+        list)
+          _arguments \
+            '--under[only pins under this directory]:directory:_directories' && ret=0
+          ;;
+        setup)
+          _arguments '--yes[skip the setup confirmation]' && ret=0
+          ;;
+        signer)
+          _pinned_signer && ret=0
+          ;;
+        ignorable)
+          _pinned_ignorable && ret=0
+          ;;
+      esac
+      ;;
+  esac
+  return ret
+}
+
+_pinned_signer() {
+  local curcontext="$curcontext" state line ret=1
+  typeset -A opt_args
+  _arguments -C '1: :->sub' '*:: :->args' && ret=0
+  case $state in
+    sub)
+      local -a subs
+      subs=(
+        'add:(sudo) record a key'
+        'remove:(sudo) remove a key'
+        'list:principals, key types, fingerprints'
+        'path:the allowed-signers file a signed tag verifies against'
+      )
+      _describe -t commands 'signer action' subs && ret=0
+      ;;
+    args)
+      curcontext="${curcontext%:*:*}:pinned-signer-$words[1]:"
+      local -a repo key
+      repo=('--repo[target the per-repo override]:repository:_directories')
+      key=(
+        '(--key)--file[public key file]:public key:_files'
+        '(--file)--key[public key line]:key line: '
+        '--yes[skip the pre-sudo gate]'
+      )
+      case $words[1] in
+        add)
+          _arguments $repo $key \
+            '--principal[identity signature verification matches]:principal: ' && ret=0
+          ;;
+        remove)
+          _arguments $repo $key && ret=0
+          ;;
+        list|path)
+          _arguments $repo && ret=0
+          ;;
+      esac
+      ;;
+  esac
+  return ret
+}
+
+_pinned_ignorable() {
+  local curcontext="$curcontext" state line ret=1
+  typeset -A opt_args
+  _arguments -C '1: :->sub' '*:: :->args' && ret=0
+  case $state in
+    sub)
+      local -a subs
+      subs=(
+        'add:(sudo) grant a dotted JSON key'
+        'remove:(sudo) withdraw a grant'
+        'list:machine, user and effective tiers'
+      )
+      _describe -t commands 'ignorable action' subs && ret=0
+      ;;
+    args)
+      curcontext="${curcontext%:*:*}:pinned-ignorable-$words[1]:"
+      case $words[1] in
+        add|remove)
+          _arguments \
+            '--under[scope the grant to this subtree]:directory:_directories' \
+            '--yes[skip the pre-sudo gate]' \
+            '1:key: ' && ret=0
+          ;;
+      esac
+      ;;
+  esac
+  return ret
+}
+
+_pinned "$@"
