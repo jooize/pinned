@@ -4448,7 +4448,7 @@ do_approve_files() {
 
   local i=0 n="${#files[@]}" f base path slot line new_digest old_digest old_label
   local base_ok recorded=0 declined=0 failed=0 answer state_note nl
-  local ign ign_json old_ign old_bad had_copy copy_bad cur_copy ign_note cust_note decl_changed
+  local ign ign_json old_ign old_bad had_copy copy_bad cur_copy ign_note cust_from cust_to cust_val decl_changed
   local cust_changed shape gate_shape n_lines gate_line
   local keys_block
   local gk gscope gwhere gr_keys gr_pairs gr_scope gr_mixed gr_mach
@@ -4507,7 +4507,7 @@ do_approve_files() {
       fi
     fi
 
-    old_digest="" old_label="" state_note="" ign_note="" cust_note="" decl_changed=0
+    old_digest="" old_label="" state_note="" ign_note="" cust_from="" decl_changed=0
     old_ign=""; old_bad=0; had_copy=0; copy_bad=0; path_restated=0; slot_note=""
     # Asked before the record is read, because a stale directory name is
     # state this ceremony repairs whether or not the record itself is stale.
@@ -4590,20 +4590,21 @@ do_approve_files() {
       [ "$cur_copy" = "$old_digest" ] || copy_bad=1
     fi
 
-    # Custody carries its own note rather than sharing the declaration's:
-    # a ceremony can be changing both at once, and each is separately worth
-    # reading before a y. Gated on there BEING a prior record -- on a first
-    # approval nothing is changing, custody is simply being chosen.
+    # A custody change is stated on the custody line itself, as the state it
+    # leaves (cust_from) and an arrow to the new one, rather than in a note
+    # above: one fact, said once, where it is decided. Gated on there BEING a
+    # prior record -- on a first approval nothing is changing, custody is
+    # simply being chosen.
     if [ -n "$old_digest" ] && [ "$had_copy" -ne "$store" ]; then
       decl_changed=1
       if [ "$store" -eq 1 ]; then
-        cust_note="custody change: this approval adds a stored copy of the approved bytes to the slot"
+        cust_from="none"
       else
-        cust_note="custody change: this approval drops the slot's stored copy (pass --store to keep it)"
+        cust_from="kept in the slot"
       fi
     elif [ "$store" -eq 1 ] && [ "$copy_bad" -eq 1 ]; then
       decl_changed=1
-      cust_note="the slot's stored copy does not re-hash to its record -- this approval replaces it"
+      cust_from="mismatched copy"
     fi
 
     # Identical bytes are not enough to skip when the RECORD names another
@@ -4624,7 +4625,6 @@ do_approve_files() {
     printf '%sfile:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_B$C_MAG" "$path" "$C_OFF"
     [ -n "$state_note" ] && printf '%snote:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_YEL" "$state_note" "$C_OFF"
     [ -n "$ign_note" ] && printf '%snote:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_YEL" "$ign_note" "$C_OFF"
-    [ -n "$cust_note" ] && printf '%snote:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_YEL" "$cust_note" "$C_OFF"
     [ -n "$slot_note" ] && printf '%snote:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_YEL" "$slot_note" "$C_OFF"
     if [ -n "$old_digest" ]; then
       printf '%sapproved:%s   %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$old_digest" "$C_OFF" "$C_DIM" "$old_label" "$C_OFF"
@@ -4685,16 +4685,24 @@ EOF
     # paragraph re-read at every launch stops being read at all. The
     # explanation is therefore spent where it buys something: when this
     # approval is choosing custody for the first time (no prior record), when
-    # it flips the stored-copy state, or when the note above already says the
-    # stored copy is being repaired -- exactly the cases the ceremony treats
-    # as a custody DECISION rather than a restatement.
+    # it flips the stored-copy state, or when it repairs a stored copy that
+    # does not re-hash to its record -- exactly the cases the ceremony treats
+    # as a custody DECISION rather than a restatement. A change is drawn as
+    # `<from> → <to>` in the attention color, the only custody text that is.
     cust_changed=0
-    if [ -z "$old_digest" ] || [ "$had_copy" -ne "$store" ] || [ -n "$cust_note" ]; then
+    if [ -z "$old_digest" ] || [ "$had_copy" -ne "$store" ] || [ -n "$cust_from" ]; then
       cust_changed=1
     fi
+    cust_to="kept in the slot"
+    [ "$store" -eq 1 ] || cust_to="none"
+    if [ -n "$cust_from" ]; then
+      cust_val="${C_YEL}${cust_from} → ${cust_to}${C_OFF}"
+    else
+      cust_val="$cust_to"
+    fi
     if [ "$store" -eq 1 ]; then
-      printf '%scustody:%s    kept in the slot  %s(--store · pinned cat serves these bytes)%s\n' \
-        "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
+      printf '%scustody:%s    %s  %s(--store · pinned cat serves these bytes)%s\n' \
+        "$C_B" "$C_OFF" "$cust_val" "$C_DIM" "$C_OFF"
       if [ "$cust_changed" -eq 1 ]; then
         printf '            %sA copy of these bytes is kept beside the record as the%s\n' "$C_DIM" "$C_OFF"
         printf '            %switness: what the ignored-key comparison reads, and what%s\n' "$C_DIM" "$C_OFF"
@@ -4702,8 +4710,8 @@ EOF
         printf '            %sthe slot.%s\n' "$C_DIM" "$C_OFF"
       fi
     else
-      printf '%scustody:%s    none  %s(no copy at rest · pinned cat has nothing to serve)%s\n' \
-        "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
+      printf '%scustody:%s    %s  %s(no copy at rest · pinned cat has nothing to serve)%s\n' \
+        "$C_B" "$C_OFF" "$cust_val" "$C_DIM" "$C_OFF"
       if [ "$cust_changed" -eq 1 ]; then
         printf '            %sNo copy is kept at rest: the slot records the digest and%s\n' "$C_DIM" "$C_OFF"
         printf '            %sdiscloses nothing more, so pinned cat has nothing to serve.%s\n' "$C_DIM" "$C_OFF"

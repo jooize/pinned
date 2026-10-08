@@ -661,7 +661,8 @@ y
 run_pinned review --file "$SUB/a/first.txt" --store
 assert_exit "$RC" 0 "adding --store to a copy-less slot runs"
 assert_missing "$OUT" "already approved" "adding custody defeats the no-op short-circuit"
-assert_contains "$OUT" "adds a stored copy" "the note names the custody delta and its direction"
+assert_contains "$OUT" "custody:    none → kept in the slot" "the custody line names the change and its direction"
+assert_missing "$OUT" "note:" "and no note repeats it"
 assert_contains "$OUT" "A copy of these bytes is kept beside" \
                 "a changing disposition gets the full explanation"
 assert_missing "$OUT" "in every lane" "which no longer talks about lanes"
@@ -688,7 +689,7 @@ y
 run_pinned review --file "$SUB/a/first.txt"
 assert_exit "$RC" 0 "re-approving a custody slot without --store runs"
 assert_missing "$OUT" "already approved" "dropping custody defeats the no-op short-circuit"
-assert_contains "$OUT" "drops the slot's stored copy" "the pre-confirm note says the copy is going"
+assert_contains "$OUT" "custody:    kept in the slot → none" "the custody line says the copy is going"
 assert_contains "$OUT" "was dropped" "the result line says it went"
 assert_absent "$FIRST_SLOT/approved" "a plain re-approve drops the stored copy"
 
@@ -707,7 +708,7 @@ y
 '
 run_pinned review --file "$SUB/a/first.txt" --store
 assert_exit "$RC" 0 "re-approving again with --store succeeds"
-assert_missing "$OUT" "custody change" "unchanged custody needs no custody note"
+assert_missing "$OUT" " → " "unchanged custody draws no change"
 # STATING custody is one line; EXPLAINING it is a paragraph spent only where
 # the ceremony is deciding custody rather than restating it. Here the slot
 # already held a copy and --store keeps it: the one-liner, nothing more.
@@ -727,7 +728,7 @@ y
 run_pinned review --file "$SUB/a/first.txt" --store
 assert_exit "$RC" 0 "re-approving over an incoherent witness runs"
 assert_missing "$OUT" "already approved" "a witness that does not re-hash defeats the short-circuit"
-assert_contains "$OUT" "does not re-hash to its record" "the note names the incoherence"
+assert_contains "$OUT" "mismatched copy → kept in the slot" "the custody line names the repair"
 assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(awk '{print $1}' "$FIRST_SLOT/pin.sha256")" \
           "and the ceremony replaces it"
 
@@ -2965,7 +2966,7 @@ run_pinned review --file "$SUB/ig/clear.json"
 assert_exit "$RC" 0 "re-approving identical bytes without a declaration still runs"
 assert_missing  "$OUT" "already approved" "a changed declaration defeats the no-op short-circuit"
 assert_contains "$OUT" "clearing the ignored keys" "the ceremony says the tolerance is being withdrawn"
-assert_contains "$OUT" "drops the slot's stored copy" "and that custody is going with it"
+assert_contains "$OUT" "kept in the slot → none" "and that custody is going with it"
 assert_absent "$CLEAR_SLOT/ignored.json" "a plain review clears the declaration"
 assert_absent "$CLEAR_SLOT/approved" "a plain review drops the stored copy"
 printf '{"model": "sonnet", "keep": 1}\n' > "$SUB/ig/clear.json"
