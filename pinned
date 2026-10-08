@@ -632,20 +632,19 @@ drain_tty() {
   stty "$saved" </dev/tty 2>/dev/null || true
 }
 
-# ONE implementation of the gate contract, shared by every `next:` gate in
-# this script -- the elevation gate before sudo and the five review gates
-# before a pager. They had drifted into separate `case` statements that
-# agreed on Enter and on nothing else.
+# ONE implementation of the gate contract, shared by every gate in this
+# script -- the elevation gate before sudo and the five review gates before
+# a pager. They had drifted into separate `case` statements that agreed on
+# Enter and on nothing else.
 #
 # Enter, y and yes continue. `n` declines every gate: it stops before an
 # action, it skips before a review. One decline key, because a gate has
 # exactly two outcomes and no letter needs to mean "skip" -- a bare `s` is
-# unknown input like any other. Only the verb in the hint and in the re-ask
-# changes with the site, which is what the third argument carries. End of
-# input declines too -- a closed tty is not consent, and fail-closed is the
-# whole point of a gate. ANYTHING ELSE IS NOT ACTED ON: it is named back in
-# yellow, and the gate asks again. That is the rule that matters most here.
-# A `case` whose last arm is the continue turns a typo, a stray paste or a
+# unknown input like any other. End of input declines too -- a closed tty is
+# not consent, and fail-closed is the whole point of a gate. ANYTHING ELSE
+# IS NOT ACTED ON: a yellow `not an answer` says so, and the next answer is
+# read at the end of that line. That is the rule that matters most here. A
+# `case` whose last arm is the continue turns a typo, a stray paste or a
 # leaned-on key into a yes at exactly the moment the human is being asked to
 # take responsibility.
 #
@@ -654,10 +653,10 @@ drain_tty() {
 # decline means for the batch it sits in. The gate line arrives already
 # rendered (printf -v at the call site), so per-site colours and counts stay
 # where they are composed and this function never re-parses its own display.
-gate_answer() { # <rendered gate line> <what Enter does> <stops|skips>
-  local line="$1" verb="$2" declines="$3" answer
+gate_answer() { # <rendered gate line>
+  local line="$1" answer
+  printf '%s' "$line"
   while :; do
-    printf '%s' "$line"
     drain_tty
     if ! read -r answer </dev/tty; then
       # No echoed Enter to end the gate line, so close it here.
@@ -670,14 +669,14 @@ gate_answer() { # <rendered gate line> <what Enter does> <stops|skips>
     esac
     # Yellow, the attention role: this is the one line the human has to
     # notice, because they just answered wrong. Not red -- a correction is
-    # not a refusal, and nothing has failed.
+    # not a refusal, and nothing has failed. The gate line stays where it
+    # is, one line up, so it is not printed again, and the re-ask lists no
+    # keys: the gate above already names them.
     #
     # What was typed is NEVER echoed back: the terminal already showed it as
     # it was typed, so an echo adds nothing, and a pasted control sequence
     # printed raw can rewrite the very line the human is about to answer.
-    # The keys stay yellow here -- one role per line, and attention wins.
-    printf '%snot an answer; Enter or y %s, n %s%s\n' \
-      "$C_YEL" "$verb" "$declines" "$C_OFF"
+    printf '%snot an answer%s ' "$C_YEL" "$C_OFF"
   done
 }
 
@@ -3014,7 +3013,12 @@ do_setup() {
   log_action setup
   echo
   echo "setup complete"
-  echo "  next: sudo pinned review <repo>"
+  # A suggestion block (a command the human may type later) keeps its own
+  # label, a sentence -- never `next:`, the label gates used to wear.
+  echo
+  echo "To approve a first repo, run:"
+  echo
+  echo "  sudo pinned review <repo>"
 }
 
 if [ "$action" = "setup" ]; then
@@ -3213,10 +3217,10 @@ elevation_gate() { # <what-the-root-side-does> <what-stays-unchanged> argv...
   # a rendered command line, because both are things handed to the program.
   # C_OFF clears dim as well as the key colour, so the dim tail is re-opened
   # after each key.
-  printf -v line '%snext: %s as root;%s %sEnter%s runs the line above %s· %s%sn%s%s stops%s ' \
+  printf -v line '%s%s as root;%s %sEnter%s run %s· %s%sn%s%s stop%s ' \
     "$C_B" "$what" "$C_OFF" "$C_BLU" "$C_OFF" \
     "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
-  if ! gate_answer "$line" "runs the line above" stops; then
+  if ! gate_answer "$line"; then
     printf '%sstopped; %s%s\n' "$C_YEL" "$stays" "$C_OFF"
     exit 2
   fi
@@ -4159,12 +4163,12 @@ do_approve() {
           n_range="$(sgit rev-list --count "${old_hash}..${hash}")"
           gate_size="$n_range commit$(plural_s "$n_range")"
         fi
-        printf -v gate_line '%snext: review %s%s%s %s%.10s..%.10s%s (%s);%s %sEnter%s opens the diff %s· %s%sn%s%s skips%s ' \
+        printf -v gate_line '%sreview %s%s%s %s%.10s..%.10s%s (%s);%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
           "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
           "$C_CYN" "$old_hash" "$hash" "$C_OFF$C_B" \
           "$gate_size" "$C_OFF" "$C_BLU" "$C_OFF" \
           "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
-        if ! gate_answer "$gate_line" "opens the diff" skips; then
+        if ! gate_answer "$gate_line"; then
           printf '%sskipped; pin unchanged%s\n' "$C_YEL" "$C_OFF"
           log_action approve "$repo" "$hash" skip
           if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
@@ -4189,11 +4193,11 @@ do_approve() {
         # Same gate as the whole-delta pager (skip included); no range
         # exists yet.
         local gate_line
-        printf -v gate_line '%snext: review %s%s%s full tree at %s%.10s%s;%s %sEnter%s opens the diff %s· %s%sn%s%s skips%s ' \
+        printf -v gate_line '%sreview %s%s%s full tree at %s%.10s%s;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
           "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
           "$C_CYN" "$hash" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
           "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
-        if ! gate_answer "$gate_line" "opens the diff" skips; then
+        if ! gate_answer "$gate_line"; then
           printf '%sskipped; pin unchanged%s\n' "$C_YEL" "$C_OFF"
           log_action approve "$repo" "$hash" skip
           if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
@@ -4346,11 +4350,11 @@ EOF
     # `n` here stops the walk, exactly as a decline at the confirm does:
     # commits advance linearly, so there is no "skip this one and review
     # the next" -- the pin can never move past an unreviewed commit.
-    printf -v gate_line '%snext: review %s%s%s %s%.10s..%.10s%s (1 commit);%s %sEnter%s opens the diff %s· %s%sn%s%s skips%s ' \
+    printf -v gate_line '%sreview %s%s%s %s%.10s..%.10s%s (1 commit);%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
       "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
       "$C_CYN" "$prev" "$c" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
       "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
-    if ! gate_answer "$gate_line" "opens the diff" skips; then
+    if ! gate_answer "$gate_line"; then
       printf '%sskipped; the walk stops here%s\n' "$C_YEL" "$C_OFF"
       log_action approve "$repo" "$c" skip
       break
@@ -4783,11 +4787,11 @@ EOF
       # is always "+A -D" (diff_shape prints both counts, either may be 0), so
       # the first word is the add count and the rest the delete count.
       gate_disp="${C_GRN}${gate_shape%% *}${C_OFF} ${C_RED}${gate_shape#* }${C_OFF}${C_B}"
-      printf -v gate_line '%snext: review %s%s%s %s;%s %sEnter%s opens the diff %s· %s%sn%s%s skips%s ' \
+      printf -v gate_line '%sreview %s%s%s %s;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
         "$C_B" "$C_B$C_MAG" "${path##*/}" "$C_OFF$C_B" \
         "$gate_disp" "$C_OFF" "$C_BLU" "$C_OFF" \
         "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
-      if ! gate_answer "$gate_line" "opens the diff" skips; then
+      if ! gate_answer "$gate_line"; then
         printf '%sskipped; record unchanged%s\n' "$C_YEL" "$C_OFF"
         log_action approve-file "$path" "$new_digest" skip
         declined=$((declined + 1))
@@ -4813,11 +4817,11 @@ EOF
       [ "$(tail -c1 -- "$fro" | wc -l)" -eq 1 ] && nl=1
       n_lines="$(LC_ALL=C wc -l <"$fro" | tr -d ' ')"
       [ -n "$nl" ] || [ ! -s "$fro" ] || n_lines=$((n_lines + 1))
-      printf -v gate_line '%snext: review %s%s%s full content %s%s line%s%s;%s %sEnter%s opens the file %s· %s%sn%s%s skips%s ' \
+      printf -v gate_line '%sreview %s%s%s full content %s%s line%s%s;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
         "$C_B" "$C_B$C_MAG" "${path##*/}" "$C_OFF$C_B" \
         "$C_CYN" "$n_lines" "$(plural_s "$n_lines")" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
         "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
-      if ! gate_answer "$gate_line" "opens the file" skips; then
+      if ! gate_answer "$gate_line"; then
         printf '%sskipped; record unchanged%s\n' "$C_YEL" "$C_OFF"
         log_action approve-file "$path" "$new_digest" skip
         declined=$((declined + 1))

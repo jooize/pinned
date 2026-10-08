@@ -52,7 +52,7 @@ authentication buys:
 .nf
     sudo \-\- /usr/local/bin/pinned review /home/u/src/foo
 
-  next: review 1 repo as root; Enter runs the line above \(pc n stops
+  review 1 repo as root; Enter run \(pc n stop
 .fi
 .PP
 The displayed line is the argv, token for token \(em nothing is added,
@@ -400,7 +400,7 @@ The no-op still costs the sudo prompt: the pre-sudo side validates the
 arguments and never reads root-owned slot state.
 .IP
 The pre-sudo gate reads
-.RB \(dq "next: declare the release name as root" \(dq
+.RB \(dq "declare the release name as root" \(dq
 (for
 .BR \-\-no\-release :
 .RB \(dq "clear the declaration" \(dq);
@@ -419,7 +419,7 @@ Multiple
 .B \-\-file
 arguments share one authentication.
 The pre-sudo handoff counts the files named on the command line
-.RB ( "next: review 2 files as root" );
+.RB ( "review 2 files as root" );
 .B \-\-yes
 skips that gate and no other, so each file is still displayed and
 confirmed as root.
@@ -523,7 +523,7 @@ If it reappears,
 .B verify
 refuses until it is re-approved.
 The pre-sudo gate reads
-.RB \(dq "next: tombstone the record as root" \(dq;
+.RB \(dq "tombstone the record as root" \(dq;
 .B \-\-yes
 skips it and leaves the root-side confirmation untouched.
 .TP
@@ -577,7 +577,7 @@ the repair is a review (see
 and exit 17 under EXIT STATUS).
 .IP
 The pre-sudo gate reads
-.RB \(dq "next: re-key the record as root" \(dq;
+.RB \(dq "re-key the record as root" \(dq;
 .B \-\-yes
 skips it and leaves the root-side confirmation untouched.
 .SS Verification and serving
@@ -644,7 +644,7 @@ A bare public key needs
 .B \-\-repo
 targets the per-repo override.
 The pre-sudo gate reads
-.RB \(dq "next: record the key as root" \(dq;
+.RB \(dq "record the key as root" \(dq;
 .B \-\-yes
 skips it and leaves the fingerprint confirmation, which runs as root,
 untouched.
@@ -653,7 +653,7 @@ untouched.
 (sudo) Remove that key's entries (key compromise must not be the
 hand-edited path).
 Its gate reads
-.RB \(dq "next: remove the key as root" \(dq,
+.RB \(dq "remove the key as root" \(dq,
 and
 .B \-\-yes
 skips that gate only.
@@ -685,7 +685,7 @@ may then declare ignored.
 scopes the grant to that directory's subtree; omitted means
 everywhere.
 The pre-sudo gate reads
-.RB \(dq "next: record the grant as root" \(dq;
+.RB \(dq "record the grant as root" \(dq;
 .B \-\-yes
 skips it and leaves the root-side confirmation untouched.
 .TP
@@ -693,7 +693,7 @@ skips it and leaves the root-side confirmation untouched.
 (sudo) Withdraw exactly that grant (same key, same scope).
 Slots recording it fall back to byte-exact.
 Its gate reads
-.RB \(dq "next: withdraw the grant as root" \(dq,
+.RB \(dq "withdraw the grant as root" \(dq,
 and
 .B \-\-yes
 skips that gate only.

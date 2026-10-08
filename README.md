@@ -586,14 +586,17 @@ one.
   (no trailing newline, a NUL, malformed JSON), is shown raw.
 - **Glyphs**: `✓` recorded/verified, `✗` refused, `~` matched with a
   declared tolerance.
-- **Gates read one way everywhere.** A `next:` line states what happens next
-  and names the one other answer: `· n stops` before an action, `· n skips`
-  before a review. Enter, `y` and `yes` continue; `n` declines every gate,
-  because a gate has exactly two outcomes and one decline key is enough;
-  end of input declines too, because a closed tty is not consent. Anything
-  else is not an answer at all — the gate asks again, in yellow and without
-  echoing what was typed, so a typo or a stray paste can never pass for a
-  yes and a pasted escape sequence can never rewrite the gate. A decline is
+- **Gates read one way everywhere.** A gate names what happens next, then
+  its keys: `review 1 repo as root; Enter run · n stop` before an action,
+  `review foo a1b2..c3d4 (2 commits); Enter open · n skip` before a review.
+  The answer is typed at the end of the gate line. Enter, `y` and `yes`
+  continue; `n` declines every gate, because a gate has exactly two
+  outcomes and one decline key is enough; end of input declines too,
+  because a closed tty is not consent. Anything else is not an answer at
+  all. A yellow `not an answer` says so and takes the next answer on its
+  own line, without echoing what was typed, so a typo or a stray paste can
+  never pass for a yes and a pasted escape sequence can never rewrite the
+  gate. A decline is
   quiet and yellow, `<verb>; <what stays unchanged>`, and the verb says
   what was declined: `skipped` a review, before looking; `stopped` a run
   gate; `aborted` a `? [y/N]`, after looking. The state half is the same

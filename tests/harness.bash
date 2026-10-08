@@ -188,7 +188,7 @@ need '^  logger -t pinned '                                 1 'audit-log call'
 need '</dev/tty'                                            19 'tty reads (13 confirms + the shared gate + 4 inside drain_tty + the listing width)'
 need '^ *read -r answer </dev/tty$'                         13 'ceremony tty reads'
 need '^    if ! read -r answer </dev/tty; then$'             1 'the shared gate tty read'
-need '^gate_answer() { # <rendered gate line> <what Enter does> <stops|skips>$' 1 'the shared gate helper'
+need '^gate_answer() { # <rendered gate line>$' 1 'the shared gate helper'
 need '^ *drain_tty$'                                        14 'a drain before every ceremony tty read'
 need '^  saved="\$(stty -g </dev/tty 2>/dev/null)" || return 0$' 1 'drain_tty entry'
 need '^# ---- setup ---'                                    1 'library cut marker'
@@ -763,7 +763,7 @@ ANS='n
 '
 run_pinned review --file "$SUB/a/skipped.txt"
 assert_exit "$RC" 0 "a gate skip exits 0 like a decline"
-assert_contains "$OUT" "n skips" "the gate line offers the skip"
+assert_contains "$OUT" "n skip" "the gate line offers the skip"
 assert_contains "$OUT" "skipped; record unchanged" "the skip names its outcome"
 assert_eq "$(count_state "$SKIP_SLOT")" 0 "a gate skip records nothing"
 assert_missing "$OUT" "exactly the bytes being approved" "the display never opened"
@@ -797,10 +797,12 @@ y
 '
 run_pinned review --file "$SUB/a/gate-retry.txt"
 assert_exit "$RC" 0 "a gate that was re-asked still records once answered"
-assert_contains "$OUT" 'not an answer; Enter or y opens the file, n skips' \
-  "the re-ask states every valid answer"
-assert_eq "$(grep -cF 'not an answer; Enter or y opens the file, n skips' "$OUT")" 3 \
+assert_missing "$OUT" 'not an answer;' \
+  "the re-ask lists no keys: the gate line above already names them"
+assert_eq "$(grep -o 'not an answer' "$OUT" | wc -l | tr -d ' ')" 3 \
   "each of the three unknown answers re-asks, a bare s included"
+assert_eq "$(grep -o '; Enter open' "$OUT" | wc -l | tr -d ' ')" 1 \
+  "the gate line is printed once; a re-ask does not reprint it"
 assert_missing "$OUT" 'abcdefghijklmnopqrst' \
   "typed input is never echoed back, so a pasted escape cannot rewrite the gate"
 assert_eq "$(count_state "$RETRYG_SLOT")" 1 "y opens the gate and y records at the confirm"
@@ -821,7 +823,7 @@ run_pinned review --file "$SUB/a/gate/one.txt" --file "$SUB/a/gate/two.txt"
 assert_exit "$RC" 0 "a two-file ceremony records both"
 assert_contains "$OUT" "[1/2]" "the batch counter names the item under ceremony"
 assert_contains "$OUT" "[2/2]" "and moves on with the batch"
-assert_contains "$OUT" "full content 3 lines; Enter opens the file" \
+assert_contains "$OUT" "full content 3 lines; Enter open" \
                 "a first approval's gate names the size of what it opens"
 
 printf 'lonely\n' > "$SUB/a/gate/solo.txt"
@@ -830,7 +832,7 @@ y
 '
 run_pinned review --file "$SUB/a/gate/solo.txt"
 assert_exit "$RC" 0 "a single-file ceremony records"
-assert_contains "$OUT" "full content 1 line; Enter opens the file" "the singular gate reads as one"
+assert_contains "$OUT" "full content 1 line; Enter open" "the singular gate reads as one"
 assert_contains "$OUT" "--- end of file: 1 line ---" "the paged file leaves a closing rule, singular"
 assert_missing "$OUT" "[1/1]" "one --file is not a batch: no counter"
 
@@ -843,7 +845,7 @@ y
 '
 run_pinned review --file "$SUB/a/gate/solo.txt" --baseline "$FIX/solo-baseline.txt"
 assert_exit "$RC" 0 "a baseline-diff ceremony records"
-assert_contains "$OUT" "+1 -0; Enter opens the diff" "the gate states the diff's magnitude"
+assert_contains "$OUT" "+1 -0; Enter open" "the gate states the diff's magnitude"
 assert_contains "$OUT" "diff vs the approved baseline" "and the pager is that diff"
 assert_contains "$OUT" "--- approved: " "the diff header names the baseline side by role"
 assert_contains "$OUT" "+++ candidate: " "and the candidate side by role"
@@ -869,7 +871,7 @@ y
 run_pinned review --file "$SUB/a/witness/held.txt" --store
 assert_exit "$RC" 0 "a custody slot re-approves with no --baseline"
 assert_contains "$OUT" "diff vs the approved baseline" "and diffs against its own stored copy"
-assert_contains "$OUT" "+1 -0; Enter opens the diff" "at the right magnitude"
+assert_contains "$OUT" "+1 -0; Enter open" "at the right magnitude"
 # (b) --baseline-store: a copy-less slot finds its witness by slot name + digest.
 STORED="$SUB/a/witness/stored.txt"
 printf 's1\ns2\n' > "$STORED"
@@ -889,7 +891,7 @@ y
 run_pinned review --baseline-store "$WSTORE" --file "$STORED"
 assert_exit "$RC" 0 "a --baseline-store ceremony records"
 assert_contains "$OUT" "diff vs the approved baseline" "the store entry is the diff's other side"
-assert_contains "$OUT" "+1 -0; Enter opens the diff" "at the right magnitude"
+assert_contains "$OUT" "+1 -0; Enter open" "at the right magnitude"
 # (c) a store with no entry for this slot shows the full file, with no note:
 # nothing was offered, so nothing failed.
 printf 's1\ns2\ns3\ns4\n' > "$STORED"
@@ -898,7 +900,7 @@ y
 '
 run_pinned review --baseline-store "$FIX/empty-store" --file "$STORED"
 assert_exit "$RC" 0 "an empty store still records"
-assert_contains "$OUT" "full content 4 lines; Enter opens the file" "and the whole file is what opens"
+assert_contains "$OUT" "full content 4 lines; Enter open" "and the whole file is what opens"
 assert_missing "$OUT" "does not re-hash" "with no claim that a witness failed"
 # (d) a store entry that does not re-hash is refused: full file, and the note.
 printf 'forged\n' > "$WENTRY/$(digest_of "$STORED")"
@@ -909,7 +911,7 @@ y
 run_pinned review --baseline-store "$WSTORE" --file "$STORED"
 assert_exit "$RC" 0 "a forged store entry still records"
 assert_contains "$OUT" "does not re-hash to the approved record" "the note says the witness failed"
-assert_contains "$OUT" "full content 5 lines; Enter opens the file" "and the whole file is what opens"
+assert_contains "$OUT" "full content 5 lines; Enter open" "and the whole file is what opens"
 # (e) outside the --file ceremony the flag is refused, like --store.
 run_pinned review "$SUB" --baseline-store "$WSTORE"
 assert_exit "$RC" 1 "--baseline-store outside the --file ceremony is refused"
@@ -1490,7 +1492,7 @@ n
 '
   run_pinned review "$REPO_A"
   assert_exit "$RC" 2 "a single-repo gate skip exits 2 like a decline"
-  assert_contains "$OUT" "n skips" "the gate line offers the skip"
+  assert_contains "$OUT" "n skip" "the gate line offers the skip"
   assert_contains "$OUT" "skipped; pin unchanged" "the skip names its outcome"
   assert_eq "$(rev_in "$A_SLOT/rev.git")" "$A_PRE" "a gate skip moves no pin"
   assert_missing "$OUT" "(from object store)" "the diff never opened"
@@ -2043,7 +2045,7 @@ y
   assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_C2" "the forward pin moved to HEAD"
   assert_contains "$OUT" "--- commits since last approval ---" "forward keeps the ordinary listing"
   assert_missing "$OUT" "!!!" "a forward move raises no alarm"
-  assert_contains "$OUT" "(2 commits); Enter opens the diff" "a forward gate sizes the delta in commits"
+  assert_contains "$OUT" "(2 commits); Enter open" "a forward gate sizes the delta in commits"
   assert_contains "$OUT" "--- end of diff: 2 files +2 -0 ---" "the paged diff leaves a closing rule with its totals"
 
   # A declaration on a forward candidate overrides nothing.
@@ -2088,7 +2090,7 @@ y
   assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_C1" "the declared backward move recorded the pin"
   assert_contains "$OUT" "!!! BACKWARD:" "the ceremony raises the backward alarm"
   assert_contains "$OUT" "--- commits being un-approved ---" "the display names the reversed range"
-  assert_contains "$OUT" "(1 commit un-approved); Enter opens the diff" \
+  assert_contains "$OUT" "(1 commit un-approved); Enter open" \
     "a backward gate sizes what it un-approves"
   assert_contains "$OUT" "g2 second" "the un-approved commit is listed"
   assert_contains "$OUT" "--- diff " "the honest diff of the move still runs"
@@ -2131,7 +2133,7 @@ y
   assert_contains "$OUT" "commits being un-approved (leaving the pinned line)" \
     "the display names the abandoned range"
   assert_contains "$OUT" "commits arriving on the new line" "the display names the arriving range"
-  assert_contains "$OUT" "(1 commit un-approved, 1 arriving); Enter opens the diff" \
+  assert_contains "$OUT" "(1 commit un-approved, 1 arriving); Enter open" \
     "a diverged gate sizes both sides of the merge base"
   assert_contains "$OUT" "g2 second" "the abandoned commit is listed"
   assert_contains "$OUT" "gx side" "the arriving commit is listed"
@@ -2153,7 +2155,7 @@ y
   assert_exit "$RC" 0 "a declared rootless rewrite proceeds"
   assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_R" "the rewrite's root commit is pinned"
   assert_contains "$OUT" "no common ancestor in this checkout" "the listing says there is no range"
-  assert_contains "$OUT" "(no shared history; 1 file +1 -0); Enter opens the diff" \
+  assert_contains "$OUT" "(no shared history; 1 file +1 -0); Enter open" \
     "the gate sizes an ancestorless move by the diff, not by commits"
   assert_missing "$OUT" "commit); Enter" "no commit count stands in for the delta"
   assert_contains "$OUT" "--- end of diff: 1 file +1 -0 ---" "the paged diff leaves a closing rule"
@@ -2235,21 +2237,21 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_missing "$OUT" "Will run:" "review prints no prose header"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW review $EV_STALE" \
     "the exact argv stays on screen -- it is the only pre-auth disclosure"
-  assert_contains "$OUT" "next: review 1 repo as root; Enter runs the line above" \
+  assert_contains "$OUT" "review 1 repo as root; Enter run" \
     "the gate counts the repo in the singular"
-  assert_contains "$OUT" "n stops" "and names the key that stops"
+  assert_contains "$OUT" "n stop" "and names the key that stops"
   assert_contains "$OUT" "The preview above was orientation only." \
     "the orientation disclaimer stays"
   assert_before "$OUT" "The preview above was orientation only." "sudo -- $PREVIEW" \
     "the contract sentence sits above the command it describes"
-  assert_before "$OUT" "sudo -- $PREVIEW" "next: review 1 repo" \
+  assert_before "$OUT" "sudo -- $PREVIEW" "review 1 repo" \
     "and the gate comes last, after the command has been read"
 
   ANS='
 '
   run_preview review "$EV_STALE" "$EV_STALE2"
   assert_exit "$RC" 97 "the two-repo review reaches the elevation"
-  assert_contains "$OUT" "next: review 2 repos as root" "the gate counts both repos"
+  assert_contains "$OUT" "review 2 repos as root" "the gate counts both repos"
 
   # The gate counts the ROUND, not the argv: a repo already at its pin was
   # skipped by the preview and buys no ceremony, so promising it would be a
@@ -2259,7 +2261,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   run_preview review "$EV_PINNED" "$EV_STALE"
   assert_exit "$RC" 97 "a mixed batch still elevates for the stale repo"
   assert_contains "$OUT" "already pinned:" "the preview skips the pinned one"
-  assert_contains "$OUT" "next: review 1 repo as root" \
+  assert_contains "$OUT" "review 1 repo as root" \
     "and the gate counts only what the root side will review"
 
   # `n` is an answer now, not only Enter. It stops before sudo, names what
@@ -2287,8 +2289,10 @@ n
 '
   run_preview review "$EV_STALE"
   assert_exit "$RC" 2 "an unknown answer does not elevate"
-  assert_contains "$OUT" 'not an answer; Enter or y runs the line above, n stops' \
-    "the re-ask states every valid answer without echoing what was typed"
+  assert_contains "$OUT" 'not an answer' \
+    "the re-ask says so without echoing what was typed"
+  assert_eq "$(grep -o 'Enter run' "$OUT" | wc -l | tr -d ' ')" 1 \
+    "the gate line is printed once; a re-ask does not reprint it"
   assert_missing "$OUT" 'zzz' "the unknown answer is not echoed back"
   assert_contains "$OUT" "stopped; pin unchanged" "the answer after the re-ask decides"
 
@@ -2303,7 +2307,7 @@ n
   ANS=""
   run_preview review "$EV_STALE" --yes
   assert_exit "$RC" 97 "--yes elevates review without a gate"
-  assert_missing "$OUT" "Enter runs the line above" "no gate is printed under --yes"
+  assert_missing "$OUT" "Enter run" "no gate is printed under --yes"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW review $EV_STALE --yes" \
     "the flag is shown where it will really be passed"
 
@@ -2329,7 +2333,7 @@ n
   assert_missing "$OUT" "Will run:" "review --file prints no prose header"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW review --file $SUB/real.txt" \
     "the file ceremony's argv stays on screen"
-  assert_contains "$OUT" "next: review 1 file as root; Enter runs the line above" \
+  assert_contains "$OUT" "review 1 file as root; Enter run" \
     "the gate counts the file in the singular"
   assert_missing "$OUT" "The preview above was orientation only." \
     "and claims no preview it did not print"
@@ -2338,7 +2342,7 @@ n
 '
   run_preview review --file "$SUB/real.txt" --file "$SUB/link.txt"
   assert_exit "$RC" 97 "two files reach the elevation too"
-  assert_contains "$OUT" "next: review 2 files as root" "the gate counts both files"
+  assert_contains "$OUT" "review 2 files as root" "the gate counts both files"
 
   # --- the display GROUPS each --file with the flags scoped to it -----------
   # --ignore-json-key binds POSITIONALLY to the --file it follows (arg parsing
@@ -2394,19 +2398,19 @@ n
   assert_missing "$OUT" "Will run:" "signer prints no prose header"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW signer add alice --file $SUB/alice.pub" \
     "signer's argv stays on screen"
-  assert_contains "$OUT" "next: record the key as root; Enter runs the line above" \
+  assert_contains "$OUT" "record the key as root; Enter run" \
     "the gate names what root does with the key"
   assert_contains "$OUT" "sudo asks you to authenticate" "the site's contract line survives"
   assert_before "$OUT" "sudo asks you to authenticate" "sudo -- $PREVIEW signer" \
     "the contract sentence sits above the command"
-  assert_before "$OUT" "sudo -- $PREVIEW signer" "next: record the key" \
+  assert_before "$OUT" "sudo -- $PREVIEW signer" "record the key" \
     "and the gate comes last here too"
 
   ANS='
 '
   run_preview signer remove alice --file "$SUB/alice.pub"
   assert_exit "$RC" 97 "signer remove reaches the elevation"
-  assert_contains "$OUT" "next: remove the key as root" "its gate names the withdrawal"
+  assert_contains "$OUT" "remove the key as root" "its gate names the withdrawal"
 
   ANS='
 '
@@ -2414,14 +2418,14 @@ n
   assert_exit "$RC" 97 "an answered ignorable gate reaches the elevation"
   assert_missing "$OUT" "Will run:" "ignorable prints no prose header"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW ignorable add model" "ignorable's argv stays on screen"
-  assert_contains "$OUT" "next: record the grant as root; Enter runs the line above" \
+  assert_contains "$OUT" "record the grant as root; Enter run" \
     "the gate names what root does with the grant"
 
   ANS='
 '
   run_preview ignorable remove model
   assert_exit "$RC" 97 "ignorable remove reaches the elevation"
-  assert_contains "$OUT" "next: withdraw the grant as root" \
+  assert_contains "$OUT" "withdraw the grant as root" \
     "its gate names the withdrawal in the grant's own words"
 
   NOTTY=1
@@ -2433,7 +2437,7 @@ n
   ANS=""
   run_preview ignorable add model --yes
   assert_exit "$RC" 97 "off-tty ignorable WITH --yes elevates"
-  assert_missing "$OUT" "Enter runs the line above" "and prints no gate"
+  assert_missing "$OUT" "Enter run" "and prints no gate"
   NOTTY=""
 
   # --- tombstone / rekey ------------------------------------------------------
@@ -2447,11 +2451,11 @@ n
   assert_missing "$OUT" "Will run:" "tombstone prints no prose header"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW tombstone $FIX/ts-gone" \
     "tombstone's argv stays on screen"
-  assert_contains "$OUT" "next: tombstone the record as root; Enter runs the line above" \
+  assert_contains "$OUT" "tombstone the record as root; Enter run" \
     "the gate names the retirement in the verb's own word"
   assert_before "$OUT" "sudo asks you to authenticate" "sudo -- $PREVIEW tombstone" \
     "the contract sentence sits above the command"
-  assert_before "$OUT" "sudo -- $PREVIEW tombstone" "next: tombstone the record" \
+  assert_before "$OUT" "sudo -- $PREVIEW tombstone" "tombstone the record" \
     "and the gate comes last"
 
   ANS='
@@ -2460,7 +2464,7 @@ n
   assert_exit "$RC" 97 "an answered rekey gate reaches the elevation"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW rekey $FIX/mv-old-gone $FIX/mv-new" \
     "rekey's argv stays on screen"
-  assert_contains "$OUT" "next: re-key the record as root; Enter runs the line above" \
+  assert_contains "$OUT" "re-key the record as root; Enter run" \
     "the gate names the re-key"
   assert_before "$OUT" "old:" "sudo asks you to authenticate" \
     "rekey's own preview stays above the handoff"
@@ -2468,7 +2472,7 @@ n
   ANS=""
   run_preview tombstone "$FIX/ts-gone" --yes
   assert_exit "$RC" 97 "--yes elevates tombstone without a gate"
-  assert_missing "$OUT" "Enter runs the line above" "no gate is printed under --yes"
+  assert_missing "$OUT" "Enter run" "no gate is printed under --yes"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW tombstone $FIX/ts-gone --yes" \
     "the flag is shown where it will really be passed"
 
@@ -2705,14 +2709,14 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_exit "$RC" 97 "an answered declare gate reaches the elevation"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW declare $REPO_DC --release v1" \
     "the exact argv stays on screen"
-  assert_contains "$OUT" "next: declare the release name as root; Enter runs the line above" \
+  assert_contains "$OUT" "declare the release name as root; Enter run" \
     "the gate names the declaration"
   assert_contains "$OUT" "sudo asks you to authenticate" "the record-verb contract line survives"
   ANS='
 '
   run_preview declare "$REPO_DC" --no-release
   assert_exit "$RC" 97 "an answered clearing gate reaches the elevation"
-  assert_contains "$OUT" "next: clear the declaration as root" \
+  assert_contains "$OUT" "clear the declaration as root" \
     "its gate names the clearing"
 
   # --yes answers the gate at the command line, never the root confirm.
