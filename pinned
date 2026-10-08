@@ -642,8 +642,9 @@ drain_tty() {
 # exactly two outcomes and no letter needs to mean "skip" -- a bare `s` is
 # unknown input like any other. End of input declines too -- a closed tty is
 # not consent, and fail-closed is the whole point of a gate. ANYTHING ELSE
-# IS NOT ACTED ON: a yellow `not an answer` says so, and the next answer is
-# read at the end of that line. That is the rule that matters most here. A
+# IS NOT ACTED ON: a yellow `not an answer` says so on its own line, the
+# gate line is printed again, and the next answer is read at the end of it.
+# That is the rule that matters most here. A
 # `case` whose last arm is the continue turns a typo, a stray paste or a
 # leaned-on key into a yes at exactly the moment the human is being asked to
 # take responsibility.
@@ -669,14 +670,14 @@ gate_answer() { # <rendered gate line>
     esac
     # Yellow, the attention role: this is the one line the human has to
     # notice, because they just answered wrong. Not red -- a correction is
-    # not a refusal, and nothing has failed. The gate line stays where it
-    # is, one line up, so it is not printed again, and the re-ask lists no
-    # keys: the gate above already names them.
+    # not a refusal, and nothing has failed. The gate line follows again, so
+    # the answer is always typed at the end of a gate line with its keys
+    # beside the cursor; the yellow line itself lists no keys.
     #
     # What was typed is NEVER echoed back: the terminal already showed it as
     # it was typed, so an echo adds nothing, and a pasted control sequence
     # printed raw can rewrite the very line the human is about to answer.
-    printf '%snot an answer%s ' "$C_YEL" "$C_OFF"
+    printf '%snot an answer%s\n%s' "$C_YEL" "$C_OFF" "$line"
   done
 }
 

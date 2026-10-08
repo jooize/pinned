@@ -798,11 +798,11 @@ y
 run_pinned review --file "$SUB/a/gate-retry.txt"
 assert_exit "$RC" 0 "a gate that was re-asked still records once answered"
 assert_missing "$OUT" 'not an answer;' \
-  "the re-ask lists no keys: the gate line above already names them"
+  "the yellow line lists no keys: the reprinted gate line names them"
 assert_eq "$(grep -o 'not an answer' "$OUT" | wc -l | tr -d ' ')" 3 \
   "each of the three unknown answers re-asks, a bare s included"
-assert_eq "$(grep -o '; Enter open' "$OUT" | wc -l | tr -d ' ')" 1 \
-  "the gate line is printed once; a re-ask does not reprint it"
+assert_eq "$(grep -o '; Enter open' "$OUT" | wc -l | tr -d ' ')" 4 \
+  "each re-ask prints the gate line again, so the answer sits beside its keys"
 assert_missing "$OUT" 'abcdefghijklmnopqrst' \
   "typed input is never echoed back, so a pasted escape cannot rewrite the gate"
 assert_eq "$(count_state "$RETRYG_SLOT")" 1 "y opens the gate and y records at the confirm"
@@ -2291,8 +2291,8 @@ n
   assert_exit "$RC" 2 "an unknown answer does not elevate"
   assert_contains "$OUT" 'not an answer' \
     "the re-ask says so without echoing what was typed"
-  assert_eq "$(grep -o 'Enter run' "$OUT" | wc -l | tr -d ' ')" 1 \
-    "the gate line is printed once; a re-ask does not reprint it"
+  assert_eq "$(grep -o 'Enter run' "$OUT" | wc -l | tr -d ' ')" 2 \
+    "the re-ask prints the gate line again, so the answer sits beside its keys"
   assert_missing "$OUT" 'zzz' "the unknown answer is not echoed back"
   assert_contains "$OUT" "stopped; pin unchanged" "the answer after the re-ask decides"
 
