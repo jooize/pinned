@@ -367,6 +367,12 @@ run_probe_in() { # dir fn args...
 }
 
 slot_of()   { "$PROBE" slot_dir_for "$USERNAME" "$1"; }
+# The on-disk spelling of a path, asked the way the script asks: with the
+# PATH it pins (/usr/bin first), so readlink is the platform's. GNU coreutils'
+# readlink -f (a Nix profile puts it first on many PATHs) keeps the spelling
+# it was given on a case-insensitive volume, which reads every case-only
+# rename as already repaired.
+ondisk_path() { PATH=/usr/bin:/bin:/usr/sbin:/sbin readlink -f "$1"; }
 digest_of() { shasum -a 256 "$1" | awk '{print $1}'; }
 
 seed_state() { # path state-file content
@@ -4261,7 +4267,7 @@ y
             "$(digest_of "$SUB/rs/Renamed.txt")  $SUB/rs/Renamed.txt" \
             "the record now names the on-disk spelling"
   RS_SLOT="$(slot_of "$SUB/rs/Renamed.txt")"
-  assert_eq "$(basename "$(readlink -f "$RS_SLOT")")" "$(basename "$RS_SLOT")" \
+  assert_eq "$(basename "$(ondisk_path "$RS_SLOT")")" "$(basename "$RS_SLOT")" \
     "the slot directory wears the recorded spelling"
   run_pinned verify "$SUB/rs/Renamed.txt"
   assert_exit "$RC" 0 "the repaired pin verifies"
@@ -4282,7 +4288,7 @@ n
   assert_eq "$(cat "$(slot_file_of "$SUB/rs/Keep.txt" pin.sha256)")" \
             "$(digest_of "$SUB/rs/Keep.txt")  $SUB/rs/keep.txt" \
             "a decline leaves the stale record byte-identical"
-  assert_eq "$(basename "$(readlink -f "$(slot_of "$SUB/rs/Keep.txt")")")" \
+  assert_eq "$(basename "$(ondisk_path "$(slot_of "$SUB/rs/Keep.txt")")")" \
             "$(basename "$(slot_of "$SUB/rs/keep.txt")")" \
             "a decline leaves the directory under its old name"
 
@@ -4302,7 +4308,7 @@ y
   assert_contains "$OUT" "renames it to match" "the note names the rename before the confirm"
   assert_contains "$OUT" "slot renamed:" "and the rename is announced"
   DF_SLOT="$(slot_of "$SUB/rs/Dirfix.txt")"
-  assert_eq "$(basename "$(readlink -f "$DF_SLOT")")" "$(basename "$DF_SLOT")" \
+  assert_eq "$(basename "$(ondisk_path "$DF_SLOT")")" "$(basename "$DF_SLOT")" \
     "the directory now wears the recorded spelling"
 
   # REPO slots: a rev record names no path, so the directory name is the
@@ -4353,7 +4359,7 @@ y
     assert_contains "$OUT" "record re-stated:" "and re-states the record for the current spelling"
     assert_contains "$OUT" "already pinned" "and still reports the pin as the no-op it is"
     CS_SLOT="$(slot_of "$CSREPO")"
-    assert_eq "$(basename "$(readlink -f "$CS_SLOT")")" "$(basename "$CS_SLOT")" \
+    assert_eq "$(basename "$(ondisk_path "$CS_SLOT")")" "$(basename "$CS_SLOT")" \
       "the repo slot wears the current spelling"
     assert_eq "$(cat "$CS_SLOT/rev.git")" "$CS_HASH  $CSREPO" \
       "the record keeps its rev and names the current spelling"
