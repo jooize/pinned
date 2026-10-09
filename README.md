@@ -584,9 +584,9 @@ one.
   statements are Sentence case sentences. Full caps only for a deliberate
   alarm (`!!! FIRST APPROVAL WITH --trust !!!`) -- never as generic
   emphasis.
-- **Colour roles** are fixed: red = failure, green = success, yellow =
+- **Color roles** are fixed: red = failure, green = success, yellow =
   attention, cyan = identifiers (paths, hashes, keys, tags), dim =
-  secondary detail, bold = structure and authority. Colour is decoration
+  secondary detail, bold = structure and authority. Color is decoration
   only: with a non-tty stdout (or `NO_COLOR` for the content highlighters)
   every display degrades to byte-identical plain text.
 - **Content highlighters** are routed by suffix alone (`.json`, `.bash`

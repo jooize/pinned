@@ -256,7 +256,7 @@ STUB_SED=(
     #     under test is about to read. Seaming the entry line is also the
     #     honest thing: the drain is a TERMINAL operation, and there is no
     #     terminal here, so the stub states that rather than half-running it.
-    #     Its live behaviour is covered separately, under a real pty (S20).
+    #     Its live behavior is covered separately, under a real pty (S20).
     -e 's/^  saved="\$(stty -g <\/dev\/tty 2>\/dev\/null)" || return 0$/  return 0/'
     -e 's#</dev/tty##g'
 )
@@ -487,7 +487,7 @@ assert_eq "$("$PROBE" encode "/Users/jooize/Projects/pinned")" \
           "%2FUsers%2Fjooize%2FProjects%2Fpinned" \
           "backward compat: pre-existing slot name is byte-identical"
 # show_slot: printable-byte escapes dim, control-byte escapes (%00-%1F, %7F)
-# red, the rest of the path untouched; plain when the colours are empty.
+# red, the rest of the path untouched; plain when the colors are empty.
 assert_eq "$("$PROBE" eval 'C_DIM="<D>" C_OFF="<O>" C_RED="<R>"; show_slot "/s/%2FUsers%1Bx%7Fy%C3%A4z%25w%00v%7Eu"')" \
           "/s/<D>%2F<O>Users<R>%1B<O>x<R>%7F<O>y<D>%C3<O><D>%A4<O>z<D>%25<O>w<R>%00<O>v<D>%7E<O>u" \
           "show_slot: printable escapes dim, control escapes red, each wrapped once"
@@ -1595,7 +1595,7 @@ y
   assert_contains "$OUT" '2 files  +3 -0  d2 two files' "the preview shows the same enriched line"
   assert_eq "$(grep -cE '^  [0-9a-f]+  ' "$OUT")" 5 "the preview indents every row by its prefix"
 
-  # A merge inside the range must not poison its neighbours' counts: the
+  # A merge inside the range must not poison its neighbors' counts: the
   # placeholder row is the only one without numbers.
   assert_eq "$(grep -cE '^ *[0-9a-f]+ +-( +-)+  ' "$OUT")" 1 "exactly one placeholder row (the merge)"
 
@@ -2788,7 +2788,7 @@ say "S9: ignored keys (ignored.json / approved / exit 5)"
 # ---------------------------------------------------------------------------
 # The tolerance path is jq-driven by construction (structural comparison of
 # two JSON documents), so without jq there is nothing to exercise -- the
-# no-jq behaviour itself is the loud fallback tested at the end of S9.
+# no-jq behavior itself is the loud fallback tested at the end of S9.
 if ! command -v jq >/dev/null 2>&1; then
   say "S9: SKIPPED (no jq in the trusted PATH)"
 else
@@ -3689,7 +3689,7 @@ y
   run_pinned show "$REPO_R"
   assert_exit "$RC" 0 "show with a declared tag exits 0"
   assert_contains "$OUT" "v1.2.3" "the declared tag is shown"
-  assert_contains "$OUT" "(declared)" "and is labelled as declared, not verified"
+  assert_contains "$OUT" "(declared)" "and is labeled as declared, not verified"
 
   # The file ceremony's flags say nothing about a rev -- refused, not ignored.
   ANS=""
@@ -3786,7 +3786,7 @@ if (cd / && shasum -a 256 -c "$MV_NEW_SLOT/pin.sha256" >/dev/null 2>&1); then
 else
   fail "shasum -c cross-check broke on the moved record"
 fi
-assert_file "$MV_NEW_SLOT/approved" "the stored witness travelled"
+assert_file "$MV_NEW_SLOT/approved" "the stored witness traveled"
 assert_eq "$(digest_of "$MV_NEW_SLOT/approved")" "$MV_DIG" "and it is the same approved bytes"
 assert_file "$MV_OLD_SLOT/tombstone" "the old key is tombstoned, not deleted"
 assert_contains "$MV_OLD_SLOT/tombstone" "moved to $SUB/mv/deeper/to.txt" \
@@ -3927,7 +3927,7 @@ y
   assert_contains "$OUT" "model" "and names the key that drifted"
   assert_eq "$(cat "$TOL_NEW_SLOT/pin.sha256")" "$TOL_DIG  $SUB/mv/tol-moved.json" \
             "the record travels verbatim: the tolerated drift is NOT re-recorded"
-  assert_file "$TOL_NEW_SLOT/ignored.json" "the declaration travelled"
+  assert_file "$TOL_NEW_SLOT/ignored.json" "the declaration traveled"
   assert_eq "$(cat "$TOL_NEW_SLOT/ignored.json")" '[["model"]]' "byte for byte"
   ANS=""
   run_pinned verify "$SUB/mv/tol-moved.json"
@@ -3962,7 +3962,7 @@ y
   # LABEL OWNERSHIP: `git HEAD:` is the live checkout's fact and `pinned:` is
   # the record's; a tag-selected revision is neither -- it is the candidate
   # under ceremony, and says so.
-  assert_contains "$OUT" "candidate:" "a tag-selected revision is labelled candidate"
+  assert_contains "$OUT" "candidate:" "a tag-selected revision is labeled candidate"
   assert_missing "$OUT" "commit:" "and no longer wears the ownerless commit label"
   MVR_OLD_SLOT="$(slot_of "$MVR_OLD")"
   MVR_NEW_SLOT="$(slot_of "$MVR_NEW")"
@@ -3993,8 +3993,8 @@ y
   assert_exit "$RC" 0 "a repo record moves to the work tree that holds its rev"
   assert_eq "$(rev_in "$MVR_NEW_SLOT/rev.git")" "$MVR_HASH" "the rev travels verbatim"
   assert_eq "$(count_state "$MVR_NEW_SLOT")" 1 "the new slot holds exactly one state file"
-  assert_eq "$(cat "$MVR_NEW_SLOT/release")" "v1" "the declared tag travelled"
-  assert_file "$MVR_NEW_SLOT/signers/allowed_signers" "the per-slot signers travelled"
+  assert_eq "$(cat "$MVR_NEW_SLOT/release")" "v1" "the declared tag traveled"
+  assert_file "$MVR_NEW_SLOT/signers/allowed_signers" "the per-slot signers traveled"
   assert_contains "$MVR_NEW_SLOT/signers/allowed_signers" "harness@example.invalid" "with their content"
   assert_file "$MVR_OLD_SLOT/tombstone" "the old key is tombstoned"
   assert_contains "$MVR_OLD_SLOT/tombstone" "moved to $MVR_NEW" "naming where the record went"
@@ -4477,12 +4477,12 @@ say "S20: the tty drain before every gate"
 #   * ADJACENCY, over the source: a drain that exists but sits one gate away
 #     from the read is not a drain. Counts are pinned by need() above; this
 #     pins the pairing.
-#   * BEHAVIOUR, under a real pty: the stub cannot cover this at all (there
+#   * BEHAVIOR, under a real pty: the stub cannot cover this at all (there
 #     is no terminal, and seam 11 says so), and the mechanism is termios, not
 #     shell logic -- `stty -icanon min 0 time 0` so read(2) returns 0 bytes on
 #     an empty queue. It is driven through script(1) against the function
 #     lifted verbatim out of the script, with a control run that must show
-#     the un-drained behaviour first; if the control does not reproduce it,
+#     the un-drained behavior first; if the control does not reproduce it,
 #     the pty rig is unusable here and the section says so instead of
 #     passing quietly.
 DRAIN_GAPS="$(awk '
@@ -4532,11 +4532,11 @@ if command -v script >/dev/null 2>&1; then
       "so nothing queued is read as an answer"
   else
     say "  (no usable pty here -- script(1) did not reproduce the un-drained"
-    say "   read, so the behavioural half is SKIPPED; run this harness with the"
+    say "   read, so the behavioral half is SKIPPED; run this harness with the"
     say "   sandbox off, where openpty is permitted)"
   fi
 else
-  say "  (no script(1) -- the behavioural half is SKIPPED)"
+  say "  (no script(1) -- the behavioral half is SKIPPED)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -4546,7 +4546,7 @@ say "S21: content highlighters decorate only (routing, guards, byte fidelity)"
 # HL_ON forced: the property is about bytes, not about a terminal. Every
 # highlighter must reproduce its input exactly once its SGR codes are
 # stripped -- ASCII, UTF-8 and an INVALID multibyte sequence alike -- and put
-# colour where the suffix says. The guards refuse what awk would not carry
+# color where the suffix says. The guards refuse what awk would not carry
 # through unchanged.
 for fn in highlighter_for highlight_ok highlight_json highlight_bash highlight_md; do
   sed -n "/^$fn() {\$/,/^}\$/p" "$SRC"
@@ -4577,7 +4577,7 @@ hl_run 1 highlight_md "$HLD/style.md"
 assert_exit "$RC" 0 "highlight_md exits 0"
 hl_exact "$HLD/style.md" "md: stripped output is the input"
 assert_contains "$OUT" $'\033[1;36m# Title\033[0m' "md: a heading is cyan"
-assert_contains "$OUT" "Prose with 3 digits, 2 commas." "md: prose stays uncoloured (no digit or comma colouring)"
+assert_contains "$OUT" "Prose with 3 digits, 2 commas." "md: prose stays uncolored (no digit or comma coloring)"
 assert_contains "$OUT" $'\033[0;32m`span`\033[0m' "md: a code span is green"
 assert_contains "$OUT" $'\033[1m**bold**\033[0m' "md: bold is bold"
 assert_contains "$OUT" $'\033[2m|\033[0m \xe2\x96\xa0 \033[2m|\033[0m' "md: table pipes are dim, the glyph between them intact"

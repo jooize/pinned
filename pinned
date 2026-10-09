@@ -235,9 +235,9 @@ PINNED_ROOT_ONLY_OWNERS=
 # tolerates. The harness rewrites this exact line too.
 PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json
 
-# Colour per stream, gated on the fd being written: this stdout palette on
+# Color per stream, gated on the fd being written: this stdout palette on
 # [ -t 1 ], the stderr palette below on [ -t 2 ]. A single stdout gate would
-# strip colour from a refusal a human is watching whenever stdout is piped,
+# strip color from a refusal a human is watching whenever stdout is piped,
 # and write escape bytes into a log whenever stderr is redirected while
 # stdout stays a terminal. Piping/redirecting a stream keeps THAT stream
 # clean without muting the other.
@@ -251,7 +251,7 @@ if [ -t 1 ]; then
   # command line, and the keys a gate names for them to type (`Enter`, `n`,
   # the `y`/`N` of a prompt). Shared role with sudowhat's SGR_FLAG so one
   # command line reads the same whichever tool drew it; the two never share a
-  # line, so one colour serves both. BOLD is not a style choice: plain blue
+  # line, so one color serves both. BOLD is not a style choice: plain blue
   # measures ~3.6:1 against a dark terminal ground, under the 4.5:1 floor,
   # and the bright variant clears it. Carries its own 1, so a site returning
   # to plain bold after a key must reset first ($C_OFF$C_B, never $C_B).
@@ -656,7 +656,7 @@ drain_tty() {
 # Returns 0 to continue, 1 to decline; the caller owns the decline line and
 # its logging, because only the caller knows what stays unchanged and what a
 # decline means for the batch it sits in. The gate line arrives already
-# rendered (printf -v at the call site), so per-site colours and counts stay
+# rendered (printf -v at the call site), so per-site colors and counts stay
 # where they are composed and this function never re-parses its own display.
 gate_answer() { # <rendered gate line> [<the missing word>]
   # 0 = open (Enter, y, yes), 1 = decline (n, no, end of input), 3 = the
@@ -963,14 +963,14 @@ ceremony_banner() {
 # bash and markdown highlighters below were born here. Two deliberate
 # deviations from the originals, both about byte fidelity in a display that
 # a trust decision is made from:
-#   * stdin instead of a file argument, so the `show` verb can colour the
+#   * stdin instead of a file argument, so the `show` verb can color the
 #     ONE buffer it read rather than taking a second look at the file;
 #   * LC_ALL=C, so awk indexes bytes and an invalid multibyte sequence
 #     survives the round trip unchanged.
-# They decorate; they never transform. Colour off (not a tty, or NO_COLOR)
+# They decorate; they never transform. Color off (not a tty, or NO_COLOR)
 # means byte-identical passthrough.
 
-# Colorized unified diff. Colour is applied per line-prefix, never inside a
+# Colorized unified diff. Color is applied per line-prefix, never inside a
 # line, so the bytes stay greppable; $0 is reprinted verbatim. The file
 # headers wear the identity magenta, the same class sgit_diff gives git's
 # meta lines: a header answers what-am-I-looking-at one level below the
@@ -1008,7 +1008,7 @@ diff_shape() {
 # Structural key summary for the baseline diff -- WHICH keys changed, the one
 # review aid a plain byte diff cannot render (permissions.allow vs
 # permissions.deny, a hook added vs a hook rewritten: invisible in a unified
-# diff whose context is just neighbouring array entries). Ported from the
+# diff whose context is just neighboring array entries). Ported from the
 # drift index in the hardening repo's nix/claude-shim.bash (drift_keys):
 # flatten both sides to sorted "path = value" leaves via jq's tostream, diff
 # the flattenings, keep the KEY of every changed leaf. An array collapses to
@@ -1085,7 +1085,7 @@ json_keys_changed() { # <old> <new> -> "<added>\t<removed>\t<key>" rows
 # (totals included); a zero side is blank, never "+0", and a blank deletion
 # side prints nothing trailing. The sign is part of the token, right-aligned
 # with it: "+10" over " +2", never a sign stranded from its digits. Padding
-# goes OUTSIDE the colour: a padded coloured argument aligns to the wrong
+# goes OUTSIDE the color: a padded colored argument aligns to the wrong
 # width. House palette: key names are identifiers (cyan); the counts wear
 # the diff's own green/red; the label is dim.
 render_keys_block() {
@@ -1260,9 +1260,9 @@ label_hunks() { # <old-frozen> <new-frozen> -- unified diff on stdin, labeled ou
 # content's original characters -- it never reindents, reorders, or reparses
 # -- so what is displayed is EXACTLY what is hashed. (A trust prompt must not
 # pretty-print: jq -C would collapse duplicate keys, drop trailing junk, and
-# normalise escapes, hiding exactly the tricks a hostile settings file might
-# use.) Colouring is best-effort per line -- a malformed token only
-# mis-colours; the text stays byte-exact. Strings are assumed single-line
+# normalize escapes, hiding exactly the tricks a hostile settings file might
+# use.) Coloring is best-effort per line -- a malformed token only
+# mis-colors; the text stays byte-exact. Strings are assumed single-line
 # (true for JSON, which escapes newlines as \n), so it scans line-by-line.
 highlight_json() {
   if [ -z "$HL_ON" ] || ! command -v awk >/dev/null 2>&1; then
@@ -1301,12 +1301,12 @@ highlight_json() {
 }
 
 # Byte-preserving highlighter for a hook script. Same contract as
-# highlight_json: SGR codes only BETWEEN the original bytes, every coloured
+# highlight_json: SGR codes only BETWEEN the original bytes, every colored
 # token ASCII, so no escape ever lands inside a multibyte sequence. Per line,
 # best effort: comments dim, single- and double-quoted strings green with
 # the expansions inside them cyan, bare expansions cyan, shell keywords bold
 # magenta, the shebang dim. A heredoc body or a string that spans lines only
-# mis-colours; the text stays byte-exact.
+# mis-colors; the text stays byte-exact.
 highlight_bash() {
   if [ -z "$HL_ON" ] || ! command -v awk >/dev/null 2>&1; then
     cat; return
@@ -1378,7 +1378,7 @@ highlight_bash() {
 # Byte-preserving highlighter for a markdown file (an output style). Same
 # contract: headings cyan, fenced code blocks and `code` spans green, fence
 # lines, rules, blockquote and list markers and table pipes dim, **bold**
-# bold. Prose stays uncoloured -- in particular no digit or comma colouring,
+# bold. Prose stays uncolored -- in particular no digit or comma coloring,
 # which is what routing prose through the JSON highlighter would have done.
 highlight_md() {
   if [ -z "$HL_ON" ] || ! command -v awk >/dev/null 2>&1; then
@@ -1445,7 +1445,7 @@ highlighter_for() {
 #   * for JSON it must parse, so a malformed file is shown as it is.
 # The newline is the caller's to report ($2): checking it here would need a
 # second pass over the same stdin. A tool absent from the trusted PATH means
-# no colour, never a guess.
+# no color, never a guess.
 # $1 = highlighter name ("" = none), $2 = 1 when the content ends in a
 # newline; stdin = the exact bytes.
 highlight_ok() {
@@ -2155,9 +2155,9 @@ decode() {
 # %7F) is red instead: no path a human meant has one, and a path carrying
 # one is the kind of thing this display exists to make visible. Display only
 # -- the bytes are the slot's, so a copied line still names the directory;
-# off a tty every colour is empty and the path prints plain. Nothing here can
+# off a tty every color is empty and the path prints plain. Nothing here can
 # emit a control byte: the encoder admits only [A-Za-z0-9._-] and %XX, and
-# the substitutions insert only this script's own colour constants.
+# the substitutions insert only this script's own color constants.
 show_slot() {
   printf '%s' "$1" | sed \
     -e "s/%[2-6][0-9A-Fa-f]/${C_DIM}&${C_OFF}/g" \
@@ -2702,7 +2702,7 @@ ign_display() {
 # "nothing declared" and "declared but unusable" are different answers:
 #   0  a valid ignored.json; IGN_PATHS holds its paths
 #   1  no ignored.* at all -- the feature is simply not declared here
-#   2  a declaration that cannot be honoured (unknown format, more than
+#   2  a declaration that cannot be honored (unknown format, more than
 #      one, not root-owned, empty, no jq, or content outside the shape).
 #      Loud, and every caller falls back to the STRICTER verdict.
 IGN_PATHS=""
@@ -3354,11 +3354,11 @@ elevation_quote() { # token
 # pasteable; a blank line between groups would NOT be, which is why the
 # separation is indentation.
 #
-# Role colour as sudowhat's execute: row renders commands -- sudo bold, the
+# Role color as sudowhat's execute: row renders commands -- sudo bold, the
 # program through prog_disp, flags bold blue, verb and values plain (paths
 # included) -- plus one refinement: a
 # --baseline value is a slot-digest path nobody typed (machine-derived), so it
-# renders dim to keep the eye on the --file path being approved. The colour
+# renders dim to keep the eye on the --file path being approved. The color
 # codes go into the DISPLAY string only; the exec sites build argv from the
 # variables, never from this. Continuation lines carry a trailing ` \` so the
 # whole block stays pasteable.
@@ -3418,7 +3418,7 @@ elevation_cmd_disp() { # elev action args...
       ind="    "
       if [ -n "$group" ]; then pw=$((fw + 2)); fi
     fi
-    # Pad OUTSIDE the colour so values align: %-*s would count escape bytes.
+    # Pad OUTSIDE the color so values align: %-*s would count escape bytes.
     printf -v padded '%*s' "$((pw - ${#name}))" ''
     [ -z "$name" ] || padded="${C_BLU}${name}${C_OFF}${padded}"
     if [ -n "${fv[$i]}" ]; then
@@ -3445,7 +3445,7 @@ elevation_cmd_disp() { # elev action args...
 # authentication sheet), so nothing full-screen arrives unannounced.
 #
 # One helper for every self-elevating verb: the gate is a security pause,
-# and a pause spelled once per site would drift into as many behaviours.
+# and a pause spelled once per site would drift into as many behaviors.
 #
 # Off-tty there is nobody to answer, so it REFUSES rather than skip the
 # checkpoint -- silently proceeding when stdin is redirected would make
@@ -3478,7 +3478,7 @@ elevation_gate() { # <what-the-root-side-does> <what-stays-unchanged> argv...
   # follow are plain, so the weight has something to contrast against. Every
   # key the human types is bold blue -- the same role an option flag wears in
   # a rendered command line, because both are things handed to the program.
-  # C_OFF clears dim as well as the key colour, so the dim tail is re-opened
+  # C_OFF clears dim as well as the key color, so the dim tail is re-opened
   # after each key.
   printf -v line '%s%s as root;%s %sEnter%s run %s· %s%sn%s%s stop%s ' \
     "$C_B" "$what" "$C_OFF" "$C_BLU" "$C_OFF" \
@@ -4422,8 +4422,8 @@ do_approve() {
         # merge base. Two revs with no common ancestor have no range at all:
         # `pin..candidate` is then the candidate's WHOLE history (a rewrite
         # of 400 commits reads as "400 commits" when three are new), so
-        # there the size is the diff's own, in files and lines, coloured
-        # the way the file-pin gate colours its magnitude.
+        # there the size is the diff's own, in files and lines, colored
+        # the way the file-pin gate colors its magnitude.
         local n_range n_undo gate_line gate_size totals t_n t_files t_add t_del
         totals="$(diff_totals "$old_hash" "$hash")"
         if [ "$ancestry_cls" = diverged ] && [ -z "$ancestry_mb" ]; then
@@ -5073,7 +5073,7 @@ EOF
     # record unchanged, logged as skip, counted as declined. End of input
     # declines the same way. Approving without the bytes stays impossible.
     if [ "$base_ok" -eq 1 ]; then
-      # Colour the magnitude the diff's own way -- additions green, deletions
+      # Color the magnitude the diff's own way -- additions green, deletions
       # red -- matching the keys summary and the diff body below it. gate_shape
       # is always "+A -D" (diff_shape prints both counts, either may be 0), so
       # the first word is the add count and the rest the delete count.
@@ -5119,7 +5119,7 @@ EOF
         continue
       fi
       printf '%s--- %s (exactly the bytes being approved) ---%s\n' "$C_B" "$path" "$C_OFF"
-      # Syntax colour only when the frozen copy is content awk can carry
+      # Syntax color only when the frozen copy is content awk can carry
       # through unchanged (highlight_ok, routed by suffix); the digest above
       # came from the file, not from this stream, and a highlighter only
       # inserts SGR codes between the bytes it is given.
@@ -6470,7 +6470,7 @@ do_sign() {
 #
 # The field gutter is the ceremony's: values start at column 12, so `list`,
 # `status` and the review header all line up. Padding is applied to the BARE
-# label, outside the colour, because %-9s counts escape bytes.
+# label, outside the color, because %-9s counts escape bytes.
 #
 # GRAMMAR, for anything parsing this: a flush-left line is a decoded absolute
 # path, and it is the WHOLE line -- so a path holding spaces, tabs or glob
@@ -6486,7 +6486,7 @@ list_subject() { # found-so-far (0 = this is the first entry)  path
 # The kind (sha256 / git) is the LABEL of the digest field, not a column of
 # its own: it says what the value is, which is what a label is for, and it
 # spares every entry a column sized for the longest kind anyone ever adds.
-list_field() { # label  value-colour  value  parenthetical ("" for none)
+list_field() { # label  value-color  value  parenthetical ("" for none)
   local lbl="$1:"
   if [ -n "$4" ]; then
     printf '  %s%-9s%s %s%s%s  %s(%s)%s\n' \
@@ -6558,7 +6558,7 @@ do_list() {
     # loop walks on-disk names and never asks about a live path; status and
     # review, which are asked about one, report it.) Notes are indented
     # `label: value` fields like every other fact here, so the machine
-    # grammar (the flush-left path, the digest-labelled field) holds.
+    # grammar (the flush-left path, the digest-labeled field) holds.
     case "$slot_state" in
       rev)
         rec_rc=0
@@ -6785,7 +6785,7 @@ do_show() {
   printf '%s--- %s (exactly the bytes being hashed) ---%s\n' "$C_B" "$file" "$C_OFF"
   # Both the guard and the highlighter are fed $content, not the file, so the
   # single-read rule holds; the digest below still comes from $content too,
-  # never from the coloured stream.
+  # never from the colored stream.
   nl=''
   [ "${content%"$NL"}" != "$content" ] && nl=1
   hl="$(highlighter_for "$file")"
