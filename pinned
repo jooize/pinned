@@ -46,6 +46,9 @@
 #   pinned ignorable add|remove|list          which keys a ceremony may declare
 #                                             ignored, and where (the policy)
 #   pinned status <repo|file>                 record vs live state
+#   pinned words <repo> <rev>                 the words a review shows for <rev>,
+#                                             with its full id and the commits
+#                                             since the pin
 #   pinned setup [--yes]                      provision sudoers digest pin; self-install
 #
 # review, setup, tombstone, rekey, declare, signer add/remove and ignorable
@@ -317,6 +320,7 @@ usage: pinned <action> [args]
   verify [options] <path>        file-pin verdict; quiet exit-code contract for gates
   cat <path>                     the approved bytes, from root custody; fail-closed
   rev <repo> [--release]         the pinned rev (or the declared release name); fail-closed
+  words <repo> <rev>             the words a review shows for a commit, with its full id
   sign <repo> <tag>              create a signed tag at the pinned hash
   signer add|remove|list ...     (sudo) allowed-signers ceremonies
   signer path [--repo <repo>]    the allowed-signers file a signed tag verifies against
@@ -654,8 +658,11 @@ drain_tty() {
 # decline means for the batch it sits in. The gate line arrives already
 # rendered (printf -v at the call site), so per-site colours and counts stay
 # where they are composed and this function never re-parses its own display.
-gate_answer() { # <rendered gate line>
-  local line="$1" answer
+gate_answer() { # <rendered gate line> [<the missing word>]
+  # 0 = open (Enter, y, yes), 1 = decline (n, no, end of input), 3 = the
+  # missing word, typed. Only a gate that shows a words gap passes the word,
+  # so every other gate keeps its two answers and never returns 3.
+  local line="$1" want="${2:-}" answer
   printf '%s' "$line"
   while :; do
     drain_tty
@@ -668,6 +675,21 @@ gate_answer() { # <rendered gate line>
       ''|y|Y|yes) return 0 ;;
       n|N|no) return 1 ;;
     esac
+    # The whole word, case folded; read has already trimmed the spaces
+    # around it. No prefix matching: the four-letter uniqueness of the list
+    # is a property of the list, not a promise to the human.
+    if [ -n "$want" ]; then
+      answer="$(ascii_fold "$answer")"
+      [ "$answer" != "$want" ] || return 3
+      # A word from the list that does not fill the gap is the one answer
+      # that can mean "the words differ": named as such, never folded into
+      # `not an answer`. The gap stays where it was, so a typo costs one
+      # more try, and each try still needs the right word.
+      if is_list_word "$answer"; then
+        printf '%snot the missing word%s\n%s' "$C_YEL" "$C_OFF" "$line"
+        continue
+      fi
+    fi
     # Yellow, the attention role: this is the one line the human has to
     # notice, because they just answered wrong. Not red -- a correction is
     # not a refusal, and nothing has failed. The gate line follows again, so
@@ -679,6 +701,246 @@ gate_answer() { # <rendered gate line>
     # printed raw can rewrite the very line the human is about to answer.
     printf '%snot an answer%s\n%s' "$C_YEL" "$C_OFF" "$line"
   done
+}
+
+# ---- accept by words -------------------------------------------------------
+# A forward review can be accepted without reading its diff when the human
+# already holds the commit's words from somewhere this checkout cannot write
+# (the reply of whoever made the commit, in another tab). The words are the
+# full commit id read as bits from its first hex digit, 11 bits per word:
+# six required words cover 66 bits (years of hashing to match on a rented
+# GPU fleet, against an attacker who can only start once the commit exists
+# and must finish before the review), two optional ones 22 more. The id
+# alone is enough: it hashes the tree and the parents, so any change in the
+# range changes the words.
+#
+# The review prints the words with ONE of the first six left out as a gap,
+# at a position drawn fresh for every review (draw_gap). Typing the missing
+# word is the gate's third answer: it skips the pager and lands on the same
+# `approve ...? [y/N]`, so a stray key still never approves. The typed word
+# is the 11 bits pinned checks; the five visible words are the human's to
+# compare. A process that can rewrite the tab's text can fake both, the same
+# as it can fake the diff -- the words add no new weakness against it.
+#
+# Words appear only on a forward move from an existing pin (unsigned
+# release tags included); a first approval, a backward or diverged move, a
+# signed tag and the --step walk keep reading.
+#
+# The word list is BIP39 English (2048 words, no two sharing their first
+# four letters), from bitcoin/bips bip-0039/english.txt, MIT licensed
+# (BIP 39 authors: Marek Palatinus, Pavol Rusnak, Aaron Voisine, Sean Bowe).
+# One word per line it hashes to sha256
+# 2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda, which
+# the harness checks. Embedded rather than read from a file, so the sudoers
+# digest that pins this script pins the list with it.
+PINNED_WORDS=(
+  abandon ability able about above absent absorb abstract absurd abuse access accident account
+  accuse achieve acid acoustic acquire across act action actor actress actual adapt add addict
+  address adjust admit adult advance advice aerobic affair afford afraid again age agent agree
+  ahead aim air airport aisle alarm album alcohol alert alien all alley allow almost alone
+  alpha already also alter always amateur amazing among amount amused analyst anchor ancient
+  anger angle angry animal ankle announce annual another answer antenna antique anxiety any
+  apart apology appear apple approve april arch arctic area arena argue arm armed armor army
+  around arrange arrest arrive arrow art artefact artist artwork ask aspect assault asset
+  assist assume asthma athlete atom attack attend attitude attract auction audit august aunt
+  author auto autumn average avocado avoid awake aware away awesome awful awkward axis baby
+  bachelor bacon badge bag balance balcony ball bamboo banana banner bar barely bargain barrel
+  base basic basket battle beach bean beauty because become beef before begin behave behind
+  believe below belt bench benefit best betray better between beyond bicycle bid bike bind
+  biology bird birth bitter black blade blame blanket blast bleak bless blind blood blossom
+  blouse blue blur blush board boat body boil bomb bone bonus book boost border boring borrow
+  boss bottom bounce box boy bracket brain brand brass brave bread breeze brick bridge brief
+  bright bring brisk broccoli broken bronze broom brother brown brush bubble buddy budget
+  buffalo build bulb bulk bullet bundle bunker burden burger burst bus business busy butter
+  buyer buzz cabbage cabin cable cactus cage cake call calm camera camp can canal cancel candy
+  cannon canoe canvas canyon capable capital captain car carbon card cargo carpet carry cart
+  case cash casino castle casual cat catalog catch category cattle caught cause caution cave
+  ceiling celery cement census century cereal certain chair chalk champion change chaos chapter
+  charge chase chat cheap check cheese chef cherry chest chicken chief child chimney choice
+  choose chronic chuckle chunk churn cigar cinnamon circle citizen city civil claim clap clarify
+  claw clay clean clerk clever click client cliff climb clinic clip clock clog close cloth
+  cloud clown club clump cluster clutch coach coast coconut code coffee coil coin collect
+  color column combine come comfort comic common company concert conduct confirm congress
+  connect consider control convince cook cool copper copy coral core corn correct cost cotton
+  couch country couple course cousin cover coyote crack cradle craft cram crane crash crater
+  crawl crazy cream credit creek crew cricket crime crisp critic crop cross crouch crowd crucial
+  cruel cruise crumble crunch crush cry crystal cube culture cup cupboard curious current
+  curtain curve cushion custom cute cycle dad damage damp dance danger daring dash daughter
+  dawn day deal debate debris decade december decide decline decorate decrease deer defense
+  define defy degree delay deliver demand demise denial dentist deny depart depend deposit
+  depth deputy derive describe desert design desk despair destroy detail detect develop device
+  devote diagram dial diamond diary dice diesel diet differ digital dignity dilemma dinner
+  dinosaur direct dirt disagree discover disease dish dismiss disorder display distance divert
+  divide divorce dizzy doctor document dog doll dolphin domain donate donkey donor door dose
+  double dove draft dragon drama drastic draw dream dress drift drill drink drip drive drop
+  drum dry duck dumb dune during dust dutch duty dwarf dynamic eager eagle early earn earth
+  easily east easy echo ecology economy edge edit educate effort egg eight either elbow elder
+  electric elegant element elephant elevator elite else embark embody embrace emerge emotion
+  employ empower empty enable enact end endless endorse enemy energy enforce engage engine
+  enhance enjoy enlist enough enrich enroll ensure enter entire entry envelope episode equal
+  equip era erase erode erosion error erupt escape essay essence estate eternal ethics evidence
+  evil evoke evolve exact example excess exchange excite exclude excuse execute exercise exhaust
+  exhibit exile exist exit exotic expand expect expire explain expose express extend extra
+  eye eyebrow fabric face faculty fade faint faith fall false fame family famous fan fancy
+  fantasy farm fashion fat fatal father fatigue fault favorite feature february federal fee
+  feed feel female fence festival fetch fever few fiber fiction field figure file film filter
+  final find fine finger finish fire firm first fiscal fish fit fitness fix flag flame flash
+  flat flavor flee flight flip float flock floor flower fluid flush fly foam focus fog foil
+  fold follow food foot force forest forget fork fortune forum forward fossil foster found
+  fox fragile frame frequent fresh friend fringe frog front frost frown frozen fruit fuel
+  fun funny furnace fury future gadget gain galaxy gallery game gap garage garbage garden
+  garlic garment gas gasp gate gather gauge gaze general genius genre gentle genuine gesture
+  ghost giant gift giggle ginger giraffe girl give glad glance glare glass glide glimpse globe
+  gloom glory glove glow glue goat goddess gold good goose gorilla gospel gossip govern gown
+  grab grace grain grant grape grass gravity great green grid grief grit grocery group grow
+  grunt guard guess guide guilt guitar gun gym habit hair half hammer hamster hand happy harbor
+  hard harsh harvest hat have hawk hazard head health heart heavy hedgehog height hello helmet
+  help hen hero hidden high hill hint hip hire history hobby hockey hold hole holiday hollow
+  home honey hood hope horn horror horse hospital host hotel hour hover hub huge human humble
+  humor hundred hungry hunt hurdle hurry hurt husband hybrid ice icon idea identify idle ignore
+  ill illegal illness image imitate immense immune impact impose improve impulse inch include
+  income increase index indicate indoor industry infant inflict inform inhale inherit initial
+  inject injury inmate inner innocent input inquiry insane insect inside inspire install intact
+  interest into invest invite involve iron island isolate issue item ivory jacket jaguar jar
+  jazz jealous jeans jelly jewel job join joke journey joy judge juice jump jungle junior
+  junk just kangaroo keen keep ketchup key kick kid kidney kind kingdom kiss kit kitchen kite
+  kitten kiwi knee knife knock know lab label labor ladder lady lake lamp language laptop
+  large later latin laugh laundry lava law lawn lawsuit layer lazy leader leaf learn leave
+  lecture left leg legal legend leisure lemon lend length lens leopard lesson letter level
+  liar liberty library license life lift light like limb limit link lion liquid list little
+  live lizard load loan lobster local lock logic lonely long loop lottery loud lounge love
+  loyal lucky luggage lumber lunar lunch luxury lyrics machine mad magic magnet maid mail
+  main major make mammal man manage mandate mango mansion manual maple marble march margin
+  marine market marriage mask mass master match material math matrix matter maximum maze meadow
+  mean measure meat mechanic medal media melody melt member memory mention menu mercy merge
+  merit merry mesh message metal method middle midnight milk million mimic mind minimum minor
+  minute miracle mirror misery miss mistake mix mixed mixture mobile model modify mom moment
+  monitor monkey monster month moon moral more morning mosquito mother motion motor mountain
+  mouse move movie much muffin mule multiply muscle museum mushroom music must mutual myself
+  mystery myth naive name napkin narrow nasty nation nature near neck need negative neglect
+  neither nephew nerve nest net network neutral never news next nice night noble noise nominee
+  noodle normal north nose notable note nothing notice novel now nuclear number nurse nut
+  oak obey object oblige obscure observe obtain obvious occur ocean october odor off offer
+  office often oil okay old olive olympic omit once one onion online only open opera opinion
+  oppose option orange orbit orchard order ordinary organ orient original orphan ostrich other
+  outdoor outer output outside oval oven over own owner oxygen oyster ozone pact paddle page
+  pair palace palm panda panel panic panther paper parade parent park parrot party pass patch
+  path patient patrol pattern pause pave payment peace peanut pear peasant pelican pen penalty
+  pencil people pepper perfect permit person pet phone photo phrase physical piano picnic
+  picture piece pig pigeon pill pilot pink pioneer pipe pistol pitch pizza place planet plastic
+  plate play please pledge pluck plug plunge poem poet point polar pole police pond pony pool
+  popular portion position possible post potato pottery poverty powder power practice praise
+  predict prefer prepare present pretty prevent price pride primary print priority prison
+  private prize problem process produce profit program project promote proof property prosper
+  protect proud provide public pudding pull pulp pulse pumpkin punch pupil puppy purchase
+  purity purpose purse push put puzzle pyramid quality quantum quarter question quick quit
+  quiz quote rabbit raccoon race rack radar radio rail rain raise rally ramp ranch random
+  range rapid rare rate rather raven raw razor ready real reason rebel rebuild recall receive
+  recipe record recycle reduce reflect reform refuse region regret regular reject relax release
+  relief rely remain remember remind remove render renew rent reopen repair repeat replace
+  report require rescue resemble resist resource response result retire retreat return reunion
+  reveal review reward rhythm rib ribbon rice rich ride ridge rifle right rigid ring riot
+  ripple risk ritual rival river road roast robot robust rocket romance roof rookie room rose
+  rotate rough round route royal rubber rude rug rule run runway rural sad saddle sadness
+  safe sail salad salmon salon salt salute same sample sand satisfy satoshi sauce sausage
+  save say scale scan scare scatter scene scheme school science scissors scorpion scout scrap
+  screen script scrub sea search season seat second secret section security seed seek segment
+  select sell seminar senior sense sentence series service session settle setup seven shadow
+  shaft shallow share shed shell sheriff shield shift shine ship shiver shock shoe shoot shop
+  short shoulder shove shrimp shrug shuffle shy sibling sick side siege sight sign silent
+  silk silly silver similar simple since sing siren sister situate six size skate sketch ski
+  skill skin skirt skull slab slam sleep slender slice slide slight slim slogan slot slow
+  slush small smart smile smoke smooth snack snake snap sniff snow soap soccer social sock
+  soda soft solar soldier solid solution solve someone song soon sorry sort soul sound soup
+  source south space spare spatial spawn speak special speed spell spend sphere spice spider
+  spike spin spirit split spoil sponsor spoon sport spot spray spread spring spy square squeeze
+  squirrel stable stadium staff stage stairs stamp stand start state stay steak steel stem
+  step stereo stick still sting stock stomach stone stool story stove strategy street strike
+  strong struggle student stuff stumble style subject submit subway success such sudden suffer
+  sugar suggest suit summer sun sunny sunset super supply supreme sure surface surge surprise
+  surround survey suspect sustain swallow swamp swap swarm swear sweet swift swim swing switch
+  sword symbol symptom syrup system table tackle tag tail talent talk tank tape target task
+  taste tattoo taxi teach team tell ten tenant tennis tent term test text thank that theme
+  then theory there they thing this thought three thrive throw thumb thunder ticket tide tiger
+  tilt timber time tiny tip tired tissue title toast tobacco today toddler toe together toilet
+  token tomato tomorrow tone tongue tonight tool tooth top topic topple torch tornado tortoise
+  toss total tourist toward tower town toy track trade traffic tragic train transfer trap
+  trash travel tray treat tree trend trial tribe trick trigger trim trip trophy trouble truck
+  true truly trumpet trust truth try tube tuition tumble tuna tunnel turkey turn turtle twelve
+  twenty twice twin twist two type typical ugly umbrella unable unaware uncle uncover under
+  undo unfair unfold unhappy uniform unique unit universe unknown unlock until unusual unveil
+  update upgrade uphold upon upper upset urban urge usage use used useful useless usual utility
+  vacant vacuum vague valid valley valve van vanish vapor various vast vault vehicle velvet
+  vendor venture venue verb verify version very vessel veteran viable vibrant vicious victory
+  video view village vintage violin virtual virus visa visit visual vital vivid vocal voice
+  void volcano volume vote voyage wage wagon wait walk wall walnut want warfare warm warrior
+  wash wasp waste water wave way wealth weapon wear weasel weather web wedding weekend weird
+  welcome west wet whale what wheat wheel when where whip whisper wide width wife wild will
+  win window wine wing wink winner winter wire wisdom wise wish witness wolf woman wonder
+  wood wool word work world worry worth wrap wreck wrestle wrist write wrong yard year yellow
+  you young youth zebra zero zone zoo
+)
+
+# <full commit id, lowercase hex> -> the eight words, space-separated.
+# Fails on anything shorter than a SHA-1 id or not plain hex: a short id is
+# exactly what the words must never stand for.
+commit_words() {
+  local id="$1" acc=0 nbits=0 i=0 out=""
+  case "$id" in ''|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#id}" -ge 40 ] || return 1
+  if [ "${#PINNED_WORDS[@]}" -ne 2048 ]; then
+    echo "pinned: internal error -- the word list holds ${#PINNED_WORDS[@]} words, not 2048" >&2
+    return 1
+  fi
+  local n=0
+  while [ "$n" -lt 8 ]; do
+    acc=$(( (acc << 4) | 16#${id:i:1} ))
+    nbits=$((nbits + 4)) i=$((i + 1))
+    if [ "$nbits" -ge 11 ]; then
+      nbits=$((nbits - 11))
+      out="${out:+$out }${PINNED_WORDS[$(( (acc >> nbits) & 2047 ))]}"
+      acc=$(( acc & ((1 << nbits) - 1) ))
+      n=$((n + 1))
+    fi
+  done
+  printf '%s\n' "$out"
+}
+
+# -> the gap's position, 1 to 6, from the kernel's random source (as the
+# elevation nonce is drawn), never $RANDOM: a predictable gap lets whoever
+# fakes the words line know which word the human will type. 2^32 mod 6 = 4,
+# so the bias is below one in a billion.
+draw_gap() {
+  local n
+  n="$(LC_ALL=C od -An -N4 -tu4 /dev/urandom | LC_ALL=C tr -d ' \n')"
+  case "$n" in
+    ''|*[!0-9]*) echo "pinned: cannot read /dev/urandom for the words gap" >&2; return 1 ;;
+  esac
+  printf '%s\n' $(( n % 6 + 1 ))
+}
+
+# <eight words> <gap position 1..6, or 0 for none> -> the `words:` row.
+# Two groups of three, then the two optional words dim.
+print_words_row() {
+  local gap="$2" w i=0 row=""
+  for w in $1; do
+    i=$((i + 1))
+    [ "$i" -ne "$gap" ] || w="${C_DIM}______${C_OFF}"
+    case "$i" in
+      1) row="$w" ;;
+      4) row="$row  $w" ;;
+      7) row="$row  $C_DIM$w" ;;
+      *) row="$row $w" ;;
+    esac
+  done
+  printf '%swords:%s      %s%s\n' "$C_DIM" "$C_OFF" "$row" "$C_OFF"
+}
+
+# <answer, already lowercase> -> 0 when it is one word of the list.
+is_list_word() {
+  case "$1" in ''|*[!a-z]*) return 1 ;; esac
+  case " ${PINNED_WORDS[*]} " in *" $1 "*) return 0 ;; esac
+  return 1
 }
 
 # The root-side ceremony announces itself: everything below this line is
@@ -4102,6 +4364,18 @@ do_approve() {
       # trust is being extended or withdrawn.
       ancestry_floor "$repo" "$old_hash" "$hash" "$decl_class" || exit 1
 
+      # Words only where accepting by them is offered (see "accept by
+      # words"): a forward move from a pin, outside the --step walk. The gap
+      # is drawn here, once per review; a failed draw aborts (set -e) rather
+      # than showing words with no gap.
+      local words="" gap=0 gap_word="" by_words=0 wl
+      if [ -n "$old_hash" ] && [ "$ancestry_cls" = forward ] && [ "$step" -eq 0 ]; then
+        words="$(commit_words "$hash")"
+        gap="$(draw_gap)"
+        wl=($words)
+        gap_word="${wl[$((gap - 1))]}"
+      fi
+
       printf '%srepo:%s       %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_B$C_MAG" "${repo##*/}" "$C_OFF" \
         "$C_DIM" "$repo" "$C_OFF"
       if [ -n "$sel_tag" ]; then
@@ -4112,6 +4386,7 @@ do_approve() {
         printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
           "$C_DIM" "$(sanitize_display "$(sgit log -1 --format=%s "$hash")")" "$C_OFF"
       fi
+      [ -z "$words" ] || print_words_row "$words" "$gap"
       if [ -n "$old_hash" ]; then
         printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
         if [ -n "$ancestry_mb" ]; then
@@ -4136,7 +4411,8 @@ do_approve() {
         # `n` is the one other answer, and it is fail-closed -- decline
         # without looking, pin unchanged (logged as skip, counted as
         # declined). End of input takes the same path, for the same reason.
-        # Approving without the diff stays impossible.
+        # Approving without the diff takes the word missing from the words
+        # row, and only where that row is shown; the y/N below still follows.
         #
         # The parenthesis states the delta's size, over the SAME ranges the
         # listing headings just above name: a forward move counts what
@@ -4169,19 +4445,27 @@ do_approve() {
           "$C_CYN" "$old_hash" "$hash" "$C_OFF$C_B" \
           "$gate_size" "$C_OFF" "$C_BLU" "$C_OFF" \
           "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
-        if ! gate_answer "$gate_line"; then
+        # The typed-word answer goes last in the tail, after the decline.
+        [ -z "$words" ] || gate_line="${gate_line%" "}$C_DIM · or type the missing word$C_OFF "
+        local gate_rc=0
+        gate_answer "$gate_line" "$gap_word" || gate_rc=$?
+        if [ "$gate_rc" -ne 0 ] && [ "$gate_rc" -ne 3 ]; then
           printf '%sskipped; pin unchanged%s\n' "$C_YEL" "$C_OFF"
           log_action approve "$repo" "$hash" skip
           if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
           exit 2
         fi
-        printf '%s--- diff %.10s..%.10s (from object store) ---%s\n' "$C_B" "$old_hash" "$hash" "$C_OFF"
-        # Capture first so a git failure aborts (set -e) BEFORE anything is
-        # shown as reviewable; then page. Early pager quit (SIGPIPE) is the
-        # reviewer's own act -- the diff itself already succeeded.
-        diff_out="$(sgit_diff "$old_hash" "$hash")"
-        printf '%s\n' "$diff_out" | page || true
-        print_end_rule diff "$totals"
+        if [ "$gate_rc" -eq 3 ]; then
+          by_words=1
+        else
+          printf '%s--- diff %.10s..%.10s (from object store) ---%s\n' "$C_B" "$old_hash" "$hash" "$C_OFF"
+          # Capture first so a git failure aborts (set -e) BEFORE anything is
+          # shown as reviewable; then page. Early pager quit (SIGPIPE) is the
+          # reviewer's own act -- the diff itself already succeeded.
+          diff_out="$(sgit_diff "$old_hash" "$hash")"
+          printf '%s\n' "$diff_out" | page || true
+          print_end_rule diff "$totals"
+        fi
       elif [ "$trust" -eq 1 ]; then
         printf '%spinned:%s     (none)\n' "$C_DIM" "$C_OFF"
         echo
@@ -4213,7 +4497,9 @@ do_approve() {
         print_end_rule diff "$totals"
       fi
     fi
-    echo
+    # After a pager the confirmation is its own block; after a typed word it
+    # follows the gate line directly, as the answer to it.
+    [ "${by_words:-0}" -eq 1 ] || echo
 
     local answer
     printf '%sapprove %s%s%s %s%s%s? [%sy%s/%sN%s]%s ' "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
@@ -4263,7 +4549,11 @@ do_approve() {
     else
       rm -f "$slot/release"
     fi
-    log_action approve "$repo" "$hash"
+    if [ "${by_words:-0}" -eq 1 ]; then
+      log_action approve "$repo" "$hash" words
+    else
+      log_action approve "$repo" "$hash"
+    fi
     n_approved=$((n_approved + 1))
   done
 
@@ -5900,6 +6190,55 @@ do_rev() {
   printf '%s\n' "$name"
 }
 
+# ---- words -----------------------------------------------------------------
+
+# What the commit's author puts in a reply: the full id, the commits since
+# the pin, and the words the review will show for that commit. Unprivileged
+# and read-only, through sgit like everything else. It takes the rev
+# explicitly and never defaults to HEAD: the author names the id their own
+# commit printed, so a commit planted on top since then shows up as a
+# different HEAD here and as different words at the review.
+do_words() {
+  [ $# -eq 2 ] || usage
+  resolve_repo "$1"
+  local rev="$2" hash head_hash old_hash rec_rc=0 cls=""
+  case "$rev" in -*|'') echo "invalid rev: $rev" >&2; exit 1 ;; esac
+  hash="$(sgit rev-parse -q --verify "${rev}^{commit}")" \
+    || { echo "not a commit in $repo: $rev" >&2; exit 1; }
+  read_rev "$default_slot" "$repo" >/dev/null 2>&1 || rec_rc=$?
+  [ "$rec_rc" -ne 1 ] || read_rev "$default_slot" "$repo" >/dev/null || exit 1
+  old_hash="$REC_DIGEST"
+  head_hash="$(sgit rev-parse 'HEAD^{commit}')"
+  [ -z "$old_hash" ] || cls="$(ancestry_class "$repo" "$old_hash" "$hash")"
+
+  printf '%srepo:%s       %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_B$C_MAG" "${repo##*/}" "$C_OFF" \
+    "$C_DIM" "$repo" "$C_OFF"
+  printf '%scommit:%s     %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
+    "$C_DIM" "$(sanitize_display "$(sgit log -1 --format=%s "$hash")")" "$C_OFF"
+  if [ "$head_hash" != "$hash" ]; then
+    printf '%sgit HEAD:%s   %s%s%s  %s✗ not this commit; a review of HEAD shows other words%s\n' \
+      "$C_DIM" "$C_OFF" "$C_CYN" "$head_hash" "$C_OFF" "$C_YEL" "$C_OFF"
+  fi
+  if [ -z "$old_hash" ]; then
+    printf '%spinned:%s     (none)\n' "$C_DIM" "$C_OFF"
+  else
+    printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
+  fi
+  # The words only where the review offers them; anywhere else the review
+  # reads, and words in a reply would be words nobody can check.
+  case "$cls" in
+    forward)  print_words_row "$(commit_words "$hash")" 0 ;;
+    '')       printf '%swords:%s      (none: a first approval reads the full tree)\n' "$C_DIM" "$C_OFF" ;;
+    equal)    printf '%swords:%s      (none: already pinned)\n' "$C_DIM" "$C_OFF" ;;
+    *)        printf '%swords:%s      (none: a %s move is read, not accepted by words)\n' \
+                "$C_DIM" "$C_OFF" "$cls" ;;
+  esac
+  if [ "$cls" = forward ]; then
+    echo
+    print_ancestry_listing forward "$old_hash" "$hash" "" rule ''
+  fi
+}
+
 # ---- status ----------------------------------------------------------------
 
 do_status() {
@@ -7048,6 +7387,7 @@ case "$action" in
   verify)    do_verify "$@" ;;
   cat)       do_cat "$@" ;;
   rev)       do_rev "$@" ;;
+  words)     do_words "$@" ;;
   sign)      do_sign "$@" ;;
   signer)    do_signer "$@" ;;
   ignorable) do_ignorable "$@" ;;

@@ -47,6 +47,7 @@ complete -c pinned -n __pinned_needs_action -a declare -d '(sudo) Declare the re
 complete -c pinned -n __pinned_needs_action -a verify -d 'File-pin verdict, exit-code contract for gates'
 complete -c pinned -n __pinned_needs_action -a cat -d 'The approved bytes, from root custody'
 complete -c pinned -n __pinned_needs_action -a rev -d 'The pinned rev or the declared release name'
+complete -c pinned -n __pinned_needs_action -a words -d 'The words a review shows for a commit'
 complete -c pinned -n __pinned_needs_action -a sign -d 'Create a signed tag at the pinned hash'
 complete -c pinned -n __pinned_needs_action -a signer -d 'Allowed-signers ceremonies and lookups'
 complete -c pinned -n __pinned_needs_action -a ignorable -d 'Ignorable-JSON-key grants'
@@ -92,9 +93,10 @@ complete -c pinned -n '__pinned_action_is verify' -l baseline -r -F -d 'Your own
 complete -c pinned -n '__pinned_action_is show' -s a -l algo -x -a "$algos" -d 'Hash algorithm'
 complete -c pinned -n '__pinned_action_is show' -s l -l length -x -d 'Output length in bits (blake3 only)'
 
-# --- rev, sign ----------------------------------------------------------------
+# --- rev, words, sign ---------------------------------------------------------
 complete -c pinned -n '__pinned_action_is rev' -a '(__fish_complete_directories)'
 complete -c pinned -n '__pinned_action_is rev' -l release -d 'Print the declared release name instead'
+complete -c pinned -n '__pinned_action_is words' -a '(__fish_complete_directories)'
 complete -c pinned -n '__pinned_action_is sign; and __pinned_argc_is 2' -a '(__fish_complete_directories)'
 
 # --- signer -------------------------------------------------------------------

@@ -51,6 +51,11 @@ the nix module; a manual install copies it onto `fish_complete_path` / `fpath`.
                                       message under its subject in the
                                       commits listing; the default is the
                                       subject only)
+                                      a forward move from a pin also shows
+                                      the commit's words with one left out;
+                                      typing the missing word skips the
+                                      diff and goes to the y/N (man pinned,
+                                      "Accepting by words")
     pinned review <repo> --signed-tag <tag> [--signed-tag <tag> ...] [--tag <tag>]
                                       signature gate: verify each signed tag,
                                       all naming one commit -> pin (--tag:
@@ -132,6 +137,10 @@ the nix module; a manual install copies it onto `fish_complete_path` / `fpath`.
     pinned ignorable list             machine tier, user tier, and the
                                       effective intersection, with scopes
     pinned status <repo|file>         record vs live state
+    pinned words <repo> <rev>         the words a review shows for <rev>,
+                                      with its full id and the commits
+                                      since the pin (for whoever made the
+                                      commit to hand to the reviewer)
     pinned show <file|repo> [--algo <name>] [--length <bits>]
                                       trusted re-display, no record: a
                                       file is one read, shown and hashed;

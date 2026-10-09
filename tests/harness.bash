@@ -188,9 +188,10 @@ need '^  logger -t pinned '                                 1 'audit-log call'
 need '</dev/tty'                                            19 'tty reads (13 confirms + the shared gate + 4 inside drain_tty + the listing width)'
 need '^ *read -r answer </dev/tty$'                         13 'ceremony tty reads'
 need '^    if ! read -r answer </dev/tty; then$'             1 'the shared gate tty read'
-need '^gate_answer() { # <rendered gate line>$' 1 'the shared gate helper'
+need '^gate_answer() { # <rendered gate line> \[<the missing word>\]$' 1 'the shared gate helper'
 need '^ *drain_tty$'                                        14 'a drain before every ceremony tty read'
 need '^  saved="\$(stty -g </dev/tty 2>/dev/null)" || return 0$' 1 'drain_tty entry'
+need '^  n="\$(LC_ALL=C od -An -N4 -tu4 /dev/urandom ' 1 'the words gap draw'
 need '^# ---- setup ---'                                    1 'library cut marker'
 need '^#!/bin/bash$'                                        1 'pinned shebang'
 # The preview stub's own anchors (see its construction below).
@@ -245,6 +246,10 @@ STUB_SED=(
     -e 's/^\( *\)chown -R "root:\$TREE_GRP".*/\1:/'
     -e 's/^\( *\)chown "root:\$TREE_GRP".*/\1:/'
     -e 's/^  logger -t pinned .*/  :/'
+    # 12. the words gap's random read -> $PINNED_TEST_GAP_N (default 0, so
+    #     the gap is the first word), so a fixture knows which word to type.
+    #     The real draw is tested from the source on its own (S23).
+    -e 's#^  n="\$(LC_ALL=C od -An -N4 -tu4 /dev/urandom .*#  n="${PINNED_TEST_GAP_N:-0}"#'
     # 11. drain_tty -> a no-op, BEFORE the tty strip below. Left to that
     #     strip the function would still be entered, and its `cat` would then
     #     read the harness's own stdin -- eating the very $ANS the ceremony
@@ -274,6 +279,7 @@ if ! grep -q '^drain_tty() {$' "$STUB" || ! grep -q '^  return 0$' "$STUB"; then
 fi
 if [ "$(grep -c 'if false; then' "$STUB")" != 2 ]; then say "STUB SED FAILED: elevation gates"; exit 2; fi
 if grep -q '^  logger -t pinned ' "$STUB"; then say "STUB SED FAILED: logger survives"; exit 2; fi
+if ! grep -q '^  n="\${PINNED_TEST_GAP_N:-0}"$' "$STUB"; then say "STUB SED FAILED: the words gap draw"; exit 2; fi
 if [ "$(head -n1 "$STUB")" != "#!$HARNESS_BASH" ]; then
   say "STUB SED FAILED: the stub shebang still reads $(head -n1 "$STUB")"; exit 2
 fi
@@ -4651,6 +4657,189 @@ if command -v zsh >/dev/null 2>&1; then
   assert_eq "$ZSH_ACTIONS" "$USAGE_ACTIONS" "zsh offers exactly the actions usage lists"
 else
   say "  (no zsh -- the zsh half is SKIPPED)"
+fi
+
+# ---------------------------------------------------------------------------
+say "S23: accept by words"
+# ---------------------------------------------------------------------------
+# The words row, the typed-word answer at the forward gate, `pinned words`,
+# and the gap's random source. The stub fixes the gap through
+# $PINNED_TEST_GAP_N (the draw's raw number, so the position is N % 6 + 1);
+# the real draw is exercised on its own below, straight from the source.
+
+# The embedded list is BIP39 English, byte for byte.
+run_probe eval 'printf "%s\n" "${PINNED_WORDS[@]}"'
+assert_eq "$(printf '%s\n' "$POUT" | wc -l | tr -d ' ')" 2048 "the word list holds 2048 words"
+assert_eq "$(printf '%s\n' "$POUT" | shasum -a 256 | awk '{print $1}')" \
+  2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda \
+  "the word list is BIP39 English (its published sha256)"
+
+# The derivation: 11 bits per word from the first hex digit on. The first
+# vector was cross-checked against an independent implementation.
+run_probe commit_words 383faeb5f6e535432e37131ce8edc1d47aad8952
+assert_eq "$POUT" "deal word pulp universe fashion pave rhythm tiny" "a known id gives its known words"
+run_probe commit_words 0000000000000000000000000000000000000000
+assert_eq "$POUT" "abandon abandon abandon abandon abandon abandon abandon abandon" "all-zero bits give the first word"
+run_probe commit_words ffffffffffffffffffffffffffffffffffffffff
+assert_eq "$POUT" "zoo zoo zoo zoo zoo zoo zoo zoo" "all-one bits give the last word"
+run_probe commit_words 383faeb5f6e535432e37131ce8edc1d47aad8952383faeb5f6e535432e37131c
+assert_eq "$POUT" "deal word pulp universe fashion pave rhythm tiny" "a SHA-256 id uses the same leading bits"
+run_probe commit_words 383faeb
+assert_exit "$RC" 1 "a short id gets no words"
+run_probe commit_words 383FAEB5F6E535432E37131CE8EDC1D47AAD8952
+assert_exit "$RC" 1 "an id that is not lowercase hex gets no words"
+
+# The real gap draw, from the source (the stub replaces its random read):
+# every position 1..6 occurs and nothing else does.
+sed -n '/^draw_gap() {$/,/^}$/p' "$SRC" > "$FIX/draw_gap.bash"
+GAPS="$("$HARNESS_BASH" -c '. "$1"; for _ in $(seq 600); do draw_gap; done' x "$FIX/draw_gap.bash" \
+  | LC_ALL=C sort | uniq -c | awk '{print $2}' | tr '\n' ' ')"
+assert_eq "$GAPS" "1 2 3 4 5 6 " "600 real draws land on every position 1..6 and nowhere else"
+assert_eq "$(grep -c '/dev/urandom' "$FIX/draw_gap.bash")" 2 "the draw reads /dev/urandom (and says so when it cannot)"
+assert_missing "$FIX/draw_gap.bash" 'RANDOM' "the draw never uses \$RANDOM"
+
+if [ "$GIT_OK" -eq 1 ]; then
+  REPO_W="$FIX/wordsfix"
+  mkdir -p "$REPO_W"
+  bgit "$REPO_W" init -q
+  printf 'w0\n' > "$REPO_W/w.txt"
+  bgit "$REPO_W" add w.txt; bgit "$REPO_W" commit -q -m "w0 base"
+  W_BASE="$(bgit "$REPO_W" rev-parse 'HEAD^{commit}')"
+  printf 'w1\n' > "$REPO_W/w.txt"
+  bgit "$REPO_W" commit -q -am "w1 next"
+  W_C1="$(bgit "$REPO_W" rev-parse 'HEAD^{commit}')"
+  W_SLOT="$(slot_of "$REPO_W")"
+  read -r W1 W2 W3 W4 W5 W6 W7 W8 <<<"$("$PROBE" commit_words "$W_C1")"
+
+  # --- the row and the gate -------------------------------------------------
+  # N=3 puts the gap at position 4: the first word of the second group.
+  seed_rev "$REPO_W" "$W_BASE"
+  ANS="$W4
+y
+"
+  PINNED_TEST_GAP_N=3 run_pinned review "$REPO_W"
+  assert_exit "$RC" 0 "the missing word, then y, approves"
+  assert_eq "$(rev_in "$W_SLOT/rev.git")" "$W_C1" "the pin moved to the reviewed commit"
+  assert_contains "$OUT" "words:      $W1 $W2 $W3  ______ $W5 $W6  $W7 $W8" \
+    "the row shows two groups of three, the gap at the drawn position, then two more"
+  assert_before "$OUT" "git HEAD:" "words:" "the words sit under the commit they stand for"
+  assert_before "$OUT" "words:" "pinned:     $W_BASE" "...and above the pin"
+  assert_contains "$OUT" "Enter open · n skip · or type the missing word" "the gate names the typed answer last"
+  assert_missing "$OUT" "--- diff " "the typed word skips the diff"
+  assert_contains "$OUT" "type the missing word approve " "the approve prompt follows the gate line directly"
+  assert_contains "$OUT" "✓ approved:" "the approval is confirmed as always"
+
+  # The answer is the whole word, case folded, spaces around it ignored.
+  seed_rev "$REPO_W" "$W_BASE"
+  ANS="  $(printf '%s' "$W4" | tr a-z A-Z)
+y
+"
+  PINNED_TEST_GAP_N=3 run_pinned review "$REPO_W"
+  assert_exit "$RC" 0 "the word in capitals with spaces around it still matches"
+  seed_rev "$REPO_W" "$W_BASE"
+  ANS="${W4%?}
+n
+"
+  PINNED_TEST_GAP_N=3 run_pinned review "$REPO_W"
+  assert_exit "$RC" 2 "a prefix of the word is not the word"
+  assert_eq "$(rev_in "$W_SLOT/rev.git")" "$W_BASE" "a declined review leaves the pin"
+
+  # Enter at the approve prompt still declines after a typed word.
+  seed_rev "$REPO_W" "$W_BASE"
+  ANS="$W4
+
+"
+  PINNED_TEST_GAP_N=3 run_pinned review "$REPO_W"
+  assert_exit "$RC" 2 "Enter at the confirmation declines, typed word or not"
+  assert_contains "$OUT" "aborted; pin unchanged" "the decline is the confirmation's own"
+
+  # A list word that is not the missing one says so, keeps the gap, and
+  # the right word still works after it.
+  if [ "$W4" = abandon ]; then WRONG=zoo; else WRONG=abandon; fi
+  seed_rev "$REPO_W" "$W_BASE"
+  ANS="$WRONG
+$W4
+y
+"
+  PINNED_TEST_GAP_N=3 run_pinned review "$REPO_W"
+  assert_exit "$RC" 0 "after a wrong word the right one still approves"
+  assert_eq "$(grep -c 'not the missing word' "$OUT")" 1 "a wrong list word is named as one"
+  assert_missing "$OUT" "not an answer" "...not as a typo"
+  assert_eq "$(grep -o 'or type the missing word' "$OUT" | wc -l | tr -d ' ')" 2 "the gate line comes back after it"
+
+  seed_rev "$REPO_W" "$W_BASE"
+  ANS="xyzzy
+n
+"
+  PINNED_TEST_GAP_N=3 run_pinned review "$REPO_W"
+  assert_exit "$RC" 2 "n still skips a words gate"
+  assert_contains "$OUT" "not an answer" "a non-word is not an answer"
+  assert_contains "$OUT" "skipped; pin unchanged" "the skip reads as before"
+
+  # Enter still opens the diff.
+  seed_rev "$REPO_W" "$W_BASE"
+  ANS='
+y
+'
+  PINNED_TEST_GAP_N=0 run_pinned review "$REPO_W"
+  assert_exit "$RC" 0 "Enter at a words gate opens the diff as before"
+  assert_contains "$OUT" "--- diff " "the diff is shown"
+  assert_contains "$OUT" "words:      ______ $W2 $W3" "N=0 puts the gap first"
+
+  # End of input declines.
+  seed_rev "$REPO_W" "$W_BASE"
+  ANS=""
+  PINNED_TEST_GAP_N=3 run_pinned review "$REPO_W"
+  assert_exit "$RC" 2 "end of input at a words gate skips"
+
+  # --- where no words go ----------------------------------------------------
+  # A first approval keeps the full tree, and a word is not an answer there.
+  # (The slot is moved aside, not deleted: the next case seeds it again.)
+  mv "$W_SLOT" "$FIX/wordsfix-slot.aside"
+  ANS="$W4
+n
+"
+  PINNED_TEST_GAP_N=3 run_pinned review "$REPO_W"
+  assert_exit "$RC" 2 "a first approval cannot be accepted by a word"
+  assert_missing "$OUT" "words:" "a first approval shows no words"
+  assert_contains "$OUT" "not an answer" "a word at a gate without words is not an answer"
+
+  # --step reads every commit; it shows no words.
+  seed_rev "$REPO_W" "$W_BASE"
+  ANS="n
+"
+  PINNED_TEST_GAP_N=3 run_pinned review "$REPO_W" --step
+  assert_missing "$OUT" "words:" "the --step walk shows no words"
+
+  # --- pinned words ---------------------------------------------------------
+  seed_rev "$REPO_W" "$W_BASE"
+  ANS=""
+  run_pinned words "$REPO_W" "${W_C1:0:7}"
+  assert_exit "$RC" 0 "words on a forward commit exits 0"
+  assert_contains "$OUT" "commit:     $W_C1" "a short rev is shown as the full id"
+  assert_contains "$OUT" "words:      $W1 $W2 $W3  $W4 $W5 $W6  $W7 $W8" "all eight words, no gap"
+  assert_contains "$OUT" "--- commits since last approval ---" "the listing since the pin"
+  assert_missing "$OUT" "git HEAD:" "no HEAD row while HEAD is this commit"
+
+  printf 'w2\n' > "$REPO_W/w.txt"
+  bgit "$REPO_W" commit -q -am "w2 planted"
+  run_pinned words "$REPO_W" "$W_C1"
+  assert_contains "$OUT" "not this commit; a review of HEAD shows other words" \
+    "a commit on top shows as a different HEAD"
+  bgit "$REPO_W" reset -q --hard "$W_C1"
+
+  seed_rev "$REPO_W" "$W_C1"
+  run_pinned words "$REPO_W" "$W_C1"
+  assert_contains "$OUT" "(none: already pinned)" "an already-pinned commit has no words"
+  run_pinned words "$REPO_W" "$W_BASE"
+  assert_contains "$OUT" "(none: a backward move is read" "a backward move has no words"
+  mv "$W_SLOT" "$FIX/wordsfix-slot.aside2"
+  run_pinned words "$REPO_W" "$W_C1"
+  assert_contains "$OUT" "(none: a first approval reads the full tree)" "a first approval has no words"
+  run_pinned words "$REPO_W"
+  assert_exit "$RC" 1 "words needs the rev; it never defaults to HEAD"
+  run_pinned words "$REPO_W" no-such-rev
+  assert_exit "$RC" 1 "an unknown rev is refused"
 fi
 
 # ---------------------------------------------------------------------------

@@ -28,6 +28,7 @@ _pinned() {
         'verify:file-pin verdict, exit-code contract for gates'
         'cat:the approved bytes, from root custody'
         'rev:the pinned rev or the declared release name'
+        'words:the words a review shows for a commit'
         'sign:create a signed tag at the pinned hash'
         'signer:allowed-signers ceremonies and lookups'
         'ignorable:ignorable-JSON-key grants'
@@ -95,6 +96,11 @@ _pinned() {
           _arguments \
             '--release[print the declared release name instead]' \
             '1:repository:_directories' && ret=0
+          ;;
+        words)
+          _arguments \
+            '1:repository:_directories' \
+            '2:commit id or tag: ' && ret=0
           ;;
         sign)
           _arguments \
