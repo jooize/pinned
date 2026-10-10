@@ -9,6 +9,11 @@
 #                                              --backward/--diverged: declare a pin
 #                                              move that is not forward over the
 #                                              commit graph -- reality must conform)
+#   pinned review <repo> [--tag <t>] --words <w1-..-w6>
+#                                              approve a forward move without the
+#                                              diff when the commit's six words
+#                                              match; the sudo authentication is
+#                                              the consent (no tty, no y/N)
 #   pinned review <repo> --signed-tag <t> [--signed-tag ..] [--tag <t>]
 #                                              verify each signed tag -> approve -> pin
 #                                              (repeat --signed-tag = threshold
@@ -46,9 +51,9 @@
 #   pinned ignorable add|remove|list          which keys a ceremony may declare
 #                                             ignored, and where (the policy)
 #   pinned status <repo|file>                 record vs live state
-#   pinned words <repo> <rev>                 the words a review shows for <rev>,
-#                                             with its full id and the commits
-#                                             since the pin
+#   pinned words <repo> <rev>                 the words for <rev>, its full id,
+#                                             the commits since the pin, and the
+#                                             review --words line that approves it
 #   pinned setup [--yes]                      provision sudoers digest pin; self-install
 #
 # review, setup, tombstone, rekey, declare, signer add/remove and ignorable
@@ -320,7 +325,7 @@ usage: pinned <action> [args]
   verify [options] <path>        file-pin verdict; quiet exit-code contract for gates
   cat <path>                     the approved bytes, from root custody; fail-closed
   rev <repo> [--release]         the pinned rev (or the declared release name); fail-closed
-  words <repo> <rev>             the words a review shows for a commit, with its full id
+  words <repo> <rev>             a commit's words and the review --words line that approves it
   sign <repo> <tag>              create a signed tag at the pinned hash
   signer add|remove|list ...     (sudo) allowed-signers ceremonies
   signer path [--repo <repo>]    the allowed-signers file a signed tag verifies against
@@ -658,11 +663,8 @@ drain_tty() {
 # decline means for the batch it sits in. The gate line arrives already
 # rendered (printf -v at the call site), so per-site colors and counts stay
 # where they are composed and this function never re-parses its own display.
-gate_answer() { # <rendered gate line> [<the missing word>]
-  # 0 = open (Enter, y, yes), 1 = decline (n, no, end of input), 3 = the
-  # missing word, typed. Only a gate that shows a words gap passes the word,
-  # so every other gate keeps its two answers and never returns 3.
-  local line="$1" want="${2:-}" answer
+gate_answer() { # <rendered gate line>
+  local line="$1" answer
   printf '%s' "$line"
   while :; do
     drain_tty
@@ -675,21 +677,6 @@ gate_answer() { # <rendered gate line> [<the missing word>]
       ''|y|Y|yes) return 0 ;;
       n|N|no) return 1 ;;
     esac
-    # The whole word, case folded; read has already trimmed the spaces
-    # around it. No prefix matching: the four-letter uniqueness of the list
-    # is a property of the list, not a promise to the human.
-    if [ -n "$want" ]; then
-      answer="$(ascii_fold "$answer")"
-      [ "$answer" != "$want" ] || return 3
-      # A word from the list that does not fill the gap is the one answer
-      # that can mean "the words differ": named as such, never folded into
-      # `not an answer`. The gap stays where it was, so a typo costs one
-      # more try, and each try still needs the right word.
-      if is_list_word "$answer"; then
-        printf '%snot the missing word%s\n%s' "$C_YEL" "$C_OFF" "$line"
-        continue
-      fi
-    fi
     # Yellow, the attention role: this is the one line the human has to
     # notice, because they just answered wrong. Not red -- a correction is
     # not a refusal, and nothing has failed. The gate line follows again, so
@@ -703,28 +690,27 @@ gate_answer() { # <rendered gate line> [<the missing word>]
   done
 }
 
-# ---- accept by words -------------------------------------------------------
-# A forward review can be accepted without reading its diff when the human
-# already holds the commit's words from somewhere this checkout cannot write
-# (the reply of whoever made the commit, in another tab). The words are the
-# full commit id read as bits from its first hex digit, 11 bits per word:
-# six required words cover 66 bits (years of hashing to match on a rented
+# ---- approve by words ------------------------------------------------------
+# A forward review can approve without the diff when whoever made the commit
+# names its words on the command line: `review <repo> --words w1-w2-...-w6`.
+# The words are the full commit id read as bits from its first hex digit,
+# 11 bits per word; six cover 66 bits (years of hashing to match on a rented
 # GPU fleet, against an attacker who can only start once the commit exists
-# and must finish before the review), two optional ones 22 more. The id
-# alone is enough: it hashes the tree and the parents, so any change in the
-# range changes the words.
+# and must finish before the review). The id alone is enough: it hashes the
+# tree and the parents, so any change in the range changes the words.
 #
-# The review prints the words with ONE of the first six left out as a gap,
-# at a position drawn fresh for every review (draw_gap). Typing the missing
-# word is the gate's third answer: it skips the pager and lands on the same
-# `approve ...? [y/N]`, so a stray key still never approves. The typed word
-# is the 11 bits pinned checks; the five visible words are the human's to
-# compare. A process that can rewrite the tab's text can fake both, the same
-# as it can fake the diff -- the words add no new weakness against it.
+# The root side derives the words from the commit it resolved and compares
+# all six. A match approves with no diff and no y/N: the consent is the sudo
+# authentication, whose dialog (sudowhat) shows this argv, words included,
+# for the human to compare with the reply that named them. A mismatch
+# refuses. The pre-sudo half moves to / and names the repo by its full path,
+# so the dialog's directory row costs one character and the command keeps
+# the room. The words exist for a commit the human watched being made; any
+# other time the review reads, as it always did.
 #
-# Words appear only on a forward move from an existing pin (unsigned
-# release tags included); a first approval, a backward or diverged move, a
-# signed tag and the --step walk keep reading.
+# Words apply only to a forward move from an existing pin (an unsigned
+# release tag included); a first approval, a backward or diverged move, a
+# signed tag and the --step walk refuse them.
 #
 # The word list is BIP39 English (2048 words, no two sharing their first
 # four letters), from bitcoin/bips bip-0039/english.txt, MIT licensed
@@ -881,7 +867,7 @@ PINNED_WORDS=(
   you young youth zebra zero zone zoo
 )
 
-# <full commit id, lowercase hex> -> the eight words, space-separated.
+# <full commit id, lowercase hex> -> the six words, space-separated.
 # Fails on anything shorter than a SHA-1 id or not plain hex: a short id is
 # exactly what the words must never stand for.
 commit_words() {
@@ -893,7 +879,7 @@ commit_words() {
     return 1
   fi
   local n=0
-  while [ "$n" -lt 8 ]; do
+  while [ "$n" -lt 6 ]; do
     acc=$(( (acc << 4) | 16#${id:i:1} ))
     nbits=$((nbits + 4)) i=$((i + 1))
     if [ "$nbits" -ge 11 ]; then
@@ -906,41 +892,39 @@ commit_words() {
   printf '%s\n' "$out"
 }
 
-# -> the gap's position, 1 to 6, from the kernel's random source (as the
-# elevation nonce is drawn), never $RANDOM: a predictable gap lets whoever
-# fakes the words line know which word the human will type. 2^32 mod 6 = 4,
-# so the bias is below one in a billion.
-draw_gap() {
-  local n
-  n="$(LC_ALL=C od -An -N4 -tu4 /dev/urandom | LC_ALL=C tr -d ' \n')"
-  case "$n" in
-    ''|*[!0-9]*) echo "pinned: cannot read /dev/urandom for the words gap" >&2; return 1 ;;
-  esac
-  printf '%s\n' $(( n % 6 + 1 ))
-}
-
-# <eight words> <gap position 1..6, or 0 for none> -> the `words:` row.
-# Two groups of three, then the two optional words dim.
+# <six words> -> the `words:` row, two groups of three.
 print_words_row() {
-  local gap="$2" w i=0 row=""
+  local w i=0 row=""
   for w in $1; do
     i=$((i + 1))
-    [ "$i" -ne "$gap" ] || w="${C_DIM}______${C_OFF}"
     case "$i" in
       1) row="$w" ;;
       4) row="$row  $w" ;;
-      7) row="$row  $C_DIM$w" ;;
       *) row="$row $w" ;;
     esac
   done
-  printf '%swords:%s      %s%s\n' "$C_DIM" "$C_OFF" "$row" "$C_OFF"
+  printf '%swords:%s      %s\n' "$C_DIM" "$C_OFF" "$row"
 }
 
-# <answer, already lowercase> -> 0 when it is one word of the list.
+# <word> -> 0 when it is one word of the list, lowercase as the list is.
 is_list_word() {
   case "$1" in ''|*[!a-z]*) return 1 ;; esac
   case " ${PINNED_WORDS[*]} " in *" $1 "*) return 0 ;; esac
   return 1
+}
+
+# <--words argument> -> 0 when it is six list words joined by single
+# hyphens, the one spelling the root side compares against. Shape only:
+# whether they are THIS commit's words is the root side's question.
+valid_words_arg() {
+  local w ws
+  case "$1" in ''|-*|*-|*--*) return 1 ;; esac
+  # IFS for the read alone: is_list_word joins the list on IFS.
+  IFS=- read -r -a ws <<<"$1"
+  [ "${#ws[@]}" -eq 6 ] || return 1
+  for w in "${ws[@]}"; do
+    is_list_word "$w" || return 1
+  done
 }
 
 # The root-side ceremony announces itself: everything below this line is
@@ -3391,7 +3375,9 @@ elevation_cmd_disp() { # elev action args...
     esac
   done
 
-  local out="${C_B}sudo${C_OFF} -- $(prog_disp "$elev") ${act}${lead:+ $lead}"
+  # SUDO_K=1 for the --words exec, which runs `sudo -k --`: the line shown
+  # is the line run, option for option.
+  local out="${C_B}sudo${C_OFF}${SUDO_K:+ -k} -- $(prog_disp "$elev") ${act}${lead:+ $lead}"
   # The flag that opens a group for this verb, if any. review is the one verb
   # that takes repeated per-subject groups (--file, then that file's
   # --baseline and --ignore-json-key); every other verb has a flat flag list
@@ -3606,6 +3592,7 @@ case "$action" in
       if [ "$action" = "review" ]; then
         preview_repos=() preview_tag="" skip_next=0 want_tag=0 file_mode=0 have_ev=0
         preview_step=0 preview_trust=0 preview_signed=0 preview_decl=""
+        preview_words="" want_words=0
         # Empty or the word the listing reads, like preview_decl's class.
         preview_msg=""
         # Counted here rather than re-derived at the gate: the gate promises a
@@ -3615,9 +3602,13 @@ case "$action" in
         preview_files=0 preview_todo=0
         for a in "$@"; do
           if [ "$want_tag" -eq 1 ]; then preview_tag="$a"; want_tag=0; continue; fi
+          if [ "$want_words" -eq 1 ]; then preview_words="$a"; want_words=0; continue; fi
           if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
           case "$a" in
             --signed-tag) have_ev=1; preview_signed=1; skip_next=1 ;;
+            # Evidence, and the one review that runs with no terminal: the
+            # sudo dialog showing this argv is its consent (below).
+            --words) have_ev=1; want_words=1 ;;
             --file) file_mode=1; preview_files=$((preview_files + 1)); skip_next=1 ;;
             --baseline|--baseline-store|--algo) skip_next=1 ;;
             --tag) have_ev=1; want_tag=1 ;;
@@ -3690,8 +3681,36 @@ case "$action" in
         # bind to dies here, pre-sudo (the root side re-checks).
         if [ "${#preview_repos[@]}" -gt 1 ] \
           && { [ "$have_ev" -eq 1 ] || [ "$preview_step" -eq 1 ] || [ -n "$preview_decl" ]; }; then
-          echo "--tag, --signed-tag, --trust, --step and the ancestry declarations bind to one repo; review multiple repos plain" >&2
+          echo "--tag, --signed-tag, --trust, --words, --step and the ancestry declarations bind to one repo; review multiple repos plain" >&2
           exit 1
+        fi
+        # --words' refusals, mirrored like --step's; the root side re-checks
+        # every one, and the move's direction once it reads the pin.
+        if [ "$want_words" -eq 1 ]; then
+          echo "--words needs the six words, joined by hyphens" >&2
+          exit 1
+        fi
+        if [ -n "$preview_words" ]; then
+          if ! valid_words_arg "$preview_words"; then
+            echo "--words takes six words from the list, joined by hyphens: w1-w2-w3-w4-w5-w6" >&2
+            exit 1
+          fi
+          if [ "$file_mode" -eq 1 ]; then
+            echo "--file is its own ceremony; --words does not combine with it" >&2
+            exit 1
+          fi
+          if [ "$preview_trust" -eq 1 ] || [ "$preview_signed" -eq 1 ]; then
+            echo "--words is its own evidence; it does not combine with --trust or --signed-tag" >&2
+            exit 1
+          fi
+          if [ "$preview_step" -eq 1 ]; then
+            echo "--step reads every commit; --words approves without reading" >&2
+            exit 1
+          fi
+          if [ -n "$preview_decl" ]; then
+            echo "--words approves a forward move only; review --$preview_decl without it" >&2
+            exit 1
+          fi
         fi
         if [ "${#preview_repos[@]}" -gt 0 ] && [ "$file_mode" -eq 0 ]; then
           # One preview per repo; sequential root-side ceremonies follow,
@@ -3719,6 +3738,10 @@ case "$action" in
             # root side answers such a slot with its own, accurate refusal.)
             if [ "$preview_step" -eq 1 ] && [ -z "$preview_pin" ]; then
               echo "first approval reviews the full tree; review without --step" >&2
+              exit 1
+            fi
+            if [ -n "$preview_words" ] && [ -z "$preview_pin" ]; then
+              echo "a first approval reads the full tree; --words approves a forward move from a pin only" >&2
               exit 1
             fi
             # Same short-circuit the privileged side would take -- but here it
@@ -3802,6 +3825,22 @@ case "$action" in
           fi
           echo
         fi
+        # The sudo dialog shows this argv and the directory it runs in, in a
+        # few hundred characters. So the repo goes by the full path the
+        # preview resolved (the one repo --words binds to), and the exec
+        # below runs from / -- the root side never reads the directory.
+        if [ -n "$preview_words" ]; then
+          words_argv=() skip_next=0
+          for a in "$@"; do
+            if [ "$skip_next" -eq 1 ]; then words_argv+=("$a"); skip_next=0; continue; fi
+            case "$a" in
+              --tag|--words) words_argv+=("$a"); skip_next=1 ;;
+              -*) words_argv+=("$a") ;;
+              *) words_argv+=("$repo") ;;
+            esac
+          done
+          set -- "${words_argv[@]}"
+        fi
       fi
       elev="$INSTALL_TARGET"
       if [ -x "$elev" ]; then
@@ -3863,15 +3902,25 @@ case "$action" in
       # so pinned saying it too would either double the launcher's line, or
       # point at nothing at all on a direct invocation.
       if [ "$action" = "review" ] && [ "$elev" = "$INSTALL_TARGET" ]; then
-        if [ "${file_mode:-0}" -eq 0 ]; then
+        if [ -n "${preview_words:-}" ]; then
+          printf '%sThe preview above was orientation only. As root, pinned compares the\n' "$C_DIM"
+          printf 'words with the commit it resolves; the sudo dialog is the confirmation.%s\n\n' "$C_OFF"
+        elif [ "${file_mode:-0}" -eq 0 ]; then
           printf '%sThe preview above was orientation only. The sudo ceremony re-derives\n' "$C_DIM"
           printf 'everything it displays, and nothing is pinned until you confirm there.%s\n\n' "$C_OFF"
         fi
-        printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
+        if [ -n "${preview_words:-}" ]; then
+          printf '  %s\n\n' "$(SUDO_K=1 elevation_cmd_disp "$elev" "$action" "$@")"
+        else
+          printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
+        fi
         # What the gate counts is what the root side will actually do: the
         # files named on the command line, or the repos that survived the
-        # preview's already-pinned skip.
-        if [ "${file_mode:-0}" -eq 1 ]; then
+        # preview's already-pinned skip. --words has no gate here: its caller
+        # has no terminal, and the sudo dialog showing this argv is the gate.
+        if [ -n "${preview_words:-}" ]; then
+          :
+        elif [ "${file_mode:-0}" -eq 1 ]; then
           elevation_gate "review $preview_files file$(plural_s "$preview_files")" "record unchanged" "$@"
         else
           elevation_gate "review $preview_todo repo$(plural_s "$preview_todo")" "pin unchanged" "$@"
@@ -3897,6 +3946,12 @@ case "$action" in
         else
           elevation_gate "declare the release name" "record unchanged" "$@"
         fi
+      fi
+      # --words: from /, and with -k so a cached credential never stands in
+      # for the authentication that is this review's only consent.
+      if [ -n "${preview_words:-}" ]; then
+        cd /
+        exec sudo -k -- "$elev" "$action" "$@"
       fi
       exec sudo -- "$elev" "$action" "$@"
     fi
@@ -4001,6 +4056,9 @@ do_approve() {
   # listing site passes it through untouched, so there is no 0/1 to
   # translate on the way down.
   local msg_mode=""
+  # The six words of the commit being approved, hyphen-joined (approve by
+  # words, above commit_words). Empty: the review reads, as always.
+  local words_arg=""
   repo_args=(); tag_args=(); files=(); file_base=(); file_ign=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -4026,6 +4084,14 @@ do_approve() {
       # why. So it binds to no repo, combines with every other flag, and
       # rides through --step's walk as well.
       --messages)   msg_mode=messages; shift ;;
+      # EVIDENCE, like --trust and --signed-tag: whoever made the commit
+      # names its words, and a match approves without the diff. Given once.
+      --words)
+        [ $# -ge 2 ] || { echo "--words needs the six words, joined by hyphens" >&2; exit 1; }
+        [ -z "$words_arg" ] || { echo "--words may be given once" >&2; exit 1; }
+        valid_words_arg "$2" \
+          || { echo "--words takes six words from the list, joined by hyphens: w1-w2-w3-w4-w5-w6" >&2; exit 1; }
+        words_arg="$2"; shift 2 ;;
       # The ancestry DECLARATIONS: what the human believes they are
       # approving. Reality must conform (ancestry_gate) or the ceremony
       # refuses -- these widen nothing on their own, they only unlock a
@@ -4100,7 +4166,7 @@ do_approve() {
   if [ "${#files[@]}" -gt 0 ]; then
     if [ "${#repo_args[@]}" -gt 0 ] || [ -n "$sel_tag" ] || [ "$trust" -eq 1 ] \
       || [ "${#tag_args[@]}" -gt 0 ] || [ "$step" -eq 1 ] || [ -n "$decl_class" ] \
-      || [ -n "$msg_mode" ]; then
+      || [ -n "$msg_mode" ] || [ -n "$words_arg" ]; then
       echo "--file is its own ceremony; repo arguments, evidence flags, --step, --messages and the ancestry declarations do not combine with it" >&2
       exit 1
     fi
@@ -4149,14 +4215,33 @@ do_approve() {
     echo "--trust vouches for a first approval; there is no pin to move --$decl_class from" >&2
     exit 1
   fi
+  # --words approves a forward move without reading it. Every flag that
+  # means something else refuses it: another kind of evidence, a reading
+  # walk, or a declared move that is not forward. (The pre-sudo half
+  # refuses the same set; these are the authoritative re-checks. The move's
+  # direction itself is checked per repo, once the pin is read.)
+  if [ -n "$words_arg" ]; then
+    if [ "$trust" -eq 1 ] || [ "${#tag_args[@]}" -gt 0 ]; then
+      echo "--words is its own evidence; it does not combine with --trust or --signed-tag" >&2
+      exit 1
+    fi
+    if [ "$step" -eq 1 ]; then
+      echo "--step reads every commit; --words approves without reading" >&2
+      exit 1
+    fi
+    if [ -n "$decl_class" ]; then
+      echo "--words approves a forward move only; review --$decl_class without it" >&2
+      exit 1
+    fi
+  fi
   # Selector and evidence flags name ONE commit of ONE repo, and the step
   # walk is one interactive read of one repo; a multi-repo batch is plain
   # review approvals only (the pre-sudo preview refuses the same
   # combination -- this is the authoritative re-check).
   if [ "${#repo_args[@]}" -gt 1 ] \
     && { [ -n "$sel_tag" ] || [ "$trust" -eq 1 ] || [ "${#tag_args[@]}" -gt 0 ] || [ "$step" -eq 1 ] \
-      || [ -n "$decl_class" ]; }; then
-    echo "--tag, --signed-tag, --trust, --step and the ancestry declarations bind to one repo; review multiple repos plain" >&2
+      || [ -n "$decl_class" ] || [ -n "$words_arg" ]; }; then
+    echo "--tag, --signed-tag, --trust, --words, --step and the ancestry declarations bind to one repo; review multiple repos plain" >&2
     exit 1
   fi
 
@@ -4364,16 +4449,20 @@ do_approve() {
       # trust is being extended or withdrawn.
       ancestry_floor "$repo" "$old_hash" "$hash" "$decl_class" || exit 1
 
-      # Words only where accepting by them is offered (see "accept by
-      # words"): a forward move from a pin, outside the --step walk. The gap
-      # is drawn here, once per review; a failed draw aborts (set -e) rather
-      # than showing words with no gap.
-      local words="" gap=0 gap_word="" by_words=0 wl
-      if [ -n "$old_hash" ] && [ "$ancestry_cls" = forward ] && [ "$step" -eq 0 ]; then
-        words="$(commit_words "$hash")"
-        gap="$(draw_gap)"
-        wl=($words)
-        gap_word="${wl[$((gap - 1))]}"
+      # Approve by words: only a forward move from an existing pin, and
+      # refused before a byte of display -- like the floor, the move's shape
+      # decides first. The comparison waits until the commit and the listing
+      # are on screen, so a refusal is read against what it refused.
+      local by_words=0
+      if [ -n "$words_arg" ]; then
+        if [ -z "$old_hash" ]; then
+          echo "a first approval reads the full tree; --words approves a forward move from a pin only" >&2
+          exit 1
+        fi
+        if [ "$ancestry_cls" != forward ]; then
+          echo "--words approves a forward move only; this is a $ancestry_cls move" >&2
+          exit 1
+        fi
       fi
 
       printf '%srepo:%s       %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_B$C_MAG" "${repo##*/}" "$C_OFF" \
@@ -4386,7 +4475,6 @@ do_approve() {
         printf '%sgit HEAD:%s   %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
           "$C_DIM" "$(sanitize_display "$(sgit log -1 --format=%s "$hash")")" "$C_OFF"
       fi
-      [ -z "$words" ] || print_words_row "$words" "$gap"
       if [ -n "$old_hash" ]; then
         printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
         if [ -n "$ancestry_mb" ]; then
@@ -4405,59 +4493,68 @@ do_approve() {
           exit "$step_rc"
         fi
         echo
-        # The gate before the pager: in a batch the next repo's diff would
-        # otherwise open unannounced, with no statement of whose bytes or
-        # how much is about to fill the screen. Enter (or y) opens the diff;
-        # `n` is the one other answer, and it is fail-closed -- decline
-        # without looking, pin unchanged (logged as skip, counted as
-        # declined). End of input takes the same path, for the same reason.
-        # Approving without the diff takes the word missing from the words
-        # row, and only where that row is shown; the y/N below still follows.
-        #
-        # The parenthesis states the delta's size, over the SAME ranges the
-        # listing headings just above name: a forward move counts what
-        # arrives, a backward one counts what it un-approves (its forward
-        # range is empty, and a move that reads as "0 commits" states the
-        # opposite of what it does), a diverged one counts both sides of the
-        # merge base. Two revs with no common ancestor have no range at all:
-        # `pin..candidate` is then the candidate's WHOLE history (a rewrite
-        # of 400 commits reads as "400 commits" when three are new), so
-        # there the size is the diff's own, in files and lines, colored
-        # the way the file-pin gate colors its magnitude.
-        local n_range n_undo gate_line gate_size totals t_n t_files t_add t_del
-        totals="$(diff_totals "$old_hash" "$hash")"
-        if [ "$ancestry_cls" = diverged ] && [ -z "$ancestry_mb" ]; then
-          read -r t_n t_files t_add t_del <<<"$totals"
-          gate_size="no shared history; $t_n $t_files ${C_GRN}${t_add}${C_OFF}${C_B} ${C_RED}${t_del}${C_OFF}${C_B}"
-        elif [ "$ancestry_cls" = backward ]; then
-          n_undo="$(sgit rev-list --count "${hash}..${old_hash}")"
-          gate_size="$n_undo commit$(plural_s "$n_undo") un-approved"
-        elif [ "$ancestry_cls" = diverged ]; then
-          n_undo="$(sgit rev-list --count "${ancestry_mb}..${old_hash}")"
-          n_range="$(sgit rev-list --count "${ancestry_mb}..${hash}")"
-          gate_size="$n_undo commit$(plural_s "$n_undo") un-approved, $n_range arriving"
-        else
-          n_range="$(sgit rev-list --count "${old_hash}..${hash}")"
-          gate_size="$n_range commit$(plural_s "$n_range")"
-        fi
-        printf -v gate_line '%sreview %s%s%s %s%.10s..%.10s%s (%s);%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
-          "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
-          "$C_CYN" "$old_hash" "$hash" "$C_OFF$C_B" \
-          "$gate_size" "$C_OFF" "$C_BLU" "$C_OFF" \
-          "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
-        # The typed-word answer goes last in the tail, after the decline.
-        [ -z "$words" ] || gate_line="${gate_line%" "}$C_DIM · or type the missing word$C_OFF "
-        local gate_rc=0
-        gate_answer "$gate_line" "$gap_word" || gate_rc=$?
-        if [ "$gate_rc" -ne 0 ] && [ "$gate_rc" -ne 3 ]; then
-          printf '%sskipped; pin unchanged%s\n' "$C_YEL" "$C_OFF"
-          log_action approve "$repo" "$hash" skip
-          if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
-          exit 2
-        fi
-        if [ "$gate_rc" -eq 3 ]; then
+        if [ -n "$words_arg" ]; then
+          # Approve by words: all six, derived here from the commit this
+          # ceremony resolved, against the six the sudo dialog showed. A
+          # mismatch never says which words differ or prints the right
+          # ones -- a caller that retried with them would be approving what
+          # it did not make.
+          local want
+          want="$(commit_words "$hash")"
+          if [ "${want// /-}" != "$words_arg" ]; then
+            printf '%serror: the words do not match %s; pin unchanged%s\n' \
+              "$C2_RED$C2_B" "$hash" "$C2_OFF" >&2
+            printf '  review it the usual way: pinned review %s\n' "$repo" >&2
+            log_action approve "$repo" "$hash" words-mismatch
+            exit 1
+          fi
+          print_words_row "$want"
           by_words=1
         else
+          # The gate before the pager: in a batch the next repo's diff would
+          # otherwise open unannounced, with no statement of whose bytes or
+          # how much is about to fill the screen. Enter (or y) opens the diff;
+          # `n` is the one other answer, and it is fail-closed -- decline
+          # without looking, pin unchanged (logged as skip, counted as
+          # declined). End of input takes the same path, for the same reason.
+          #
+          # The parenthesis states the delta's size, over the SAME ranges the
+          # listing headings just above name: a forward move counts what
+          # arrives, a backward one counts what it un-approves (its forward
+          # range is empty, and a move that reads as "0 commits" states the
+          # opposite of what it does), a diverged one counts both sides of the
+          # merge base. Two revs with no common ancestor have no range at all:
+          # `pin..candidate` is then the candidate's WHOLE history (a rewrite
+          # of 400 commits reads as "400 commits" when three are new), so
+          # there the size is the diff's own, in files and lines, colored
+          # the way the file-pin gate colors its magnitude.
+          local n_range n_undo gate_line gate_size totals t_n t_files t_add t_del
+          totals="$(diff_totals "$old_hash" "$hash")"
+          if [ "$ancestry_cls" = diverged ] && [ -z "$ancestry_mb" ]; then
+            read -r t_n t_files t_add t_del <<<"$totals"
+            gate_size="no shared history; $t_n $t_files ${C_GRN}${t_add}${C_OFF}${C_B} ${C_RED}${t_del}${C_OFF}${C_B}"
+          elif [ "$ancestry_cls" = backward ]; then
+            n_undo="$(sgit rev-list --count "${hash}..${old_hash}")"
+            gate_size="$n_undo commit$(plural_s "$n_undo") un-approved"
+          elif [ "$ancestry_cls" = diverged ]; then
+            n_undo="$(sgit rev-list --count "${ancestry_mb}..${old_hash}")"
+            n_range="$(sgit rev-list --count "${ancestry_mb}..${hash}")"
+            gate_size="$n_undo commit$(plural_s "$n_undo") un-approved, $n_range arriving"
+          else
+            n_range="$(sgit rev-list --count "${old_hash}..${hash}")"
+            gate_size="$n_range commit$(plural_s "$n_range")"
+          fi
+          printf -v gate_line '%sreview %s%s%s %s%.10s..%.10s%s (%s);%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
+            "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
+            "$C_CYN" "$old_hash" "$hash" "$C_OFF$C_B" \
+            "$gate_size" "$C_OFF" "$C_BLU" "$C_OFF" \
+            "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
+          if ! gate_answer "$gate_line"; then
+            printf '%sskipped; pin unchanged%s\n' "$C_YEL" "$C_OFF"
+            log_action approve "$repo" "$hash" skip
+            if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
+            exit 2
+          fi
           printf '%s--- diff %.10s..%.10s (from object store) ---%s\n' "$C_B" "$old_hash" "$hash" "$C_OFF"
           # Capture first so a git failure aborts (set -e) BEFORE anything is
           # shown as reviewable; then page. Early pager quit (SIGPIPE) is the
@@ -4497,25 +4594,28 @@ do_approve() {
         print_end_rule diff "$totals"
       fi
     fi
-    # After a pager the confirmation is its own block; after a typed word it
-    # follows the gate line directly, as the answer to it.
-    [ "${by_words:-0}" -eq 1 ] || echo
-
-    local answer
-    printf '%sapprove %s%s%s %s%s%s? [%sy%s/%sN%s]%s ' "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
-      "$C_CYN" "$hash" "$C_OFF$C_B" \
-      "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
-    drain_tty
-    read -r answer </dev/tty
-    case "$answer" in
-      y|Y|yes) ;;
-      *)
-        printf '%saborted; pin unchanged%s\n' "$C_YEL" "$C_OFF"
-        log_action approve "$repo" "$hash" abort
-        if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
-        exit 2
-        ;;
-    esac
+    # Approved by words: the sudo authentication was the answer, given
+    # against a dialog that showed the words this ceremony just matched. There
+    # is no terminal to ask (the caller runs without one), and a y/N here
+    # would only repeat that consent.
+    if [ "${by_words:-0}" -eq 0 ]; then
+      echo
+      local answer
+      printf '%sapprove %s%s%s %s%s%s? [%sy%s/%sN%s]%s ' "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
+        "$C_CYN" "$hash" "$C_OFF$C_B" \
+        "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+      drain_tty
+      read -r answer </dev/tty
+      case "$answer" in
+        y|Y|yes) ;;
+        *)
+          printf '%saborted; pin unchanged%s\n' "$C_YEL" "$C_OFF"
+          log_action approve "$repo" "$hash" abort
+          if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
+          exit 2
+          ;;
+      esac
+    fi
 
     write_slot_state "$slot" rev.git "$hash  $repo"
     # A repo pin has no JSON keys to tolerate: taking the slot over from a
@@ -6210,13 +6310,16 @@ do_words() {
   old_hash="$REC_DIGEST"
   head_hash="$(sgit rev-parse 'HEAD^{commit}')"
   [ -z "$old_hash" ] || cls="$(ancestry_class "$repo" "$old_hash" "$hash")"
+  # A release tag is reviewed with --tag, which resolves the tag, not HEAD.
+  local tag_opt=""
+  if sgit show-ref -q --verify "refs/tags/$rev" 2>/dev/null; then tag_opt=" --tag $rev"; fi
 
   printf '%srepo:%s       %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_B$C_MAG" "${repo##*/}" "$C_OFF" \
     "$C_DIM" "$repo" "$C_OFF"
   printf '%scommit:%s     %s%s%s  %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" \
     "$C_DIM" "$(sanitize_display "$(sgit log -1 --format=%s "$hash")")" "$C_OFF"
-  if [ "$head_hash" != "$hash" ]; then
-    printf '%sgit HEAD:%s   %s%s%s  %s✗ not this commit; a review of HEAD shows other words%s\n' \
+  if [ -z "$tag_opt" ] && [ "$head_hash" != "$hash" ]; then
+    printf '%sgit HEAD:%s   %s%s%s  %s✗ not this commit; a review of HEAD would refuse these words%s\n' \
       "$C_DIM" "$C_OFF" "$C_CYN" "$head_hash" "$C_OFF" "$C_YEL" "$C_OFF"
   fi
   if [ -z "$old_hash" ]; then
@@ -6224,10 +6327,20 @@ do_words() {
   else
     printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
   fi
-  # The words only where the review offers them; anywhere else the review
-  # reads, and words in a reply would be words nobody can check.
+  # The words only where the review takes them; anywhere else the review
+  # reads, and words in a reply would be words nobody can check. The command
+  # that approves by them follows when the review would resolve this same
+  # commit: a release tag selects it with --tag (which also declares the
+  # name), anything else only while it is HEAD.
+  local w
   case "$cls" in
-    forward)  print_words_row "$(commit_words "$hash")" 0 ;;
+    forward)
+      w="$(commit_words "$hash")"
+      print_words_row "$w"
+      if [ -n "$tag_opt" ] || [ "$head_hash" = "$hash" ]; then
+        printf '%sapprove:%s    pinned review %s%s --words %s\n' "$C_DIM" "$C_OFF" "$repo" "$tag_opt" "${w// /-}"
+      fi
+      ;;
     '')       printf '%swords:%s      (none: a first approval reads the full tree)\n' "$C_DIM" "$C_OFF" ;;
     equal)    printf '%swords:%s      (none: already pinned)\n' "$C_DIM" "$C_OFF" ;;
     *)        printf '%swords:%s      (none: a %s move is read, not accepted by words)\n' \

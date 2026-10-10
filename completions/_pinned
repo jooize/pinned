@@ -28,7 +28,7 @@ _pinned() {
         'verify:file-pin verdict, exit-code contract for gates'
         'cat:the approved bytes, from root custody'
         'rev:the pinned rev or the declared release name'
-        'words:the words a review shows for a commit'
+        'words:a commit'\''s words and the command that approves it'
         'sign:create a signed tag at the pinned hash'
         'signer:allowed-signers ceremonies and lookups'
         'ignorable:ignorable-JSON-key grants'
@@ -48,6 +48,7 @@ _pinned() {
             "--tag[review and pin this tag's commit, not HEAD]:tag: " \
             '*--signed-tag[tag that must verify against allowed signers]:tag: ' \
             "--trust[skip a first approval's full-tree review, loudly]" \
+            "--words[approve a forward move by the commit's six words]:words: " \
             '--step[walk the commits since the pin one at a time]' \
             '--messages[print each commit message whole in the listing]' \
             '(--diverged)--backward[declare the candidate an ancestor of the pin]' \

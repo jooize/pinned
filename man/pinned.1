@@ -93,7 +93,7 @@ takes its own confirmation instead, before any authentication.
 .SH COMMANDS
 .SS Repository approval
 .TP
-.B review \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP] [\fB\-\-step\fP] [\fB\-\-messages\fP] [\fB\-\-backward\fP|\fB\-\-diverged\fP] [\fB\-\-yes\fP]
+.B review \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP | \fB\-\-words\fP \fIwords\fP] [\fB\-\-step\fP] [\fB\-\-messages\fP] [\fB\-\-backward\fP|\fB\-\-diverged\fP] [\fB\-\-yes\fP]
 (sudo) Review the diff since the last pin (the full tree on a first
 approval), approve, write the pin.
 .I repo
@@ -166,60 +166,55 @@ the scrollback records that a diff was shown and how large it was.
 A file pin's closing rule gives its line counts.
 .BR \-\-tag ,
 .BR \-\-signed\-tag ,
+.BR \-\-trust ,
 and
-.B \-\-trust
+.B \-\-words
 bind to a single repo \(em a batch takes plain review approvals only, and
 so do the ancestry declarations below.
 .IP
-.B Accepting by words.
-A forward move from an existing pin shows one more row under the
-commit, between it and the pin:
-.RS
-.PP
-.EX
-words:      orbit tunnel maple  ______ cousin vivid  rocket elbow
-.EE
-.RE
-.IP
+.B Approving by words.
+.B \-\-words
+.I w1\-w2\-w3\-w4\-w5\-w6
+approves a forward move from an existing pin without the diff, for a
+commit you watched being made: whoever made it names its six words, and
+runs the review with them.
 The words are the commit's full id read as bits from its first hex
 digit, 11 bits per word, from the BIP39 English list (2048 words, no
-two sharing their first four letters).
-The first six are required and cover 66 bits; the last two, shown dim,
-cover 22 more.
+two sharing their first four letters); six cover 66 bits.
 The commit id hashes its tree and its parents, so any change anywhere
 in the range changes the words.
+.B "pinned words"
+prints them, with the exact command.
 .IP
-One of the first six is left out as a gap, at a position drawn from
-.I /dev/urandom
-for each review.
-The gate then takes a third answer, named last in its tail
-.RB ( "\[pc] or type the missing word" ):
-typing the missing word skips the diff and goes straight to the
-.RB \(dq approve " ...? [y/N]" \(dq
-confirmation, where Enter still declines.
-The match is the whole word, case folded; a word from the list that is
-not the missing one prints
-.B not the missing word
-and the gate asks again with the gap where it was.
-An approval made this way is logged with result
-.BR words .
+The review runs without a terminal.
+Before sudo, the preview and the command are printed as always, with
+no gate; the repo is named by its full path, and sudo runs from
+.I /
+with
+.B \-k
+(no cached credential), so the authentication dialog shows the whole
+command, words included, and is the only consent.
+Compare the words in the dialog with the copy you were given, then
+authenticate.
+As root, pinned derives the six words from the commit it resolves (HEAD,
+or the
+.B \-\-tag
+commit) and compares all six: a match approves with no diff and no
+y/N, logged with result
+.BR words ;
+a mismatch refuses with exit 1, logged as
+.BR words\-mismatch ,
+and never says which words differ.
+Review that repo the usual way then.
 .IP
-Compare the five required words you see, and the one you type, with
-a copy you trust: the reply of whoever made the commit, who gets it from
-.BR "pinned words" .
-pinned checks only the typed word (11 bits); the other five are yours
-to compare.
-Words that differ mean the commit under review is not the one the copy
-names: answer
-.BR n ,
-or open the diff.
-A process that can rewrite the terminal's text can fake the words row
-as well as it can fake a diff, so the words add no new weakness and
-remove none.
-.IP
-A first approval, a backward or diverged move, a signed tag and the
-.B \-\-step
-walk show no words and keep the diff.
+.B \-\-words
+binds to one repo and refuses a first approval, a backward or diverged
+move,
+.BR \-\-trust ,
+.B \-\-signed\-tag
+and
+.BR \-\-step .
+It relies on sudo authenticating: under a NOPASSWD rule nobody is asked.
 .IP
 .B The ancestry lattice.
 Before anything is displayed, the candidate commit is classified against
@@ -755,19 +750,23 @@ with its scope.
 .SS Inspection
 .TP
 .B words \fIrepo\fP \fIrev\fP
-The words a review of
+The six words of
 .I rev
-will show (see
-.BR "Accepting by words" ),
-all eight with no gap, under the commit's full id, the pin, and the
-commits since it.
+(see
+.BR "Approving by words" ),
+under the commit's full id and the pin, then the
+.B "review \-\-words"
+command that approves it, and the commits since the pin.
 For whoever made the commit, to put in what they hand the reviewer.
 .I rev
 is required and never defaults to HEAD: name the id your own commit
-printed, or the release tag.
-When HEAD is another commit, a row says so, since a review of HEAD
-would show other words.
-A move the review will read rather than accept by words (a first
+printed, or the release tag (the command then carries
+.BR \-\-tag ).
+When
+.I rev
+is not a tag and HEAD is another commit, a row says so and no command
+is printed, since a review of HEAD would refuse these words.
+A move the review will read rather than approve by words (a first
 approval, already pinned, backward or diverged) prints the reason in
 place of the words.
 Unprivileged and read-only.
