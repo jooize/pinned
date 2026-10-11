@@ -1348,6 +1348,17 @@ if [ "$GIT_OK" -eq 1 ]; then
   rm -f "$REPO_FIX/.git/shallow"
   assert_eq "$(hgit rev-parse 'HEAD^{commit}')" "$HEAD_HASH" "fixture repo restored to its first commit"
 
+  # sgit_diff is plain text and color_diff colors it (S21 has the renderer's
+  # own cases): git's escapes would end in its bare `ESC[m` reset, ours never.
+  POUT="$(repo="$REPO_FIX" "$PROBE" eval "HL_ON=1; sgit_diff $HEAD_HASH $CRAFT_HASH | color_diff" 2>"$ERRF")" || true
+  printf '%s\n' "$POUT" > "$OUT"
+  assert_contains "$OUT" $'\033[1;35mdiff --git a/file.txt b/file.txt\033[0m' "a git diff's file header is colored by color_diff"
+  assert_contains "$OUT" $'\033[31m-fixture\033[0m' "a git diff's removed line is colored by color_diff"
+  assert_missing "$OUT" $'\033[m' "sgit_diff itself emits no color"
+  POUT="$(repo="$REPO_FIX" "$PROBE" eval "HL_ON=; sgit_diff $HEAD_HASH $CRAFT_HASH | color_diff" 2>"$ERRF")" || true
+  assert_eq "$POUT" "$(hgit diff --no-ext-diff --no-textconv "$HEAD_HASH" "$CRAFT_HASH")" \
+    "color off: the rendered git diff is git's plain text, byte for byte"
+
   # REGRESSION (was a KNOWN-BUG lock): a FIRST-EVER repo approval must
   # succeed with no pre-existing slot dir. do_approve used to walk ancestry
   # through the not-yet-created slot (`verify_ancestry "$slot/rev.git"`
@@ -4549,7 +4560,7 @@ say "S21: content highlighters decorate only (routing, guards, byte fidelity)"
 # stripped -- ASCII, UTF-8 and an INVALID multibyte sequence alike -- and put
 # color where the suffix says. The guards refuse what awk would not carry
 # through unchanged.
-for fn in highlighter_for highlight_ok highlight_json highlight_bash highlight_md; do
+for fn in highlighter_for highlight_ok highlight_json highlight_bash highlight_md color_diff; do
   sed -n "/^$fn() {\$/,/^}\$/p" "$SRC"
 done > "$FIX/hl.bash"
 assert_contains "$FIX/hl.bash" "highlight_md() {" "the highlighters lift out of the script"
@@ -4593,6 +4604,46 @@ printf '{"a": 1}\n' > "$HLD/s.json"
 hl_run 1 highlight_json "$HLD/s.json"
 hl_exact "$HLD/s.json" "json: stripped output is the input"
 assert_contains "$OUT" $'\033[1;36m"a"\033[0m' "json: a key is cyan"
+# color_diff: one renderer for every reviewed diff. A pair of one removed
+# and one added line marks the middle between their common prefix and
+# suffix; unequal runs, and pairs sharing only indentation, stay
+# line-colored; a boundary never splits a UTF-8 sequence (e9 vs e8 after
+# a shared c3 lead byte).
+printf '%s\n' 'diff --git a/m.json b/m.json' '--- a/m.json' '+++ b/m.json' \
+  '@@ -1,8 +1,7 @@ permissions' ' {' \
+  '-    "defaultMode": "auto",' '+    "defaultMode": "plan",' \
+  '-  "a": 1,' '-  "b": 2,' '+  "a": 3,' \
+  '-    foo' '+    bar' \
+  $'-  "x": "\xc3\xa91",' $'+  "x": "\xc3\xa81",' \
+  '--- a removed line that looks like a header' '+trailing  ' ' }' > "$HLD/d.diff"
+hl_run 1 color_diff "$HLD/d.diff"
+assert_exit "$RC" 0 "color_diff exits 0"
+hl_exact "$HLD/d.diff" "diff: stripped output is the input"
+assert_contains "$OUT" $'\033[1;35mdiff --git a/m.json b/m.json\033[0m' "diff: a file header is bold magenta"
+assert_contains "$OUT" $'\033[1;36m@@ -1,8 +1,7 @@ permissions\033[0m' "diff: a hunk header is bold cyan, label included"
+assert_contains "$OUT" $'\033[31m-    "defaultMode": "\033[0m\033[31;48;5;52mauto\033[0m\033[31m",\033[0m' \
+  "diff: a paired removed line marks only its changed middle"
+assert_contains "$OUT" $'\033[32m+    "defaultMode": "\033[0m\033[32;48;5;22mplan\033[0m\033[32m",\033[0m' \
+  "diff: a paired added line marks only its changed middle"
+assert_contains "$OUT" $'\033[31m-  "a": 1,\033[0m' "diff: two removed lines before one added line stay unmarked"
+assert_contains "$OUT" $'\033[32m+  "a": 3,\033[0m' "diff: the added line of an unequal run stays unmarked"
+assert_contains "$OUT" $'\033[31m-    foo\033[0m' "diff: a pair sharing only indentation stays unmarked"
+assert_contains "$OUT" $'\033[31;48;5;52m\xc3\xa9\033[0m' "diff: a UTF-8 character is marked whole on the removed side"
+assert_contains "$OUT" $'\033[32;48;5;22m\xc3\xa8\033[0m' "diff: a UTF-8 character is marked whole on the added side"
+assert_contains "$OUT" $'\033[31m--- a removed line that looks like a header\033[0m' \
+  "diff: the hunk counts, not the prefix, make a '---' line a removed line"
+assert_contains "$OUT" $'\033[32m+trailing\033[0m\033[41m  \033[0m' "diff: an added line's trailing whitespace is marked"
+assert_eq "$(grep -cx ' }' "$OUT")" 1 "diff: a context line stays plain"
+hl_run "" color_diff "$HLD/d.diff"
+hl_exact "$HLD/d.diff" "HL_ON off: color_diff is a byte-identical passthrough"
+if LC_ALL=C grep -q $'\033' "$OUT"; then fail "HL_ON off: color_diff adds no escape"; else ok "HL_ON off: color_diff adds no escape"; fi
+# Every reviewed diff reaches the pager through color_diff, and git's own
+# coloring stays off.
+assert_eq "$(grep -c '"\$diff_out" | page' "$SRC")" 0 "no git diff is paged uncolored"
+assert_eq "$(grep -c '| color_diff | page || true$' "$SRC")" 5 \
+  "every reviewed diff (three review paths, the baseline diff, show) goes through color_diff"
+assert_contains "$SRC" '-c color.diff=never diff --no-ext-diff --no-textconv' "sgit_diff renders without git's coloring"
+
 hl_run "" highlight_bash "$HLD/hook.bash"
 hl_exact "$HLD/hook.bash" "HL_ON off: highlight_bash is a byte-identical passthrough"
 if LC_ALL=C grep -q $'\033' "$OUT"; then fail "HL_ON off: no escape may appear"; else ok "HL_ON off: no escape appears"; fi

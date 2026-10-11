@@ -589,12 +589,17 @@ one.
 - **Color roles** are fixed: red = failure, green = success, yellow =
   attention, cyan = identifiers (paths, hashes, keys, tags), dim =
   secondary detail, bold = structure and authority. Color is decoration
-  only: with a non-tty stdout (or `NO_COLOR` for the content highlighters)
-  every display degrades to byte-identical plain text.
+  only: with a non-tty stdout (or `NO_COLOR` for the content highlighters
+  and diffs) every display degrades to byte-identical plain text.
 - **Content highlighters** are routed by suffix alone (`.json`, `.bash`
   and `.sh`, `.md`) and insert escapes only between the original bytes;
   anything else, and any content awk could not carry through unchanged
   (no trailing newline, a NUL, malformed JSON), is shown raw.
+- **Diffs** are colored by pinned, never by git, so every diff a review
+  shows reads the same way. When a run of removed lines is followed
+  directly by as many added lines, each pair gets a darker background on
+  the part that changed, like Git's contrib `diff-highlight`. A pair that
+  shares nothing past its indentation is left unmarked.
 - **Glyphs**: `✓` recorded/verified, `✗` refused, `~` matched with a
   declared tolerance.
 - **Gates read one way everywhere.** A gate names what happens next, then

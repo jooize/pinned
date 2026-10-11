@@ -261,10 +261,8 @@ if [ -t 1 ]; then
   # and the bright variant clears it. Carries its own 1, so a site returning
   # to plain bold after a key must reset first ($C_OFF$C_B, never $C_B).
   C_BLU=$'\033[1;34m'
-  DIFF_COLOR=always
 else
   C_OFF='' C_B='' C_DIM='' C_RED='' C_GRN='' C_YEL='' C_CYN='' C_MAG='' C_BLU=''
-  DIFF_COLOR=never
 fi
 
 # The stderr palette. Stderr speaks only the alarm/attention/meta subset of
@@ -954,23 +952,127 @@ ceremony_banner() {
 # They decorate; they never transform. Color off (not a tty, or NO_COLOR)
 # means byte-identical passthrough.
 
-# Colorized unified diff. Color is applied per line-prefix, never inside a
-# line, so the bytes stay greppable; $0 is reprinted verbatim. The file
-# headers wear the identity magenta, the same class sgit_diff gives git's
-# meta lines: a header answers what-am-I-looking-at one level below the
-# gate line, so the accent extends the subject role rather than diluting it.
+# Colorized unified diff: the ONE renderer for every diff a human reads --
+# git's (sgit_diff renders with color.diff=never, and each display pipes the
+# captured text through here) and the baseline file diff alike.
+#
+# Roles: a file header -- every line from `diff --git` or `---` up to the
+# first hunk, git's own `Binary files ... differ` excepted -- wears the
+# identity magenta: it answers what-am-I-looking-at one level below the gate
+# line, so the accent extends the subject role rather than diluting it. A
+# hunk header is bold cyan, its label or function context included; removed
+# lines red, added lines green, context and `\ No newline` plain. An added
+# line's trailing whitespace gets a red background, the blank-at-eol mark
+# git's own coloring drew (its space-before-tab and blank-at-eof marks are
+# not reproduced).
+#
+# Lines are classified by the hunk header's own counts, not by prefix alone,
+# so a removed line whose text starts with "--" is a removed line, never a
+# header.
+#
+# Inside a line, the part that changed: a run of N removed lines followed
+# directly by N added lines (a `\ No newline` between them does not break
+# the run) is paired line by line, as Git's contrib diff-highlight pairs
+# them. For each pair the common byte prefix and suffix are found, and the
+# middle between them gets a dark background (256-color 52 under removed,
+# 22 under added), the foreground staying red or green. A pair is marked
+# only when what it shares, past their common leading indentation, holds a
+# byte that is not whitespace: two unrelated lines at one indent share
+# nothing worth pointing at, and marking them would paint each whole line a
+# second time. Runs of unequal length are not paired at all. A boundary
+# never splits a UTF-8 sequence: the prefix backs off, and the suffix
+# shrinks, until the middle starts and ends on a character start (a byte
+# outside 0x80-0xBF).
+#
+# Decoration only: every byte of the input is printed once, in order, and
+# the only bytes added are SGR sequences between them. Color off is cat.
 color_diff() {
-  if [ -n "$HL_ON" ]; then
-    LC_ALL=C awk -v R=$'\033[31m' -v G=$'\033[32m' -v C=$'\033[1;36m' -v M=$'\033[1;35m' -v O=$'\033[0m' '
-      /^(\+\+\+|---) / { print M $0 O; next }
-      /^@@/            { print C $0 O; next }
-      /^\+/            { print G $0 O; next }
-      /^-/             { print R $0 O; next }
-                       { print }
-    '
-  else
-    cat
+  if [ -z "$HL_ON" ] || ! command -v awk >/dev/null 2>&1; then
+    cat; return
   fi
+  LC_ALL=C awk -v R=$'\033[31m' -v G=$'\033[32m' \
+      -v RH=$'\033[31;48;5;52m' -v GH=$'\033[32;48;5;22m' -v W=$'\033[41m' \
+      -v C=$'\033[1;36m' -v M=$'\033[1;35m' -v O=$'\033[0m' '
+    # A UTF-8 continuation byte, 10xxxxxx: no boundary lands on one.
+    function cont(s, i) { return substr(s, i, 1) ~ /^[\200-\277]$/ }
+    # The count half of a hunk range, "-a,b" or "+c,d"; a bare "-a" is 1.
+    function count(r,   q) { return (split(r, q, ",") > 1) ? q[2] + 0 : 1 }
+    # Bytes i..j of s wearing c, or nothing when the range is empty.
+    function seg(s, i, j, c) { return (j < i) ? "" : c substr(s, i, j - i + 1) O }
+    # The changed middles of the pair a (removed) and b (added), whole lines
+    # with their signs: sets MA..EA and MB..EB, or returns 0 when the pair
+    # is not worth marking.
+    function middles(a, b,   la, lb, p, s, k) {
+      la = length(a); lb = length(b)
+      p = 1                                    # the sign byte; shared text starts at 2
+      while (p < la && p < lb && substr(a, p + 1, 1) == substr(b, p + 1, 1)) p++
+      while (p > 1 && (cont(a, p + 1) || cont(b, p + 1))) p--
+      s = 0
+      while (s < la - p && s < lb - p && substr(a, la - s, 1) == substr(b, lb - s, 1)) s++
+      while (s > 0 && cont(a, la - s + 1)) s--
+      MA = p + 1; EA = la - s; MB = p + 1; EB = lb - s
+      if (EA < MA && EB < MB) return 0         # the same text: nothing changed inside
+      k = 2
+      while (k <= p && substr(a, k, 1) ~ /[ \t]/) k++
+      return (substr(a, k, p - k + 1) substr(a, la - s + 1, s)) ~ /[^ \t\r]/
+    }
+    # One changed line: fg, the middle ms..me on hl, and for an added line
+    # its trailing whitespace on W. An empty middle is ms = me + 1.
+    function paint(s, fg, hl, ms, me, add,   n, t) {
+      n = length(s); t = n + 1
+      if (add) while (t > 2 && substr(s, t - 1, 1) ~ /[ \t\r]/) t--
+      if (me < ms) { ms = t; me = t - 1 }
+      return seg(s, 1, (ms < t ? ms : t) - 1, fg) seg(s, ms, (me < t ? me : t - 1), hl) \
+        seg(s, me + 1, t - 1, fg) seg(s, t, n, W)
+    }
+    # Print the held run, pairing it when its two halves are the same length.
+    function flush(   i, k) {
+      for (i = 1; i <= nb; i++) { ms[i] = 1; me[i] = 0 }
+      if (nm > 0 && nm == np)
+        for (k = 1; k <= nm; k++)
+          if (middles(buf[mi[k]], buf[pi[k]])) {
+            ms[mi[k]] = MA; me[mi[k]] = EA; ms[pi[k]] = MB; me[pi[k]] = EB
+          }
+      for (i = 1; i <= nb; i++) {
+        if (typ[i] == "-")      print paint(buf[i], R, RH, ms[i], me[i], 0)
+        else if (typ[i] == "+") print paint(buf[i], G, GH, ms[i], me[i], 1)
+        else                    print buf[i]
+      }
+      nb = 0; nm = 0; np = 0
+    }
+    function hold(t) {
+      buf[++nb] = $0; typ[nb] = t
+      if (t == "-") mi[++nm] = nb
+      if (t == "+") pi[++np] = nb
+    }
+    {
+      c = substr($0, 1, 1)
+      if (hunk) {
+        took = 1
+        if (c == "-" && (ro > 0 || !known))      { if (np > 0) flush(); hold("-"); ro-- }
+        else if (c == "+" && (rn > 0 || !known)) { hold("+"); rn-- }
+        else if (c == "\\")                      { hold("\\") }
+        else if ((c == " " || $0 == "") && ((ro > 0 && rn > 0) || !known)) { flush(); print; ro--; rn-- }
+        else took = 0
+        if (took && (!known || ro > 0 || rn > 0)) next
+        flush(); hunk = 0
+        if (took) next
+      }
+      if ($0 ~ /^@@ -/) {
+        known = 0
+        if (match($0, /^@@ -[0-9]+(,[0-9]+)? \+[0-9]+(,[0-9]+)? @@/)) {
+          split(substr($0, 4, RLENGTH - 6), r, " ")
+          ro = count(r[1]); rn = count(r[2]); known = 1
+        }
+        print C $0 O
+        hunk = (!known || ro > 0 || rn > 0)
+        next
+      }
+      if ($0 == "" || c == "\\" || $0 ~ /^Binary files /) { print; next }
+      print M $0 O
+    }
+    END { flush() }
+  '
 }
 
 # Display-only shape line for a captured diff: hunk count and +/- line counts,
@@ -978,7 +1080,8 @@ color_diff() {
 # SAME buffer that is about to be shown, and structurally unable to change it --
 # every changed line prints regardless of this count. The "---"/"+++" header
 # lines are excluded; a removed line whose own text starts with "--" collides
-# with that prefix and is undercounted (cosmetic, same as color_diff's).
+# with that prefix and is undercounted (cosmetic; color_diff, which reads the
+# hunk counts, colors such a line as the removed line it is).
 diff_shape() {
   LC_ALL=C awk '
     /^@@/     { h++; next }
@@ -1465,19 +1568,14 @@ highlight_ok() {
 # a future edit cannot reintroduce a falsifiable review by writing the obvious
 # thing; `sgit diff` itself is refused below.
 #
-# color.diff.meta paints git's per-file header block -- `diff --git`, `index`,
-# `---`, `+++`, mode lines -- which defaults to plain bold and so dissolves
-# into the bold ceremony chrome around it. Magenta is the repo-identity accent
-# (see the palette above), spent a second time here on purpose: a file header
-# answers the same question the gate line does, one level down -- what am I
-# looking at. Git treats the whole block as one class, so this is all four
-# lines or none; splitting them would mean post-processing git's own colored
-# output, which is not worth doing to a display a trust decision rests on.
-# Decoration only: git applies it to header lines it generates itself, never
-# to reviewed content, and it is inert when DIFF_COLOR=never.
+# Always plain text: color.diff=never, and a display pipes the captured
+# output through color_diff, the one renderer every reviewed diff shares.
+# Git's own coloring could mark the header block and whole lines, never the
+# part of a line that changed, and decorating its colored output afterwards
+# would mean parsing escape sequences out of a display a trust decision
+# rests on.
 sgit_diff() {
-  _sgit_diff_ok=1 sgit -c color.diff="$DIFF_COLOR" -c color.diff.meta='magenta bold' \
-    diff --no-ext-diff --no-textconv "$@"
+  _sgit_diff_ok=1 sgit -c color.diff=never diff --no-ext-diff --no-textconv "$@"
 }
 
 # The size of a two-rev diff in one phrase, "N files +A -D": the spelling
@@ -4560,7 +4658,7 @@ do_approve() {
           # shown as reviewable; then page. Early pager quit (SIGPIPE) is the
           # reviewer's own act -- the diff itself already succeeded.
           diff_out="$(sgit_diff "$old_hash" "$hash")"
-          printf '%s\n' "$diff_out" | page || true
+          printf '%s\n' "$diff_out" | color_diff | page || true
           print_end_rule diff "$totals"
         fi
       elif [ "$trust" -eq 1 ]; then
@@ -4590,7 +4688,7 @@ do_approve() {
         local totals
         diff_out="$(sgit_diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
         totals="$(diff_totals 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
-        printf '%s\n' "$diff_out" | page || true
+        printf '%s\n' "$diff_out" | color_diff | page || true
         print_end_rule diff "$totals"
       fi
     fi
@@ -4755,7 +4853,7 @@ EOF
     # own act -- the diff itself already succeeded.
     diff_out="$(sgit_diff "$prev" "$c")"
     totals="$(diff_totals "$prev" "$c")"
-    printf '%s\n' "$diff_out" | page || true
+    printf '%s\n' "$diff_out" | color_diff | page || true
     print_end_rule diff "$totals"
     echo
     printf '%sapprove %s%s%s %s%s%s? [%sy%s/%sN%s]%s ' "$C_B" "$C_B$C_MAG" "${repo##*/}" "$C_OFF$C_B" \
@@ -7016,7 +7114,7 @@ do_show_repo() {
   # git failure aborts (set -e) BEFORE anything is shown as reviewable; then
   # page. Early pager quit (SIGPIPE) is the reader's own act.
   diff_out="$(sgit_diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
-  printf '%s\n' "$diff_out" | page || true
+  printf '%s\n' "$diff_out" | color_diff | page || true
 
   # Syslog is audit history, not a record: the file half logs the same way,
   # and neither writes a slot.
