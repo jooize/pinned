@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 # Fixture harness for `pinned` -- drives a STUBBED COPY of the real script.
 #
-# Run it with the Claude Code sandbox OFF (like the hardening harnesses):
 #     bash tests/harness.bash
-# The git fixture in S8 calls `git init` in a scratch dir, which the sandbox
-# denies; every git call here is `git -C <absolute path>` and S8 asserts the
-# fixture's own toplevel first, so a denied init fails loudly instead of
-# silently operating on a PARENT repository.
+# It runs inside the Claude Code sandbox. One part needs the sandbox off: S20's
+# behavioral half drives a real pty, which the sandbox refuses, so a sandboxed
+# run skips it and names it under the summary line. Run it sandbox-off before
+# a release.
 #
-# WHY A STUB: pinned is a root tool. The copy under $TMPDIR is seded at
+# The scratch dir is the per-user temp dir (getconf DARWIN_USER_TEMP_DIR), not
+# $TMPDIR: Claude Code points TMPDIR under /private/tmp, a world-writable
+# ancestor the mode checks under test rightly refuse. Every git call here is
+# `git -C <absolute path>` and S8 asserts the fixture's own toplevel first, so
+# a denied init fails loudly instead of silently operating on a PARENT
+# repository.
+#
+# WHY A STUB: pinned is a root tool. The copy in the scratch dir is seded at
 # EXACTLY the root/ownership seams, and nothing else:
 #   1. the self-elevation `if [ "$EUID" -ne 0 ]` gates -> `if false`
 #      (no exec sudo; the ceremony body runs in this process)
@@ -69,11 +75,15 @@ export LC_ALL=C   # byte semantics for the encode/decode round-trips
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$(dirname "$HERE")/pinned"
-PASS=0 FAIL=0
+PASS=0 FAIL=0 SKIP=0
+SKIPPED_LIST=""
 
 say()  { printf '%s\n' "$*"; }
 ok()   { PASS=$((PASS + 1)); say "  ok: $1"; }
 fail() { FAIL=$((FAIL + 1)); say "  FAIL: $1"; }
+# A skipped case is counted and named again under the summary line, so a run
+# that left something out says so where the result is read.
+skip() { SKIP=$((SKIP + 1)); SKIPPED_LIST="${SKIPPED_LIST}  skipped: $1"$'\n'; say "  SKIPPED: $1"; }
 
 assert_exit() { # got want label
   if [ "$1" = "$2" ]; then ok "$3"; else fail "$3 (exit $1, want $2)"; fi
@@ -128,7 +138,8 @@ command -v git >/dev/null 2>&1 || { say "git is required for S8"; exit 2; }
 
 # --- stub construction ------------------------------------------------------
 
-FIX="$(mktemp -d "${TMPDIR:-/tmp}/pinned-harness.XXXXXX")"
+SCRATCH_BASE="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null)" || SCRATCH_BASE="${TMPDIR:-/tmp}"
+FIX="$(mktemp -d "${SCRATCH_BASE%/}/pinned-harness.XXXXXX")"
 FIX="$(cd "$FIX" && pwd -P)"
 STUB="$FIX/pinned-stub"
 LIB="$FIX/pinned-lib.bash"
@@ -227,7 +238,7 @@ if [ -x /bin/bash ]; then
     sed 's/^/      /' "$ERRF"
   fi
 else
-  say "S0: SKIPPED (no /bin/bash -- the 3.2 floor is unmeasurable here)"
+  skip "S0 (no /bin/bash -- the 3.2 floor is unmeasurable here)"
 fi
 
 # The seams both stubs share. Held in an array because a SECOND stub (the
@@ -292,7 +303,7 @@ fi
 #      -> a `words-exec:` line naming the directory and the argv, then
 #      exit 98, so the directory and the rewritten repo path are assertable
 #   8. verify_ancestry on the elevation target -> no-op. INSTALL_TARGET is
-#      this stub, under $TMPDIR, whose ancestry is nobody's root-owned tree;
+#      this stub, in the scratch dir, whose ancestry is nobody's root-owned tree;
 #      the owner/mode check on the target ITSELF stays live (allowlist seam)
 #   9. the no-tty refusal -> $PINNED_TEST_NOTTY, so both branches of a gate
 #      are drivable from one stub
@@ -987,7 +998,7 @@ y
   assert_contains "$OUT" "diff vs the approved baseline" "the byte diff still renders"
   assert_missing "$OUT" "keys:" "malformed JSON yields no keys line (fail safe to nothing)"
 else
-  say "  keys-summary JSON cases SKIPPED (no jq in the trusted PATH)"
+  skip "S4 keys-summary JSON cases (no jq in the trusted PATH)"
 fi
 # jq absent: the structural view answers 1 and emits nothing, so the ceremony
 # prints no keys line -- jq stays a hard requirement only where
@@ -1129,7 +1140,7 @@ y
   assert_contains "$OUT" "  sandbox.filesystem.allowRead   +1" \
                   "and the label is findable as a row in the keys block above it"
 else
-  say "  hunk-label JSON cases SKIPPED (no jq in the trusted PATH)"
+  skip "S4 hunk-label JSON cases (no jq in the trusted PATH)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -1793,7 +1804,7 @@ y
   assert_contains "$OUT" "--messages does not combine with it" \
     "the pre-sudo refusal names the flag"
 else
-  say "S8d: SKIPPED (no git fixture)"
+  skip "S8d (no git fixture)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -2011,7 +2022,7 @@ n
   assert_eq "$(rev_in "$E_SLOT/rev.git")" "$E_HEAD" "the refused walk left the pin alone"
   bgit "$REPO_E" checkout -q main
 else
-  say "S8e: SKIPPED (no git fixture)"
+  skip "S8e (no git fixture)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -2219,7 +2230,7 @@ y
   assert_contains "$OUT" "no pin for --diverged to move from" "the refusal names the missing pin"
   assert_absent "$(slot_of "$REPO_I")/rev.git" "the refused first approval recorded nothing"
 else
-  say "S8f: SKIPPED (no git fixture)"
+  skip "S8f (no git fixture)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -2545,7 +2556,7 @@ y
     assert_contains "$OUT" "not a readable file" "and fails on the key, not on the flag"
     assert_missing "$OUT" "unknown signer option" "--yes is not an unknown option"
   else
-    say "S8i: SKIPPED signer --yes (no ssh-keygen)"
+    skip "S8i signer --yes (no ssh-keygen)"
   fi
 
   if command -v jq >/dev/null 2>&1; then
@@ -2555,7 +2566,7 @@ y
     assert_contains "$OUT" "outside the key grammar" "and fails on the key, not on the flag"
     assert_missing "$OUT" "unknown ignorable option" "--yes is not an unknown option"
   else
-    say "S8i: SKIPPED ignorable --yes (no jq)"
+    skip "S8i ignorable --yes (no jq)"
   fi
 
   # Far enough into do_tombstone / do_rekey to prove their parsers took --yes:
@@ -2571,7 +2582,7 @@ y
   assert_contains "$OUT" "there is no record to re-key" "and fails on the slot, not on the flag"
   assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there either"
 else
-  say "S8i: SKIPPED (no git fixture)"
+  skip "S8i (no git fixture)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -2792,7 +2803,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_exit "$RC" 0 "the hand-fix restores the ceremony"
   assert_missing "$OUT" "renamed the declared" "with nothing left to heal"
 else
-  say "S8j: SKIPPED (no git fixture)"
+  skip "S8j (no git fixture)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -2802,7 +2813,7 @@ say "S9: ignored keys (ignored.json / approved / exit 5)"
 # two JSON documents), so without jq there is nothing to exercise -- the
 # no-jq behavior itself is the loud fallback tested at the end of S9.
 if ! command -v jq >/dev/null 2>&1; then
-  say "S9: SKIPPED (no jq in the trusted PATH)"
+  skip "S9 (no jq in the trusted PATH)"
 else
 mkdir -p "$SUB/ig"
 
@@ -3081,7 +3092,7 @@ say "S10: the ignorable policy (tiers, ceremony, enforcement)"
 # The ladder: machine policy >= user policy >= slot declaration >= tolerated
 # drift. Every rung is jq-shaped, so this section needs jq exactly like S9.
 if ! command -v jq >/dev/null 2>&1; then
-  say "S10: SKIPPED (no jq in the trusted PATH)"
+  skip "S10 (no jq in the trusted PATH)"
 else
 mkdir -p "$SUB/pol/in" "$SUB/pol/inx"
 JSON_IN='{"model": "opus", "keep": 1}'
@@ -3714,7 +3725,7 @@ y
 
   # A directory with no repo of its own. WHICH refusal fires depends on the
   # scratch dir's own surroundings: outside any repo it is resolve_repo's "not
-  # a usable git work tree", but a $TMPDIR that happens to sit inside some
+  # a usable git work tree", but a scratch dir that happens to sit inside some
   # other repository (a project-local .tmp/) makes git answer yes and the
   # work-tree-root refusal fires instead. Both are loud, and either is the
   # contract under test -- neither displays anything.
@@ -3744,7 +3755,7 @@ y
   assert_exit "$RC" 1 "status refuses the same subdirectory"
   assert_contains "$OUT" "not the work-tree root" "through the shared resolver"
 else
-  say "S13: SKIPPED (no git fixture) -- file cases below still run"
+  skip "S13 (no git fixture) -- file cases below still run"
 fi
 
 # The file rehearsal is unchanged by the repo branch: a regular file still
@@ -3945,7 +3956,7 @@ y
   run_pinned verify "$SUB/mv/tol-moved.json"
   assert_exit "$RC" 5 "and the moved record answers 5 at its new path, as before the move"
 else
-  say "S14: tolerated-drift cases SKIPPED (no jq in the trusted PATH)"
+  skip "S14 tolerated-drift cases (no jq in the trusted PATH)"
 fi
 
 # --- repo records ----------------------------------------------------------
@@ -4017,7 +4028,7 @@ y
   assert_exit "$RC" 0 "status at the new path exits 0"
   assert_contains "$OUT" "HEAD is approved" "and reports the moved record as approved"
 else
-  say "S14: repo cases SKIPPED (no git fixture)"
+  skip "S14 repo cases (no git fixture)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -4543,12 +4554,10 @@ if command -v script >/dev/null 2>&1; then
     assert_missing "$FIX/pty-drained" "ANSWERED:" \
       "so nothing queued is read as an answer"
   else
-    say "  (no usable pty here -- script(1) did not reproduce the un-drained"
-    say "   read, so the behavioral half is SKIPPED; run this harness with the"
-    say "   sandbox off, where openpty is permitted)"
+    skip "S20 behavioral half (script(1) reproduced no un-drained read: no usable pty; the sandbox refuses one, so run this harness sandbox-off before a release)"
   fi
 else
-  say "  (no script(1) -- the behavioral half is SKIPPED)"
+  skip "S20 behavioral half (no script(1))"
 fi
 
 # ---------------------------------------------------------------------------
@@ -4694,7 +4703,7 @@ if command -v fish >/dev/null 2>&1; then
     | cut -f1 | LC_ALL=C sort -u | tr '\n' ' ')" || true   # a fish error fails the assert, not the run
   assert_eq "$FISH_ACTIONS" "$USAGE_ACTIONS" "fish offers exactly the actions usage lists"
 else
-  say "  (no fish -- the fish half is SKIPPED)"
+  skip "S22 fish half (no fish)"
 fi
 if command -v zsh >/dev/null 2>&1; then
   RC=0
@@ -4708,7 +4717,7 @@ if command -v zsh >/dev/null 2>&1; then
     | LC_ALL=C sort -u | tr '\n' ' ')"
   assert_eq "$ZSH_ACTIONS" "$USAGE_ACTIONS" "zsh offers exactly the actions usage lists"
 else
-  say "  (no zsh -- the zsh half is SKIPPED)"
+  skip "S22 zsh half (no zsh)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -4949,5 +4958,6 @@ if [ "$FAIL" -eq 0 ]; then
 else
   say "fixtures kept for inspection: $FIX"
 fi
-say "passed=$PASS failed=$FAIL"
+say "passed=$PASS failed=$FAIL skipped=$SKIP"
+printf '%s' "$SKIPPED_LIST"
 exit $(( FAIL > 0 ))
