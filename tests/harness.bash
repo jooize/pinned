@@ -2,10 +2,13 @@
 # Fixture harness for `pinned` -- drives a STUBBED COPY of the real script.
 #
 #     bash tests/harness.bash
+#     prove -v -e bash tests/harness.bash    (TAP::Harness 3.50+ reads TAP 14)
+# stdout is one TAP 14 stream: test points, `# ` comment lines (section headers,
+# failure detail, the summary after the plan) and nothing else.
 # It runs inside the Claude Code sandbox. One part needs the sandbox off: S20's
 # behavioral half drives a real pty, which the sandbox refuses, so a sandboxed
-# run skips it and names it under the summary line. Run it sandbox-off before
-# a release.
+# run skips it and names it again in the summary after the plan. Run it
+# sandbox-off before a release.
 #
 # The scratch dir is the per-user temp dir (getconf DARWIN_USER_TEMP_DIR), not
 # $TMPDIR: Claude Code points TMPDIR under /private/tmp, a world-writable
@@ -75,27 +78,62 @@ export LC_ALL=C   # byte semantics for the encode/decode round-trips
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$(dirname "$HERE")/pinned"
-PASS=0 FAIL=0 SKIP=0
+PASS=0 FAIL=0 SKIP=0 TESTS=0
 SKIPPED_LIST=""
 
-say()  { printf '%s\n' "$*"; }
-ok()   { PASS=$((PASS + 1)); say "  ok: $1"; }
-fail() { FAIL=$((FAIL + 1)); say "  FAIL: $1"; }
-# A skipped case is counted and named again under the summary line, so a run
-# that left something out says so where the result is read.
-skip() { SKIP=$((SKIP + 1)); SKIPPED_LIST="${SKIPPED_LIST}  skipped: $1"$'\n'; say "  SKIPPED: $1"; }
+# A TAP description escaped so it can never start a directive or a new line:
+# `\` -> `\\`, then `#` -> `\#`, each newline (or CR) -> one space. A loop, not
+# ${s//\\/...}: the replacement's backslash handling differs between bash 3.2
+# and 5.2+ (patsub_replacement), and only a loop reads the same under both.
+tap_desc() {
+  local nl=$'\n' cr=$'\r' s out="" c
+  s="${1//"$nl"/ }"
+  s="${s//"$cr"/ }"
+  case "$s" in
+    *[\\#]*)
+      while [ -n "$s" ]; do
+        c="${s:0:1}" s="${s:1}"
+        case "$c" in '\'|'#') out="$out\\$c" ;; *) out="$out$c" ;; esac
+      done ;;
+    *) out="$s" ;;
+  esac
+  printf '%s' "$out"
+}
+# Every line a human reads is a `# ` comment, so no bare text can ever pass
+# for a test point.
+say() {
+  local l
+  while IFS= read -r l; do printf '#%s\n' "${l:+ $l}"; done <<<"$*"
+}
+ok() { PASS=$((PASS + 1)) TESTS=$((TESTS + 1)); printf 'ok %d - %s\n' "$TESTS" "$(tap_desc "$1")"; }
+fail() { # label [detail...] -- each detail lands in comment lines under the not ok
+  FAIL=$((FAIL + 1)) TESTS=$((TESTS + 1))
+  printf 'not ok %d - %s\n' "$TESTS" "$(tap_desc "$1")"
+  shift
+  local d
+  for d in "$@"; do say "$d"; done
+}
+# A skipped case is counted and named again in the summary after the plan, so
+# a run that left something out says so where the result is read.
+skip() { # label reason
+  SKIP=$((SKIP + 1)) TESTS=$((TESTS + 1))
+  SKIPPED_LIST="${SKIPPED_LIST}  skipped: $1 ($2)"$'\n'
+  printf 'ok %d - %s # skip %s\n' "$TESTS" "$(tap_desc "$1")" "$(tap_desc "$2")"
+}
+# Setup that cannot continue: the TAP bail-out, then a non-zero exit.
+bail() { local nl=$'\n'; printf 'Bail out! %s\n' "${1//"$nl"/ }"; exit 2; }
 
 assert_exit() { # got want label
-  if [ "$1" = "$2" ]; then ok "$3"; else fail "$3 (exit $1, want $2)"; fi
+  if [ "$1" = "$2" ]; then ok "$3"; else fail "$3" "exit $1, want $2"; fi
 }
 assert_eq() { # got want label
-  if [ "$1" = "$2" ]; then ok "$3"; else fail "$3 (got '$1', want '$2')"; fi
+  if [ "$1" = "$2" ]; then ok "$3"; else fail "$3" "got:  '$1'" "want: '$2'"; fi
 }
 assert_contains() { # file needle label
-  if grep -qF -e "$2" "$1"; then ok "$3"; else fail "$3 (no '$2' in output)"; fi
+  if grep -qF -e "$2" "$1"; then ok "$3"; else fail "$3" "no '$2' in output"; fi
 }
 assert_missing() { # file needle label
-  if grep -qF -e "$2" "$1"; then fail "$3 (unexpected '$2' in output)"; else ok "$3"; fi
+  if grep -qF -e "$2" "$1"; then fail "$3" "unexpected '$2' in output"; else ok "$3"; fi
 }
 # The self-elevation handoff argv is pretty-printed one flag-group per line
 # (trailing ` \`, aligned padding) so a long review reads as a list. This joins
@@ -111,7 +149,7 @@ assert_shows_cmd() { # file single-line-argv label
       else { print buf; buf="" }
     }
     END { if (buf!="") print buf }' "$1" | tr -s ' ')"
-  if printf '%s\n' "$norm" | grep -qF -e "$2"; then ok "$3"; else fail "$3 (no '$2' in normalized argv)"; fi
+  if printf '%s\n' "$norm" | grep -qF -e "$2"; then ok "$3"; else fail "$3" "no '$2' in normalized argv"; fi
 }
 assert_before() { # file first-needle second-needle label -- ORDER on the page
   # Some displays are only correct in one order (orientation, then the thing
@@ -123,18 +161,19 @@ assert_before() { # file first-needle second-needle label -- ORDER on the page
   if [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; then
     ok "$4"
   else
-    fail "$4 (line of '$2' = ${a:-none}, of '$3' = ${b:-none})"
+    fail "$4" "line of '$2' = ${a:-none}, of '$3' = ${b:-none}"
   fi
 }
 assert_file() { # path label
-  if [ -f "$1" ]; then ok "$2"; else fail "$2 (no such file: $1)"; fi
+  if [ -f "$1" ]; then ok "$2"; else fail "$2" "no such file: $1"; fi
 }
 assert_absent() { # path label
-  if [ -e "$1" ]; then fail "$2 (still present: $1)"; else ok "$2"; fi
+  if [ -e "$1" ]; then fail "$2" "still present: $1"; else ok "$2"; fi
 }
 
-[ -f "$SRC" ] || { say "no pinned script at $SRC"; exit 2; }
-command -v git >/dev/null 2>&1 || { say "git is required for S8"; exit 2; }
+printf 'TAP version 14\n'
+[ -f "$SRC" ] || bail "no pinned script at $SRC"
+command -v git >/dev/null 2>&1 || bail "git is required for S8"
 
 # --- stub construction ------------------------------------------------------
 
@@ -170,10 +209,9 @@ need() { # regex count label -- the sed anchors must still exist, exactly
   local n
   n="$(grep -c -e "$1" "$SRC" || true)"
   [ "$n" = "$2" ] && return 0
-  say "STUB ANCHOR DRIFT: $3"
-  say "  pattern /$1/ matched $n line(s) in $SRC, want $2"
-  say "  the harness cannot stub a script it no longer recognizes; fix the anchor"
-  exit 2
+  say "pattern /$1/ matched $n line(s) in $SRC, want $2"
+  say "the harness cannot stub a script it no longer recognizes; fix the anchor"
+  bail "STUB ANCHOR DRIFT: $3"
 }
 
 need 'if \[ "\$EUID" -ne 0 \]; then'                        2 'self-elevation gates'
@@ -234,11 +272,10 @@ if [ -x /bin/bash ]; then
   if /bin/bash -n "$SRC" 2>"$ERRF"; then
     ok "the script parses under /bin/bash (the 3.2 floor)"
   else
-    fail "the script parses under /bin/bash (the 3.2 floor)"
-    sed 's/^/      /' "$ERRF"
+    fail "the script parses under /bin/bash (the 3.2 floor)" "$(cat "$ERRF")"
   fi
 else
-  skip "S0 (no /bin/bash -- the 3.2 floor is unmeasurable here)"
+  skip "S0" "no /bin/bash -- the 3.2 floor is unmeasurable here"
 fi
 
 # The seams both stubs share. Held in an array because a SECOND stub (the
@@ -275,19 +312,19 @@ chmod 755 "$STUB"
 # Post-conditions: the seds actually landed (a silently-unapplied sed would
 # turn every ceremony test into a hang or a sudo prompt).
 if grep -q '^PINNED_ROOT=/var/db/pinned$' "$STUB"; then
-  say "STUB SED FAILED: the real pin root survives"; exit 2
+  bail "STUB SED FAILED: the real pin root survives"
 fi
 if grep -q '^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json$' "$STUB"; then
-  say "STUB SED FAILED: the real machine policy path survives"; exit 2
+  bail "STUB SED FAILED: the real machine policy path survives"
 fi
-if grep -q '</dev/tty' "$STUB"; then say "STUB SED FAILED: /dev/tty survives"; exit 2; fi
+if grep -q '</dev/tty' "$STUB"; then bail "STUB SED FAILED: /dev/tty survives"; fi
 if ! grep -q '^drain_tty() {$' "$STUB" || ! grep -q '^  return 0$' "$STUB"; then
-  say "STUB SED FAILED: drain_tty was not neutralized"; exit 2
+  bail "STUB SED FAILED: drain_tty was not neutralized"
 fi
-if [ "$(grep -c 'if false; then' "$STUB")" != 2 ]; then say "STUB SED FAILED: elevation gates"; exit 2; fi
-if grep -q '^  logger -t pinned ' "$STUB"; then say "STUB SED FAILED: logger survives"; exit 2; fi
+if [ "$(grep -c 'if false; then' "$STUB")" != 2 ]; then bail "STUB SED FAILED: elevation gates"; fi
+if grep -q '^  logger -t pinned ' "$STUB"; then bail "STUB SED FAILED: logger survives"; fi
 if [ "$(head -n1 "$STUB")" != "#!$HARNESS_BASH" ]; then
-  say "STUB SED FAILED: the stub shebang still reads $(head -n1 "$STUB")"; exit 2
+  bail "STUB SED FAILED: the stub shebang still reads $(head -n1 "$STUB")"
 fi
 
 # --- the preview stub -------------------------------------------------------
@@ -318,19 +355,19 @@ sed "${STUB_SED[@]}" \
 chmod 755 "$PREVIEW"
 
 if grep -q 'exec sudo -- ' "$PREVIEW"; then
-  say "PREVIEW SED FAILED: an exec sudo survives"; exit 2
+  bail "PREVIEW SED FAILED: an exec sudo survives"
 fi
 if [ "$(grep -c '^ *exit 97$' "$PREVIEW")" != 2 ]; then
-  say "PREVIEW SED FAILED: sudo markers"; exit 2
+  bail "PREVIEW SED FAILED: sudo markers"
 fi
 if grep -q 'exec sudo -k' "$PREVIEW" || [ "$(grep -c '; exit 98$' "$PREVIEW")" != 1 ]; then
-  say "PREVIEW SED FAILED: the --words sudo marker"; exit 2
+  bail "PREVIEW SED FAILED: the --words sudo marker"
 fi
 if grep -q 'if false; then' "$PREVIEW"; then
-  say "PREVIEW SED FAILED: the elevation gate was stubbed out"; exit 2
+  bail "PREVIEW SED FAILED: the elevation gate was stubbed out"
 fi
 if [ "$(grep -c 'PINNED_TEST_NOTTY' "$PREVIEW")" != 1 ]; then
-  say "PREVIEW SED FAILED: no-tty seam"; exit 2
+  bail "PREVIEW SED FAILED: no-tty seam"
 fi
 
 # The pure-function library: everything above the first action.
@@ -479,7 +516,7 @@ rt() { # path label -- round-trip identity plus the slot-name charset
   dec="$("$PROBE" decode "$enc")"
   assert_eq "$dec" "$1" "round-trip: $2"
   case "$enc" in
-    *[!A-Za-z0-9._%-]*) fail "charset: $2 (encoded '$enc' has an out-of-set byte)" ;;
+    *[!A-Za-z0-9._%-]*) fail "charset: $2" "encoded '$enc' has an out-of-set byte" ;;
     *)                  ok   "charset: $2" ;;
   esac
 }
@@ -599,7 +636,7 @@ chmod 755 "$FIX/owners-probe"
 run_probe_owners() { # <root-only list> <owner> <tier>
   sed "s#^PINNED_ROOT_ONLY_OWNERS=\$#PINNED_ROOT_ONLY_OWNERS='$1'#" "$LIB" > "$OWNLIB"
   grep -q "^PINNED_ROOT_ONLY_OWNERS='$1'\$" "$OWNLIB" || {
-    say "OWNERS SED FAILED: the list [$1] did not land in the library copy"; exit 2
+    bail "OWNERS SED FAILED: the list [$1] did not land in the library copy"
   }
   RC=0
   "$FIX/owners-probe" owner_admitted "$2" "$3" 2>"$ERRF" || RC=$?
@@ -998,7 +1035,7 @@ y
   assert_contains "$OUT" "diff vs the approved baseline" "the byte diff still renders"
   assert_missing "$OUT" "keys:" "malformed JSON yields no keys line (fail safe to nothing)"
 else
-  skip "S4 keys-summary JSON cases (no jq in the trusted PATH)"
+  skip "S4 keys-summary JSON cases" "no jq in the trusted PATH"
 fi
 # jq absent: the structural view answers 1 and emits nothing, so the ceremony
 # prints no keys line -- jq stays a hard requirement only where
@@ -1140,7 +1177,7 @@ y
   assert_contains "$OUT" "  sandbox.filesystem.allowRead   +1" \
                   "and the label is findable as a row in the keys block above it"
 else
-  skip "S4 hunk-label JSON cases (no jq in the trusted PATH)"
+  skip "S4 hunk-label JSON cases" "no jq in the trusted PATH"
 fi
 
 # ---------------------------------------------------------------------------
@@ -1247,7 +1284,7 @@ GRAMMAR_BAD="$(awk '
 if [ -z "$GRAMMAR_BAD" ] && grep -qE '^[^ ]' "$OUT" && grep -qE '^  [a-z0-9]+: ' "$OUT"; then
   ok "the grammar holds: flush-left paths, two-space label fields, nothing else"
 else
-  fail "list emitted a line that is neither a flush-left path nor an indented field: $GRAMMAR_BAD"
+  fail "list emitted a line that is neither a flush-left path nor an indented field" "$GRAMMAR_BAD"
 fi
 
 run_pinned list --under "$SUB/l/sub"
@@ -1686,7 +1723,7 @@ y
   if [ "$D_WIDE" -le $((D_COLS - 1)) ]; then
     ok "every wrapped line stays inside the terminal width"
   else
-    fail "every wrapped line stays inside the terminal width (widest $D_WIDE, want <= $((D_COLS - 1)))"
+    fail "every wrapped line stays inside the terminal width" "widest $D_WIDE, want <= $((D_COLS - 1))"
   fi
   # The long subject is the last commit in the range, so its row runs to the
   # end of the output.
@@ -1712,7 +1749,7 @@ y
   if [ "$D_NP" -ge 2 ]; then
     ok "the unbreakable word is cut into pieces"
   else
-    fail "the unbreakable word is cut into pieces (got $D_NP line(s))"
+    fail "the unbreakable word is cut into pieces" "got $D_NP line(s)"
   fi
   D_CAT="$(awk '{ k = index($0, "xxx"); if (k) out = out substr($0, k) }
                 END { print out }' "$OUT")"
@@ -1721,7 +1758,7 @@ y
   if [ "$D_WIDE" -le $((D_COLS - 1)) ]; then
     ok "a hard-split line stays inside the terminal width"
   else
-    fail "a hard-split line stays inside the terminal width (widest $D_WIDE)"
+    fail "a hard-split line stays inside the terminal width" "widest $D_WIDE"
   fi
 
   # NO BODIES BY DEFAULT. The counts and the diff below are what the
@@ -1804,7 +1841,7 @@ y
   assert_contains "$OUT" "--messages does not combine with it" \
     "the pre-sudo refusal names the flag"
 else
-  skip "S8d (no git fixture)"
+  skip "S8d" "no git fixture"
 fi
 
 # ---------------------------------------------------------------------------
@@ -2022,7 +2059,7 @@ n
   assert_eq "$(rev_in "$E_SLOT/rev.git")" "$E_HEAD" "the refused walk left the pin alone"
   bgit "$REPO_E" checkout -q main
 else
-  skip "S8e (no git fixture)"
+  skip "S8e" "no git fixture"
 fi
 
 # ---------------------------------------------------------------------------
@@ -2230,7 +2267,7 @@ y
   assert_contains "$OUT" "no pin for --diverged to move from" "the refusal names the missing pin"
   assert_absent "$(slot_of "$REPO_I")/rev.git" "the refused first approval recorded nothing"
 else
-  skip "S8f (no git fixture)"
+  skip "S8f" "no git fixture"
 fi
 
 # ---------------------------------------------------------------------------
@@ -2556,7 +2593,7 @@ y
     assert_contains "$OUT" "not a readable file" "and fails on the key, not on the flag"
     assert_missing "$OUT" "unknown signer option" "--yes is not an unknown option"
   else
-    skip "S8i signer --yes (no ssh-keygen)"
+    skip "S8i signer --yes" "no ssh-keygen"
   fi
 
   if command -v jq >/dev/null 2>&1; then
@@ -2566,7 +2603,7 @@ y
     assert_contains "$OUT" "outside the key grammar" "and fails on the key, not on the flag"
     assert_missing "$OUT" "unknown ignorable option" "--yes is not an unknown option"
   else
-    skip "S8i ignorable --yes (no jq)"
+    skip "S8i ignorable --yes" "no jq"
   fi
 
   # Far enough into do_tombstone / do_rekey to prove their parsers took --yes:
@@ -2582,7 +2619,7 @@ y
   assert_contains "$OUT" "there is no record to re-key" "and fails on the slot, not on the flag"
   assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there either"
 else
-  skip "S8i (no git fixture)"
+  skip "S8i" "no git fixture"
 fi
 
 # ---------------------------------------------------------------------------
@@ -2803,7 +2840,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_exit "$RC" 0 "the hand-fix restores the ceremony"
   assert_missing "$OUT" "renamed the declared" "with nothing left to heal"
 else
-  skip "S8j (no git fixture)"
+  skip "S8j" "no git fixture"
 fi
 
 # ---------------------------------------------------------------------------
@@ -2813,7 +2850,7 @@ say "S9: ignored keys (ignored.json / approved / exit 5)"
 # two JSON documents), so without jq there is nothing to exercise -- the
 # no-jq behavior itself is the loud fallback tested at the end of S9.
 if ! command -v jq >/dev/null 2>&1; then
-  skip "S9 (no jq in the trusted PATH)"
+  skip "S9" "no jq in the trusted PATH"
 else
 mkdir -p "$SUB/ig"
 
@@ -3092,7 +3129,7 @@ say "S10: the ignorable policy (tiers, ceremony, enforcement)"
 # The ladder: machine policy >= user policy >= slot declaration >= tolerated
 # drift. Every rung is jq-shaped, so this section needs jq exactly like S9.
 if ! command -v jq >/dev/null 2>&1; then
-  skip "S10 (no jq in the trusted PATH)"
+  skip "S10" "no jq in the trusted PATH"
 else
 mkdir -p "$SUB/pol/in" "$SUB/pol/inx"
 JSON_IN='{"model": "opus", "keep": 1}'
@@ -3736,7 +3773,7 @@ y
   if grep -qE 'not a usable git work tree|not the work-tree root' "$OUT"; then
     ok "the refusal is resolve_repo's, never a display"
   else
-    fail "unexpected refusal for a non-repo directory: $(cat "$OUT")"
+    fail "unexpected refusal for a non-repo directory" "$(cat "$OUT")"
   fi
   assert_missing "$OUT" "full tree at" "nothing is displayed for it"
 
@@ -3755,7 +3792,7 @@ y
   assert_exit "$RC" 1 "status refuses the same subdirectory"
   assert_contains "$OUT" "not the work-tree root" "through the shared resolver"
 else
-  skip "S13 (no git fixture) -- file cases below still run"
+  skip "S13" "no git fixture -- file cases below still run"
 fi
 
 # The file rehearsal is unchanged by the repo branch: a regular file still
@@ -3956,7 +3993,7 @@ y
   run_pinned verify "$SUB/mv/tol-moved.json"
   assert_exit "$RC" 5 "and the moved record answers 5 at its new path, as before the move"
 else
-  skip "S14 tolerated-drift cases (no jq in the trusted PATH)"
+  skip "S14 tolerated-drift cases" "no jq in the trusted PATH"
 fi
 
 # --- repo records ----------------------------------------------------------
@@ -4028,7 +4065,7 @@ y
   assert_exit "$RC" 0 "status at the new path exits 0"
   assert_contains "$OUT" "HEAD is approved" "and reports the moved record as approved"
 else
-  skip "S14 repo cases (no git fixture)"
+  skip "S14 repo cases" "no git fixture"
 fi
 
 # ---------------------------------------------------------------------------
@@ -4154,7 +4191,7 @@ DIGEST_LINE="$(grep -n '^  digest="\$(shasum ' "$SRC" | cut -d: -f1)"
 if [ -n "$GUARD_LINE" ] && [ -n "$DIGEST_LINE" ] && [ "$GUARD_LINE" -lt "$DIGEST_LINE" ]; then
   ok "setup runs the interpreter guard before it computes the sudoers digest"
 else
-  fail "setup runs the interpreter guard before it computes the sudoers digest (guard='$GUARD_LINE' digest='$DIGEST_LINE')"
+  fail "setup runs the interpreter guard before it computes the sudoers digest" "guard='$GUARD_LINE' digest='$DIGEST_LINE'"
 fi
 
 # ---------------------------------------------------------------------------
@@ -4166,7 +4203,7 @@ say "S18: --version"
 SRC_VERSION="$(sed -n 's/^PINNED_VERSION="\(.*\)"$/\1/p' "$SRC" | head -n1)"
 case "$SRC_VERSION" in
   [0-9]*.[0-9]*.[0-9]*) ok "the declared version is a semver triple ($SRC_VERSION)" ;;
-  *) fail "the declared version is a semver triple (got '$SRC_VERSION')" ;;
+  *) fail "the declared version is a semver triple" "got '$SRC_VERSION'" ;;
 esac
 ANS=""
 run_pinned --version
@@ -4405,7 +4442,7 @@ y
     fail "case-respell git fixture init failed -- run this harness with the sandbox OFF"
   fi
 else
-  say "  (case-sensitive fixture volume: alias-dependent cases skipped)"
+  say "(case-sensitive fixture volume: alias-dependent cases skipped)"
 fi
 
 # ONE RECORD GRAMMAR (`<hex>  <path>`), filesystem-independent. rev records
@@ -4554,10 +4591,10 @@ if command -v script >/dev/null 2>&1; then
     assert_missing "$FIX/pty-drained" "ANSWERED:" \
       "so nothing queued is read as an answer"
   else
-    skip "S20 behavioral half (script(1) reproduced no un-drained read: no usable pty; the sandbox refuses one, so run this harness sandbox-off before a release)"
+    skip "S20 behavioral half" "script(1) reproduced no un-drained read: no usable pty; the sandbox refuses one, so run this harness sandbox-off before a release"
   fi
 else
-  skip "S20 behavioral half (no script(1))"
+  skip "S20 behavioral half" "no script(1)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -4578,7 +4615,7 @@ hl_run() { # HL_ON-value highlighter-or-shell-snippet infile -> $OUT, $RC
   "$HARNESS_BASH" -c "HL_ON='$1'; . '$FIX/hl.bash'; $2" <"$3" >"$OUT" 2>&1 || RC=$?
 }
 hl_exact() { # infile label -- the output minus SGR codes is the input, byte for byte
-  if LC_ALL=C sed $'s/\033\\[[0-9;]*m//g' "$OUT" | cmp -s - "$1"; then ok "$2"; else fail "$2 (stripped output differs from input)"; fi
+  if LC_ALL=C sed $'s/\033\\[[0-9;]*m//g' "$OUT" | cmp -s - "$1"; then ok "$2"; else fail "$2" "stripped output differs from input"; fi
 }
 HLD="$FIX/hl"; mkdir -p "$HLD"
 printf '#!/usr/bin/env bash\n# a comment\nname="$USER" # trailing\nif [ -n "${name}" ]; then exit 0; fi\nx=$1 # \xe2\x96\xa0\n' > "$HLD/hook.bash"
@@ -4703,7 +4740,7 @@ if command -v fish >/dev/null 2>&1; then
     | cut -f1 | LC_ALL=C sort -u | tr '\n' ' ')" || true   # a fish error fails the assert, not the run
   assert_eq "$FISH_ACTIONS" "$USAGE_ACTIONS" "fish offers exactly the actions usage lists"
 else
-  skip "S22 fish half (no fish)"
+  skip "S22 fish half" "no fish"
 fi
 if command -v zsh >/dev/null 2>&1; then
   RC=0
@@ -4717,7 +4754,7 @@ if command -v zsh >/dev/null 2>&1; then
     | LC_ALL=C sort -u | tr '\n' ' ')"
   assert_eq "$ZSH_ACTIONS" "$USAGE_ACTIONS" "zsh offers exactly the actions usage lists"
 else
-  skip "S22 zsh half (no zsh)"
+  skip "S22 zsh half" "no zsh"
 fi
 
 # ---------------------------------------------------------------------------
@@ -4952,12 +4989,13 @@ n
 fi
 
 # ---------------------------------------------------------------------------
-say ""
+printf '1..%d\n' "$TESTS"
+say "$PASS passed, $FAIL failed, $SKIP skipped"
+NL=$'\n'
+[ -z "$SKIPPED_LIST" ] || say "${SKIPPED_LIST%"$NL"}"
 if [ "$FAIL" -eq 0 ]; then
   rm -rf "$FIX"
 else
   say "fixtures kept for inspection: $FIX"
 fi
-say "passed=$PASS failed=$FAIL skipped=$SKIP"
-printf '%s' "$SKIPPED_LIST"
 exit $(( FAIL > 0 ))
