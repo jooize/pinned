@@ -330,7 +330,8 @@ usage: pinned <action> [args]
   ignorable add|remove|list ...  (sudo) ignorable-JSON-key grants
   status <repo|file>             record vs live state
   show <file|repo> [options]     trusted re-display; files get hash + wrapper
-  list [--under <dir>]           live pins in your tier
+  list [--under <dir>] [--format text|json]
+                                 live pins in your tier
   slot <path>                    print the slot directory for a path
   setup [--yes]                  (sudo) provision sudoers digest pin; self-install
   --version                      print the release version
@@ -6683,12 +6684,12 @@ do_sign() {
 # `status` and the review header all line up. Padding is applied to the BARE
 # label, outside the color, because %-9s counts escape bytes.
 #
-# GRAMMAR, for anything parsing this: a flush-left line is a decoded absolute
-# path, and it is the WHOLE line -- so a path holding spaces, tabs or glob
-# metacharacters needs no un-quoting, which the old `<kind> <digest>  <path>`
-# triple could only manage by hunting for its two-space gap. Every other
-# non-blank line starts with two spaces and reads `<label>: <value>` about the
-# path above it. Blank lines separate entries.
+# A flush-left line is a decoded absolute path, and it is the WHOLE line, so a
+# path holding spaces, tabs or glob metacharacters reads as itself. Every
+# other non-blank line starts with two spaces and reads `<label>: <value>`
+# about the path above it. Blank lines separate entries. This is the form for
+# reading; a program reads `--format json` (LIST_JSON below), which is the
+# stable interface.
 list_subject() { # found-so-far (0 = this is the first entry)  path
   [ "$1" -eq 0 ] || printf '\n'
   printf '%s%s%s\n' "$C_B$C_MAG" "$2" "$C_OFF"
@@ -6707,22 +6708,187 @@ list_field() { # label  value-color  value  parenthetical ("" for none)
   fi
 }
 
+# One entry's facts, read once and shared by every output format, so the
+# text listing and the JSON document can never disagree about a slot. Sets
+# the L_* globals for the slot dir $1, decoded to the path $2; returns 1 when
+# the slot holds nothing live (no state, or a tombstone) and is not listed.
+# A field that does not apply stays empty. L_PROBLEMS is a space-separated
+# list of the codes `--format json` documents:
+#   slot-malformed           more than one state file; nothing else is read
+#   record-corrupt           no readable digest or revision
+#   record-names-other-path  L_RECPATH holds the path the record names
+#   release-unusable         a release declaration outside the grammar
+#   ignored-unusable         an ignored-key declaration that cannot be honored
+list_entry() { # slot-dir  path
+  local d="$1" path="$2" line rec_rc
+  L_TYPE="" L_KIND="" L_DIGEST="" L_RECPATH="" L_RELEASE=""
+  L_IGNORED="" L_CUSTODY="" L_PROBLEMS=""
+  if ! inspect_slot "$d" 2>/dev/null; then
+    L_PROBLEMS=slot-malformed
+    return 0
+  fi
+  # THE SLOT-NAME INVARIANT (above slot_name_actual), reported per entry
+  # so drift is visible in a listing and not only at the next ceremony: a
+  # record naming another path than this directory encodes is a problem.
+  # (The other half -- a directory the volume aliases onto a former
+  # spelling of the LIVE path -- is invisible here by construction: this
+  # loop walks on-disk names and never asks about a live path; status and
+  # review, which are asked about one, report it.)
+  case "$slot_state" in
+    none|tombstone) return 1 ;;
+    rev)
+      L_TYPE=repo L_KIND="$slot_kind"
+      rec_rc=0
+      read_rev "$d" "$path" >/dev/null 2>&1 || rec_rc=$?
+      if [ "$rec_rc" -eq 1 ] || [ -z "$REC_DIGEST" ]; then
+        L_PROBLEMS=record-corrupt
+        return 0
+      fi
+      L_DIGEST="$REC_DIGEST"
+      [ "$rec_rc" -ne 2 ] || { L_RECPATH="$REC_PATH"; L_PROBLEMS=record-names-other-path; }
+      # The declared release name -- absent for a rev-only slot, exactly
+      # like the ignored declaration on file entries.
+      if [ -f "$d/release" ]; then
+        IFS= read -r line <"$d/release" || line=""
+        if [ -n "$line" ] && validate_release_name "$line"; then
+          L_RELEASE="$line"
+        else
+          L_PROBLEMS="${L_PROBLEMS:+$L_PROBLEMS }release-unusable"
+        fi
+      fi ;;
+    pin)
+      L_TYPE=file L_KIND="$slot_kind"
+      IFS= read -r line <"$slot_file" || line=""
+      case "${line%%  *}" in
+        *[!0-9a-f]*|'') L_PROBLEMS=record-corrupt; return 0 ;;
+      esac
+      # Full digest, never an abbreviation: the one thing a reader copies
+      # out of this listing is the digest they are about to paste into a
+      # verify or compare against a `show`.
+      L_DIGEST="${line%%  *}"
+      [ "${line#*  }" = "$path" ] || { L_RECPATH="${line#*  }"; L_PROBLEMS=record-names-other-path; }
+      if slot_declares_ignore "$d"; then
+        if read_ignored_paths "$d" 2>/dev/null; then
+          L_IGNORED="$IGN_PATHS"
+        else
+          L_PROBLEMS="${L_PROBLEMS:+$L_PROBLEMS }ignored-unusable"
+        fi
+      fi
+      # Custody is stated on EVERY well-formed file entry, present or
+      # absent: a consumer reading through the slot (pinned cat, a
+      # baseline-free verify) is served by one and refused by the other,
+      # and a silence that means "byte-exact, no copy" is a silence
+      # somebody has to stat the slot to resolve.
+      if [ -e "$d/approved" ]; then L_CUSTODY=kept; else L_CUSTODY=none; fi ;;
+  esac
+  return 0
+}
+
+list_has_problem() { # code
+  case " $L_PROBLEMS " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+# The text block for the entry list_entry just read.
+list_text_entry() { # found-so-far  path
+  list_subject "$1" "$2"
+  if list_has_problem slot-malformed; then
+    list_field state "$C_RED$C_B" MALFORMED "slot unreadable"
+    return 0
+  fi
+  if list_has_problem record-corrupt; then
+    if [ "$L_TYPE" = repo ]; then
+      list_field state "$C_RED$C_B" CORRUPT "no readable revision"
+    else
+      list_field state "$C_RED$C_B" CORRUPT "no readable digest"
+    fi
+    return 0
+  fi
+  list_field "$L_KIND" "$C_CYN" "$L_DIGEST" ""
+  if [ -n "$L_RECPATH" ]; then
+    if [ "$L_TYPE" = repo ]; then
+      list_field note "$C_YEL" "record names $L_RECPATH" "review re-states it"
+    else
+      list_field note "$C_YEL" "record names $L_RECPATH" "review --file re-states it"
+    fi
+  fi
+  if [ "$L_TYPE" = repo ]; then
+    if [ -n "$L_RELEASE" ]; then
+      list_field declared "$C_CYN" "$L_RELEASE" "deploy syncs ref= to refs/tags/$L_RELEASE"
+    elif list_has_problem release-unusable; then
+      list_field declared "$C_YEL" "unusable declaration" ""
+    fi
+    return 0
+  fi
+  if [ -n "$L_IGNORED" ]; then
+    list_field ignored "$C_CYN" "$(ign_display "$L_IGNORED")" ""
+  elif list_has_problem ignored-unusable; then
+    list_field ignored "$C_YEL" "unusable declaration" ""
+  fi
+  if [ "$L_CUSTODY" = kept ]; then
+    list_field custody "" "kept in the slot" "pinned cat serves these bytes"
+  else
+    list_field custody "" none "re-approve with --store to keep one"
+  fi
+}
+
+# The JSON record for the entry list_entry just read: its nine fields as
+# NUL-terminated strings, in LIST_JSON's order. NUL is the one byte no path
+# and no field can hold, so nothing here needs escaping; jq does the JSON.
+list_json_entry() { # path
+  printf '%s\0' "$1" "$L_TYPE" "$L_KIND" "$L_DIGEST" "$L_RECPATH" \
+    "$L_RELEASE" "$L_IGNORED" "$L_CUSTODY" "$L_PROBLEMS"
+}
+
+# `list --format json`: the stable machine form, schema 1. One document,
+# never colored:
+#   {"schema": 1, "pins": [ENTRY, ...]}
+# Every ENTRY carries all nine keys; a key that does not apply is null:
+#   path         the decoded absolute path
+#   type         "repo" | "file" (null: slot-malformed)
+#   kind         the declared kind: "git", "sha256", ...
+#   digest       the full hex digest or revision (null: no readable record)
+#   record_path  the path the record names, when it is not `path`
+#   release      a repo's declared release name
+#   ignored      a file's ignored-key declaration, as stored: [["a","b"],...]
+#   custody      a file's custody: "kept" | "none"
+#   problems     list_entry's codes, [] for a sound entry
+# Paths are JSON strings, so a path that is not valid UTF-8 is not
+# represented byte for byte (macOS volumes refuse such names).
+LIST_JSON='
+  def nz: if . == "" then null else . end;
+  split("\u0000") | .[:-1] as $f
+  | {schema: 1,
+     pins: [range(0; $f | length; 9) as $i | $f[$i:$i + 9]
+            | {path: .[0], type: (.[1] | nz), kind: (.[2] | nz),
+               digest: (.[3] | nz), record_path: (.[4] | nz),
+               release: (.[5] | nz),
+               ignored: (.[6] | if . == "" then null else fromjson end),
+               custody: (.[7] | nz),
+               problems: (.[8] | if . == "" then [] else split(" ") end)}]}'
+
 do_list() {
-  # Every live (non-tombstoned) pin in the invoking user's tier, one block
-  # each: the decoded path, then its declared kind + digest, its ignored-key
-  # declaration if it has one, and its custody state.
+  # Every live (non-tombstoned) pin in the invoking user's tier.
   # Unprivileged -- reading needs membership in the tier's group. Slot
   # names never leave this function: consumers get decoded paths.
   inv="$(tier_user)"  # not id -un: correct tier under sudo (root has none)
-  local under=""
+  local under="" format=text
   while [ $# -gt 0 ]; do
     case "$1" in
       --under)
         [ $# -ge 2 ] || { echo "--under needs a directory" >&2; exit 1; }
         under="$2"; shift 2 ;;
+      --format)
+        [ $# -ge 2 ] || { echo "--format needs a name: text or json" >&2; exit 1; }
+        format="$2"; shift 2 ;;
       *) echo "unknown list option: $1" >&2; usage ;;
     esac
   done
+  case "$format" in
+    text) ;;
+    json) require_jq "list --format json" || exit 1 ;;
+    *) echo "unknown list format: $format (text or json)" >&2; exit 1 ;;
+  esac
   if [ -n "$under" ]; then
     # Matching is on DECODED paths at a component boundary (--under /a/b
     # matches /a/b/c, never /a/bc), so normalize to an absolute path
@@ -6737,99 +6903,52 @@ do_list() {
   fi
 
   local sroot="$PINNED_ROOT/$inv/slots"
-  [ -d "$PINNED_ROOT" ] || { echo "no pin root ($PINNED_ROOT) -- nothing approved yet" >&2; exit 1; }
-  if [ ! -d "$sroot" ]; then echo "(no pins)"; exit 0; fi
+  if [ "$format" = json ]; then
+    # No tree yet is an empty listing, not an error: a consumer asking
+    # "which pins lie under here" gets the true answer, none, and keeps
+    # the nonzero exit for a listing it could not read.
+    if [ ! -d "$sroot" ]; then
+      printf '' | jq -Rs "$LIST_JSON"
+      return 0
+    fi
+  else
+    [ -d "$PINNED_ROOT" ] || { echo "no pin root ($PINNED_ROOT) -- nothing approved yet" >&2; exit 1; }
+    if [ ! -d "$sroot" ]; then echo "(no pins)"; exit 0; fi
+  fi
   [ -r "$sroot" ] || {
     echo "ERROR: cannot read $sroot -- are you in group $(pin_group "$inv")?" >&2
     exit 1
   }
-  local d path line digest found=0 copy rec_rc
-  for d in "$sroot"/*/; do
+  if [ "$format" = json ]; then
+    list_walk "$sroot" "$under" json | jq -Rs "$LIST_JSON"
+  else
+    list_walk "$sroot" "$under" text
+  fi
+}
+
+list_walk() { # slots-dir  under ("" for all)  format
+  local d path found=0
+  for d in "$1"/*/; do
     d="${d%/}"
     [ -e "$d" ] || continue
     path="$(decode "${d##*/}")"
-    if [ -n "$under" ]; then
+    # `--under /` names every path; the boundary pattern below would
+    # spell it `//*` and match none.
+    if [ -n "$2" ] && [ "$2" != / ]; then
       case "$path" in
-        "$under"|"$under"/*) ;;
+        "$2"|"$2"/*) ;;
         *) continue ;;
       esac
     fi
-    if ! inspect_slot "$d" 2>/dev/null; then
-      list_subject "$found" "$path"
-      list_field state "$C_RED$C_B" MALFORMED "slot unreadable"
-      found=1; continue
+    list_entry "$d" "$path" || continue
+    if [ "$3" = json ]; then
+      list_json_entry "$path"
+    else
+      list_text_entry "$found" "$path"
     fi
-    case "$slot_state" in none|tombstone) continue ;; esac
-    list_subject "$found" "$path"
-    # THE SLOT-NAME INVARIANT (above slot_name_actual), reported per entry
-    # so drift is visible in a listing and not only at the next ceremony: a
-    # record naming another path than this directory encodes gets a note.
-    # (The other half -- a directory the volume aliases onto a former
-    # spelling of the LIVE path -- is invisible here by construction: this
-    # loop walks on-disk names and never asks about a live path; status and
-    # review, which are asked about one, report it.) Notes are indented
-    # `label: value` fields like every other fact here, so the machine
-    # grammar (the flush-left path, the digest-labeled field) holds.
-    case "$slot_state" in
-      rev)
-        rec_rc=0
-        read_rev "$d" "$path" >/dev/null 2>&1 || rec_rc=$?
-        digest="$REC_DIGEST"
-        if [ "$rec_rc" -ne 1 ] && [ -n "$digest" ]; then
-          list_field "$slot_kind" "$C_CYN" "$digest" ""
-          [ "$rec_rc" -ne 2 ] || list_field note "$C_YEL" "record names $REC_PATH" "review re-states it"
-          # The declared release name, beside the declared kind -- absent
-          # for a rev-only slot, exactly like the ignored declaration on
-          # file entries.
-          if [ -f "$d/release" ]; then
-            IFS= read -r line <"$d/release" || line=""
-            if [ -n "$line" ] && validate_release_name "$line"; then
-              list_field declared "$C_CYN" "$line" "deploy syncs ref= to refs/tags/$line"
-            else
-              list_field declared "$C_YEL" "unusable declaration" ""
-            fi
-          fi
-        else
-          list_field state "$C_RED$C_B" CORRUPT "no readable revision"
-        fi ;;
-      pin)
-        IFS= read -r line <"$slot_file" || line=""
-        digest="${line%%  *}"
-        case "$digest" in
-          *[!0-9a-f]*|'') list_field state "$C_RED$C_B" CORRUPT "no readable digest" ;;
-          *)
-            list_field "$slot_kind" "$C_CYN" "$digest" ""
-            [ "${line#*  }" = "$path" ] \
-              || list_field note "$C_YEL" "record names ${line#*  }" "review --file re-states it"
-            # Full digest, never an abbreviation: the one thing a reader
-            # copies out of this listing is the digest they are about to
-            # paste into a verify or compare against a `show`, and a
-            # listing that has to be re-run to be usable is not a listing.
-            if slot_declares_ignore "$d"; then
-              if read_ignored_paths "$d" 2>/dev/null; then
-                list_field ignored "$C_CYN" "$(ign_display "$IGN_PATHS")" ""
-              else
-                list_field ignored "$C_YEL" "unusable declaration" ""
-              fi
-            fi
-            # Custody is stated on EVERY well-formed file entry, present or
-            # absent: a consumer reading through the slot (pinned cat, a
-            # baseline-free verify) is served by one and refused by the
-            # other, and a silence that means "byte-exact, no copy" is a
-            # silence somebody has to stat the slot to resolve. It gets its
-            # own field rather than riding the ignored line, so neither fact
-            # depends on the other being there.
-            if [ -e "$d/approved" ]; then copy=1; else copy=0; fi
-            if [ "$copy" -eq 1 ]; then
-              list_field custody "" "kept in the slot" "pinned cat serves these bytes"
-            else
-              list_field custody "" none "re-approve with --store to keep one"
-            fi ;;
-        esac ;;
-    esac
     found=1
   done
-  [ "$found" -eq 1 ] || echo "(no pins)"
+  [ "$3" = json ] || [ "$found" -eq 1 ] || echo "(no pins)"
 }
 
 # ---- show ------------------------------------------------------------------

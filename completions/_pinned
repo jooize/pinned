@@ -116,7 +116,8 @@ _pinned() {
           ;;
         list)
           _arguments \
-            '--under[only pins under this directory]:directory:_directories' && ret=0
+            '--under[only pins under this directory]:directory:_directories' \
+            '--format[output format]:format:(text json)' && ret=0
           ;;
         setup)
           _arguments '--yes[skip the setup confirmation]' && ret=0

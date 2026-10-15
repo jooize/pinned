@@ -120,3 +120,4 @@ complete -c pinned -n '__pinned_sub_is ignorable add remove' -l yes -d 'Skip the
 
 # --- list ---------------------------------------------------------------------
 complete -c pinned -n '__pinned_action_is list' -l under -x -a '(__fish_complete_directories)' -d 'Only pins under this directory'
+complete -c pinned -n '__pinned_action_is list' -l format -x -a 'text json' -d 'Output format'

@@ -823,7 +823,7 @@ and
 belong to the file form and are refused here.
 .RE
 .TP
-.B list [\-\-under \fIdir\fP]
+.B list [\-\-under \fIdir\fP] [\-\-format text|json]
 Live pins in your tier: decoded path, declared kind and full digest,
 the declared release name if a repo slot carries one, the ignored\-key
 declaration if a file slot has one, and custody state \(em a stored
@@ -834,13 +834,58 @@ restricts to paths below that directory.
 Each pin is one block: the path alone on its first line, every fact
 about it an indented \(dqlabel: value\(dq field under it, and a blank
 line between entries.
-That shape is also the grammar for anything parsing this listing: a
-flush\-left line is a decoded absolute path and is the
-.I whole
-line, so a path holding spaces, tabs or glob metacharacters needs no
-un\-quoting; every other non\-blank line begins with two spaces.
 Digests are never abbreviated \(em the listing is meant to be read and
 copied from, not re\-run.
+The text form is for reading; a program reads
+.BR "\-\-format json" .
+.IP
+.B \-\-format json
+prints one JSON document, never colored, and is the stable interface:
+.RS
+.IP
+.EX
+{"schema": 1, "pins": [ENTRY, ...]}
+.EE
+.RE
+.IP
+Every entry carries all nine keys, and a key that does not apply is
+.BR null :
+.B path
+(the decoded absolute path),
+.B type
+.RB ( repo
+or
+.BR file ),
+.B kind
+.RB ( git ,
+.BR sha256 ,
+\&...),
+.B digest
+(full hex),
+.B record_path
+(the path the record names, when it is not
+.BR path ),
+.B release
+(a repo's declared name),
+.B ignored
+(a file's declaration as stored, an array of key\-path arrays),
+.B custody
+.RB ( kept
+or
+.BR none ),
+and
+.BR problems ,
+an array of codes, empty for a sound entry:
+.BR slot\-malformed ,
+.BR record\-corrupt ,
+.BR record\-names\-other\-path ,
+.BR release\-unusable ,
+.BR ignored\-unusable .
+A tier with no slots yet is an empty
+.B pins
+array and exit 0; a tier that cannot be read exits 1.
+A path that is not valid UTF\-8 cannot be represented byte for byte in
+JSON (macOS volumes refuse such names).
 .IP
 A slot that violates the slot\-name invariant (see
 .BR FILES )
@@ -848,7 +893,11 @@ carries a
 .B note:
 field naming the drift (a record naming another path than the
 directory encodes) and the review that repairs it.
-The note is one more indented field, so the grammar above holds.
+In the json form it is the
+.B record\-names\-other\-path
+problem, with
+.B record_path
+set.
 A directory the volume aliases onto a former spelling of the live path
 is not visible from a listing, which never asks about a live path;
 .B status

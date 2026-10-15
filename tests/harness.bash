@@ -1287,6 +1287,39 @@ else
   fail "list emitted a line that is neither a flush-left path nor an indented field" "$GRAMMAR_BAD"
 fi
 
+# --format json, the machine form. Stderr stays apart so the document is
+# parsed alone.
+if command -v jq >/dev/null 2>&1; then
+  run_pinned_split list --format json
+  assert_exit "$RC" 0 "list --format json exits 0"
+  assert_eq "$(jq -r '.schema' "$OUT")" 1 "the document names schema 1"
+  assert_eq "$(jq -r --arg p "$SUB/l/Application Support/x.json" \
+                 '.pins[] | select(.path == $p) | [.type, .kind, .digest, .custody, (.problems | length)] | map(tostring) | join(" ")' "$OUT")" \
+            "file sha256 $(digest_of "$SUB/l/Application Support/x.json") none 0" \
+            "a file entry carries its type, kind, full digest, custody and no problems"
+  assert_eq "$(jq --arg p "$SUB/l/bracket[1].conf" '[.pins[] | select(.path == $p)] | length' "$OUT")" 1 \
+            "a path with glob metacharacters is one exact string"
+  assert_eq "$(jq '[.pins[] | select(.path | endswith("never-again.txt"))] | length' "$OUT")" 0 \
+            "the json form omits tombstoned slots too"
+  assert_eq "$(jq -c '[.pins[] | keys | length] | unique' "$OUT")" '[9]' \
+            "every entry carries all nine keys"
+  run_pinned_split list --format json --under "$SUB/l/sub"
+  assert_eq "$(jq -r '[.pins[].path] | join(",")' "$OUT")" "$SUB/l/sub/plain.txt" \
+            "--under filters the json form at the same component boundary"
+  run_pinned_split list --format json --under "$SUB/l/nothing-here"
+  assert_exit "$RC" 0 "an empty json listing exits 0"
+  assert_eq "$(jq -c . "$OUT")" '{"schema":1,"pins":[]}' \
+            "and is an empty pins array, never a sentinel string"
+  run_pinned_split list --format json --under /
+  assert_eq "$(jq '.pins | length' "$OUT")" "$(jq '.pins | length' < <("$STUB" list --format json))" \
+            "--under / lists every pin"
+else
+  skip "S7 list --format json cases" "no jq in the trusted PATH"
+fi
+run_pinned list --format yaml
+assert_exit "$RC" 1 "an unknown list format is refused"
+assert_contains "$OUT" "unknown list format: yaml" "and the refusal names it"
+
 run_pinned list --under "$SUB/l/sub"
 assert_exit "$RC" 0 "list --under exits 0"
 assert_contains "$OUT" "$SUB/l/sub/plain.txt" "--under keeps paths below the directory"
@@ -1313,6 +1346,12 @@ assert_contains "$OUT" "custody:  kept in the slot" "a held copy is stated witho
 assert_missing  "$OUT" "custody:  none" "and the slot is not reported copy-less"
 assert_eq "$(grep -c -v '^ ' "$OUT" || true)" 1 \
           "the path is the entry's only flush-left line; every fact is indented under it"
+if command -v jq >/dev/null 2>&1; then
+  run_pinned_split list --format json --under "$SUB/l/held"
+  assert_eq "$(jq -r '.pins[0].custody' "$OUT")" kept "the json form states held custody as kept"
+  run_pinned_split list --format json --under "$SUB/l/unheld"
+  assert_eq "$(jq -r '.pins[0].custody' "$OUT")" none "and a copy-less slot as none"
+fi
 
 run_pinned list --under "$SUB/l/unheld"
 assert_exit "$RC" 0 "list exits 0 for a slot with no copy"
@@ -1480,6 +1519,12 @@ ANS=""
 run_pinned list
 assert_exit "$RC" 0 "list survives a corrupt rev slot"
 assert_contains "$OUT" "CORRUPT" "list flags a corrupt rev slot instead of printing a digest"
+if command -v jq >/dev/null 2>&1; then
+  run_pinned_split list --format json
+  assert_eq "$(jq -r --arg p "$SUB/corruptrev.conf" \
+                 '.pins[] | select(.path == $p) | [(.digest | tostring), (.problems | join(","))] | join(" ")' "$OUT")" \
+            "null record-corrupt" "the json form gives a corrupt slot no digest and a problem code"
+fi
 
 # ---------------------------------------------------------------------------
 say "S8b: batch repo review (multiple repos, one invocation)"
@@ -2730,6 +2775,10 @@ if [ "$GIT_OK" -eq 1 ]; then
   run_pinned list --under "$REPO_DC"
   assert_exit "$RC" 0 "list exits 0 over the declared slot"
   assert_contains "$OUT" "declared: v1" "list adds the declared name to the repo block"
+  ANS=""
+  run_pinned_split list --format json --under "$REPO_DC"
+  assert_eq "$(jq -r '.pins[0] | [.type, .kind, .release, .custody] | map(tostring) | join(" ")' "$OUT")" \
+            "repo git v1 null" "the json form names a repo's kind and release, and no custody"
 
   # The stale state: the live tag stops naming the pin -- the early warning
   # for a deploy that would refuse.
@@ -2923,6 +2972,12 @@ assert_contains "$OUT" "custody:  none" \
                 "a declaring slot without a copy still says custody is missing"
 assert_eq "$(grep -c '^  custody:' "$OUT" || true)" "$(grep -cE '^[^ ]' "$OUT" || true)" \
           "every entry states custody exactly once, declaration or not"
+if command -v jq >/dev/null 2>&1; then
+  run_pinned_split list --format json --under "$SUB/ig"
+  assert_contains "$OUT" '"model"' "the json form carries the declaration's key paths"
+  assert_eq "$(jq -c '[.pins[] | select(.ignored != null) | .ignored[0]] | unique' "$OUT")" '[["model"]]' \
+            "as stored: an array of key-path arrays"
+fi
 
 # Exit 5 via the slot's own copy, naming the key that actually moved.
 printf '{\n  "model": "sonnet",\n  "effortLevel": "high",\n  "permissions": {"deny": ["Bash"]}\n}\n' > "$SUB/ig/copy.json"
@@ -4501,6 +4556,10 @@ if rrgit init -q >/dev/null 2>&1 \
   assert_contains "$OUT" "git:      $RR_REPO_HASH" "list shows the rev"
   assert_contains "$OUT" "note:     record names $FIX/rrs/elsewhere  (review re-states it)" \
     "list notes the stale record on an indented field line"
+  run_pinned_split list --format json --under "$FIX/rrs"
+  assert_eq "$(jq -r '.pins[0] | [.digest, .record_path, (.problems | join(","))] | join(" ")' "$OUT")" \
+    "$RR_REPO_HASH $FIX/rrs/elsewhere record-names-other-path" \
+    "the json form keeps the rev and names the stale record as a problem"
   run_pinned show "$RRREPO"
   assert_exit "$RC" 1 "show refuses a record naming another path"
   assert_contains "$OUT" "names path" "and says why"
