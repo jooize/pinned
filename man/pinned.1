@@ -823,20 +823,49 @@ and
 belong to the file form and are refused here.
 .RE
 .TP
-.B list [\-\-under \fIdir\fP] [\-\-format text|json]
-Live pins in your tier: decoded path, declared kind and full digest,
-the declared release name if a repo slot carries one, the ignored\-key
-declaration if a file slot has one, and custody state \(em a stored
-approved copy, or the note that there is none.
-.B \-\-under
-restricts to paths below that directory.
+.B list [\-v] [\-\-repos|\-\-files] [\-\-stale] [\-\-under \fIdir\fP] [\-\-format text|json]
+The live pins in your tier and whether each still matches its record.
+By default, an index: a
+.B repos
+section (name, short pinned hash, declared release, live state) and a
+.B files
+section grouped under their folders, then the counts of each state and,
+when a repo's HEAD has moved past its pin, the
+.B pinned review
+line that approves it.
 .IP
-Each pin is one block: the path alone on its first line, every fact
-about it an indented \(dqlabel: value\(dq field under it, and a blank
-line between entries.
-Digests are never abbreviated \(em the listing is meant to be read and
-copied from, not re\-run.
-The text form is for reading; a program reads
+Live state is
+.B \(u2713 current
+when the file or HEAD matches the record;
+.B \(u2202
+for a file changed since approval (or only in its ignored keys), a repo
+some commits past its pin, behind it, diverged from it, or a pin missing
+from the checkout;
+.B \(u2205 gone
+for a path that no longer exists; and
+.B \(u2717
+for a slot or record that cannot be read, or a file whose owner or mode
+.B verify
+refuses.
+A file's state is
+.BR verify 's
+own verdict, so the listing never disagrees with a gate; it is display,
+not a decision.
+.IP
+.B \-v
+prints one block per pin: the path alone on its first line, then the
+declared kind and full digest, the declared release, the ignored\-key
+declaration, custody (a stored approved copy, or none) and the live
+state, each an indented \(dqlabel: value\(dq field.
+.B \-\-repos
+and
+.B \-\-files
+show one kind of pin,
+.B \-\-stale
+only the pins that are not current, and
+.B \-\-under
+only paths below that directory.
+The text views are for reading and promise no format; a program reads
 .BR "\-\-format json" .
 .IP
 .B \-\-format json
@@ -887,12 +916,23 @@ array and exit 0; a tier that cannot be read exits 1.
 A path that is not valid UTF\-8 cannot be represented byte for byte in
 JSON (macOS volumes refuse such names).
 .IP
+The filters apply to it too, and
+.B \-\-stale
+is the one place it computes live state; the document itself carries
+no live state, and
+.B \-v
+does not apply.
+.IP
 A slot that violates the slot\-name invariant (see
 .BR FILES )
-carries a
+shows as
+.B record names another path
+in the default view and carries a
 .B note:
-field naming the drift (a record naming another path than the
-directory encodes) and the review that repairs it.
+field under
+.BR \-v ,
+naming the drift (a record naming another path than the directory
+encodes) and the review that repairs it.
 In the json form it is the
 .B record\-names\-other\-path
 problem, with

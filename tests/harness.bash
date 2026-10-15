@@ -1264,28 +1264,63 @@ seed_pin "$SUB/l/subx/nearmiss.txt"          "$(digest_of "$SUB/l/subx/nearmiss.
 seed_pin "$SUB/l/bracket[1].conf"            "$(digest_of "$SUB/l/bracket[1].conf")"
 seed_tombstone "$SUB/l/never-again.txt"
 
-run_pinned list
-assert_exit "$RC" 0 "list exits 0"
-assert_contains "$OUT" "$SUB/l/sub/plain.txt" "list decodes a plain path"
-assert_contains "$OUT" "$SUB/l/Application Support/x.json" "list decodes a path with spaces"
-assert_contains "$OUT" "$SUB/l/bracket[1].conf" "list decodes a path with glob metacharacters"
-assert_contains "$OUT" "sha256:" "list names the declared kind, as the digest's label"
-assert_missing  "$OUT" "$SUB/l/never-again.txt" "list omits tombstoned slots"
-# THE GRAMMAR: a flush-left line is a decoded absolute path (the whole line --
-# no un-quoting, whatever the path holds), every other non-blank line is an
-# indented `label: value` about the path above it, and blank lines separate
-# entries. Asserted structurally, so a stray unindented annotation fails here
-# rather than in whatever reads this listing.
-GRAMMAR_BAD="$(awk '
+run_pinned list -v
+assert_exit "$RC" 0 "list -v exits 0"
+assert_contains "$OUT" "$SUB/l/sub/plain.txt" "list -v decodes a plain path"
+assert_contains "$OUT" "$SUB/l/Application Support/x.json" "list -v decodes a path with spaces"
+assert_contains "$OUT" "$SUB/l/bracket[1].conf" "list -v decodes a path with glob metacharacters"
+assert_contains "$OUT" "sha256:" "list -v names the declared kind, as the digest's label"
+assert_contains "$OUT" "live:     ✓ current" "list -v states each pin's live state"
+assert_missing  "$OUT" "$SUB/l/never-again.txt" "list -v omits tombstoned slots"
+# The -v shape: each block opens with its path flush left, and every fact is
+# an indented `label: value` beneath it. The custody footer is the one other
+# flush-left line, and it prints once, after the last block.
+SHAPE_BAD="$(awk '
     /^[[:space:]]*$/ { next }
     /^[^ ]/          { next }
     /^  [a-z0-9]+: /    { next }
                      { print }' "$OUT")"
-if [ -z "$GRAMMAR_BAD" ] && grep -qE '^[^ ]' "$OUT" && grep -qE '^  [a-z0-9]+: ' "$OUT"; then
-  ok "the grammar holds: flush-left paths, two-space label fields, nothing else"
+if [ -z "$SHAPE_BAD" ] && grep -qE '^  [a-z0-9]+: ' "$OUT"; then
+  ok "list -v: flush-left paths, two-space label fields, nothing else"
 else
-  fail "list emitted a line that is neither a flush-left path nor an indented field" "$GRAMMAR_BAD"
+  fail "list -v printed a line that is neither a path nor an indented field" "$SHAPE_BAD"
 fi
+assert_eq "$(grep -c '^custody none: ' "$OUT" || true)" 1 "the custody footer prints once, not per entry"
+
+# The default view: an index, files grouped under their folder. A folder
+# below another listed folder folds into it, so $SUB/l heads all four.
+run_pinned list --under "$SUB/l"
+assert_exit "$RC" 0 "list exits 0"
+assert_contains "$OUT" "files  4 in 1 folder" "the files section counts its pins and folders"
+assert_eq "$(grep -cxF "  $SUB/l" "$OUT" || true)" 1 "the folder heads its files on a line of its own"
+assert_contains "$OUT" "    sub/plain.txt" "a file is named relative to its folder"
+assert_contains "$OUT" "4 current" "the counts line tallies the live states"
+assert_missing  "$OUT" "sha256:" "the default view leaves digests to -v"
+assert_missing  "$OUT" "never-again.txt" "the default view omits tombstoned slots"
+assert_missing  "$OUT" "repos  " "a tier with no repo pins prints no repos section"
+# Live state follows the file: an edit reads as changed, a removal as gone,
+# and --stale keeps only those two.
+printf 'listed one, edited\n' > "$SUB/l/sub/plain.txt"
+mv "$SUB/l/subx/nearmiss.txt" "$SUB/l/subx/nearmiss.moved"
+run_pinned list --under "$SUB/l"
+assert_contains "$OUT" "∂ changed since approval" "an edited file reads as changed"
+assert_contains "$OUT" "∅ gone" "a removed file reads as gone"
+assert_contains "$OUT" "2 current · 1 changed · 1 gone" "and the counts line names each state once"
+run_pinned list --stale --under "$SUB/l"
+assert_contains "$OUT" "plain.txt" "--stale keeps the changed file"
+assert_contains "$OUT" "nearmiss.txt" "and the gone one"
+assert_missing  "$OUT" "x.json" "and drops what is current"
+printf 'listed one\n' > "$SUB/l/sub/plain.txt"
+mv "$SUB/l/subx/nearmiss.moved" "$SUB/l/subx/nearmiss.txt"
+run_pinned list --stale --under "$SUB/l"
+assert_contains "$OUT" "✓ Every pin is current." "--stale over a current set says so"
+run_pinned list --under "$SUB/l/nothing-here"
+assert_exit "$RC" 0 "an empty filtered listing exits 0"
+assert_contains "$OUT" "No pins match." "and says nothing matched"
+run_pinned list --repos --under "$SUB/l"
+assert_contains "$OUT" "No pins match." "--repos over files only matches nothing"
+run_pinned list -v --format json
+assert_exit "$RC" 1 "-v with --format json is refused"
 
 # --format json, the machine form. Stderr stays apart so the document is
 # parsed alone.
@@ -1320,7 +1355,7 @@ run_pinned list --format yaml
 assert_exit "$RC" 1 "an unknown list format is refused"
 assert_contains "$OUT" "unknown list format: yaml" "and the refusal names it"
 
-run_pinned list --under "$SUB/l/sub"
+run_pinned list -v --under "$SUB/l/sub"
 assert_exit "$RC" 0 "list --under exits 0"
 assert_contains "$OUT" "$SUB/l/sub/plain.txt" "--under keeps paths below the directory"
 assert_missing  "$OUT" "$SUB/l/subx/nearmiss.txt" "--under matches at a component boundary (/l/sub is not /l/subx)"
@@ -1339,10 +1374,10 @@ seed_pin "$SUB/l/unheld/loose.txt"  "$(digest_of "$SUB/l/unheld/loose.txt")"
 cp "$SUB/l/held/kept.txt" "$(slot_file_of "$SUB/l/held/kept.txt" approved)"
 chmod 640 "$(slot_file_of "$SUB/l/held/kept.txt" approved)"
 
-run_pinned list --under "$SUB/l/held"
+run_pinned list -v --under "$SUB/l/held"
 assert_exit "$RC" 0 "list exits 0 for a byte-exact slot that holds a copy"
 assert_contains "$OUT" "$SUB/l/held/kept.txt" "the path stands alone on the entry's first line"
-assert_contains "$OUT" "custody:  kept in the slot" "a held copy is stated without any ignored declaration"
+assert_contains "$OUT" "custody:  kept  (pinned cat serves these bytes)" "a held copy is stated without any ignored declaration"
 assert_missing  "$OUT" "custody:  none" "and the slot is not reported copy-less"
 assert_eq "$(grep -c -v '^ ' "$OUT" || true)" 1 \
           "the path is the entry's only flush-left line; every fact is indented under it"
@@ -1353,14 +1388,14 @@ if command -v jq >/dev/null 2>&1; then
   assert_eq "$(jq -r '.pins[0].custody' "$OUT")" none "and a copy-less slot as none"
 fi
 
-run_pinned list --under "$SUB/l/unheld"
+run_pinned list -v --under "$SUB/l/unheld"
 assert_exit "$RC" 0 "list exits 0 for a slot with no copy"
 assert_contains "$OUT" "$SUB/l/unheld/loose.txt" "the path stands alone on the entry's first line"
-assert_contains "$OUT" "custody:  none  (re-approve with --store to keep one)" \
-                "a copy-less slot says so, and says how to fix it"
-assert_missing  "$OUT" "kept in the slot" "and does not claim custody it does not have"
-assert_eq "$(grep -c -v '^ ' "$OUT" || true)" 1 \
-          "the copy-less entry keeps the same one-path-one-block shape"
+assert_contains "$OUT" "custody:  none" "a copy-less slot says so"
+assert_contains "$OUT" "re-approve with --store to keep a copy" "and the footer says how to fix it"
+assert_missing  "$OUT" "custody:  kept" "and does not claim custody it does not have"
+assert_eq "$(grep -c '^[^ ]' "$OUT" || true)" 2 \
+          "the copy-less entry is one path block plus the footer"
 
 # status follows the same custody-on-every-record rule (the block sits
 # outside the ignore branch): a byte-exact, declaration-free slot reports
@@ -1494,9 +1529,17 @@ y
   assert_exit "$RC" 0 "status after a new commit exits 0"
   assert_contains "$OUT" "HEAD is not approved" "status reports drift from the pin"
 
-  run_pinned list
-  assert_contains "$OUT" "git" "list shows the repo pin's declared kind"
-  assert_contains "$OUT" "$REPO_FIX" "list shows the repo path"
+  run_pinned list -v
+  assert_contains "$OUT" "git:" "list -v shows the repo pin's declared kind"
+  assert_contains "$OUT" "$REPO_FIX" "list -v shows the repo path"
+  assert_contains "$OUT" "∂ 1 commit past the pin" "list -v states how far HEAD moved past the pin"
+  run_pinned list --repos
+  assert_contains "$OUT" "repos  " "the default view heads a repos section"
+  assert_contains "$OUT" "${REPO_FIX##*/}" "and names the repo by its folder"
+  assert_contains "$OUT" "∂ 1 commit past the pin" "with the live state"
+  assert_contains "$OUT" "Review the repos past their pin:" "a repo past its pin gets the review line"
+  assert_contains "$OUT" "pinned review $REPO_FIX" "naming the command that approves it"
+  assert_missing  "$OUT" "plain.txt" "--repos leaves out the file pins"
 
   # read_rev's length invariant, on the repo slot itself (last: it wrecks it).
   printf 'deadbeef  %s\n' "$REPO_FIX" > "$REPO_SLOT/rev.git"
@@ -1518,7 +1561,8 @@ seed_rev "$SUB/corruptrev.conf" "nothex"
 ANS=""
 run_pinned list
 assert_exit "$RC" 0 "list survives a corrupt rev slot"
-assert_contains "$OUT" "CORRUPT" "list flags a corrupt rev slot instead of printing a digest"
+assert_contains "$OUT" "✗ corrupt record" "list flags a corrupt rev slot instead of printing a digest"
+assert_contains "$OUT" "broken" "and counts it as broken"
 if command -v jq >/dev/null 2>&1; then
   run_pinned_split list --format json
   assert_eq "$(jq -r --arg p "$SUB/corruptrev.conf" \
@@ -2772,9 +2816,11 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_contains "$OUT" "declared:   v1" "status shows the declared name"
   assert_contains "$OUT" "deploy syncs ref= to refs/tags/v1" "and its effect"
   ANS=""
-  run_pinned list --under "$REPO_DC"
+  run_pinned list -v --under "$REPO_DC"
   assert_exit "$RC" 0 "list exits 0 over the declared slot"
-  assert_contains "$OUT" "declared: v1" "list adds the declared name to the repo block"
+  assert_contains "$OUT" "release:  v1" "list -v adds the declared release to the repo block"
+  run_pinned list --under "$REPO_DC"
+  assert_contains "$OUT" " v1 " "the default view puts the release in its own column"
   ANS=""
   run_pinned_split list --format json --under "$REPO_DC"
   assert_eq "$(jq -r '.pins[0] | [.type, .kind, .release, .custody] | map(tostring) | join(" ")' "$OUT")" \
@@ -2871,8 +2917,8 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_contains "$OUT" "declared:   v1" "status reads release"
   assert_missing "$OUT" "legacy-name" "and never the old record"
   ANS=""
-  run_pinned list --under "$REPO_DC"
-  assert_contains "$OUT" "declared: v1" "list reads release"
+  run_pinned list -v --under "$REPO_DC"
+  assert_contains "$OUT" "release:  v1" "list reads release"
   assert_missing "$OUT" "legacy-name" "and never the old record"
   # A root ceremony refuses the ambiguity instead of picking a side: it
   # names the slot and the hand-fix, and touches neither file.
@@ -2964,13 +3010,13 @@ fi
 # binds them, so neither fact has to ride the other's line to be readable.
 # Its copy-less sibling in the same directory takes the other branch, so one
 # --under run covers both.
-run_pinned list --under "$SUB/ig"
+run_pinned list -v --under "$SUB/ig"
 assert_exit "$RC" 0 "list exits 0 over the ignore-declaring fixtures"
 assert_contains "$OUT" "ignored:  model" "the declaration is its own field"
-assert_contains "$OUT" "custody:  kept in the slot" "custody is its own field beside it"
+assert_contains "$OUT" "custody:  kept" "custody is its own field beside it"
 assert_contains "$OUT" "custody:  none" \
                 "a declaring slot without a copy still says custody is missing"
-assert_eq "$(grep -c '^  custody:' "$OUT" || true)" "$(grep -cE '^[^ ]' "$OUT" || true)" \
+assert_eq "$(grep -c '^  custody:' "$OUT" || true)" "$(grep -cE '^/' "$OUT" || true)" \
           "every entry states custody exactly once, declaration or not"
 if command -v jq >/dev/null 2>&1; then
   run_pinned_split list --format json --under "$SUB/ig"
@@ -3121,10 +3167,10 @@ assert_absent "$DOOM_SLOT/ignored.json" "tombstone drops the declaration"
 assert_absent "$DOOM_SLOT/approved" "tombstone drops the approved copy"
 
 # Surfaces: list annotates, status reports the declaration and the ~ state.
-run_pinned list
+run_pinned list -v
 assert_exit "$RC" 0 "list exits 0 with ignore-declaring slots present"
-assert_contains "$OUT" "ignored:  model" "list annotates a slot that declares ignored keys"
-assert_contains "$OUT" "$SUB/ig/nocopy.json" "list still prints the parseable row"
+assert_contains "$OUT" "ignored:  model" "list -v annotates a slot that declares ignored keys"
+assert_contains "$OUT" "$SUB/ig/nocopy.json" "list -v still prints the entry"
 ANS=""
 run_pinned status "$SUB/ig/nocopy.json"
 assert_exit "$RC" 0 "status exits 0"
@@ -4551,7 +4597,7 @@ if rrgit init -q >/dev/null 2>&1 \
   assert_contains "$OUT" "record:     ✗ names $FIX/rrs/elsewhere, not this spelling" \
     "status reports the stale record as its own row"
   assert_contains "$OUT" "HEAD is approved" "and still judges HEAD against the pin"
-  run_pinned list --under "$FIX/rrs"
+  run_pinned list -v --under "$FIX/rrs"
   assert_exit "$RC" 0 "list survives it"
   assert_contains "$OUT" "git:      $RR_REPO_HASH" "list shows the rev"
   assert_contains "$OUT" "note:     record names $FIX/rrs/elsewhere  (review re-states it)" \
@@ -4577,7 +4623,7 @@ if rrgit init -q >/dev/null 2>&1 \
     "the record keeps its rev and names this path"
   run_pinned status "$RRREPO"
   assert_missing "$OUT" "not this spelling" "status reports nothing stale afterwards"
-  run_pinned list --under "$FIX/rrs"
+  run_pinned list -v --under "$FIX/rrs"
   assert_missing "$OUT" "note:" "nor does list"
 else
   fail "record-path git fixture init failed -- run this harness with the sandbox OFF"

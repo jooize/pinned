@@ -53,7 +53,7 @@ complete -c pinned -n __pinned_needs_action -a signer -d 'Allowed-signers ceremo
 complete -c pinned -n __pinned_needs_action -a ignorable -d 'Ignorable-JSON-key grants'
 complete -c pinned -n __pinned_needs_action -a status -d 'Record vs live state'
 complete -c pinned -n __pinned_needs_action -a show -d 'Trusted re-display, records nothing'
-complete -c pinned -n __pinned_needs_action -a list -d 'Live pins in your tier'
+complete -c pinned -n __pinned_needs_action -a list -d 'Your pins and their live state'
 complete -c pinned -n __pinned_needs_action -a slot -d 'Print the slot directory for a path'
 complete -c pinned -n __pinned_needs_action -a setup -d '(sudo) Provision sudoers digest pin, self-install'
 
@@ -121,3 +121,7 @@ complete -c pinned -n '__pinned_sub_is ignorable add remove' -l yes -d 'Skip the
 # --- list ---------------------------------------------------------------------
 complete -c pinned -n '__pinned_action_is list' -l under -x -a '(__fish_complete_directories)' -d 'Only pins under this directory'
 complete -c pinned -n '__pinned_action_is list' -l format -x -a 'text json' -d 'Output format'
+complete -c pinned -n '__pinned_action_is list' -s v -l verbose -d 'Every field, one block per pin'
+complete -c pinned -n '__pinned_action_is list' -l repos -d 'Only repo pins'
+complete -c pinned -n '__pinned_action_is list' -l files -d 'Only file pins'
+complete -c pinned -n '__pinned_action_is list' -l stale -d 'Only pins that are not current'

@@ -330,8 +330,8 @@ usage: pinned <action> [args]
   ignorable add|remove|list ...  (sudo) ignorable-JSON-key grants
   status <repo|file>             record vs live state
   show <file|repo> [options]     trusted re-display; files get hash + wrapper
-  list [--under <dir>] [--format text|json]
-                                 live pins in your tier
+  list [-v] [--repos|--files] [--stale] [--under <dir>] [--format text|json]
+                                 your pins and their live state
   slot <path>                    print the slot directory for a path
   setup [--yes]                  (sudo) provision sudoers digest pin; self-install
   --version                      print the release version
@@ -6672,32 +6672,36 @@ do_sign() {
 
 # ---- list ------------------------------------------------------------------
 
-# One listing entry is a BLOCK, not a row. The path stands alone on the first
-# line (bold magenta -- the subject, exactly as every ceremony header names
-# it), and each fact about it is an indented `label: value` field beneath it,
-# with one blank line between entries. That answers by indentation the
-# question the old flat listing left to counting -- which lines belong to
-# which pin -- and it puts the path, the part a reader actually searches for,
-# at a fixed column instead of behind a 64-character digest.
+# Three views of one walk, every one fed by list_entry, so they cannot
+# disagree about a slot:
 #
-# The field gutter is the ceremony's: values start at column 12, so `list`,
-# `status` and the review header all line up. Padding is applied to the BARE
-# label, outside the color, because %-9s counts escape bytes.
+#   (default)       an index for people: a repos section (name, short hash,
+#                   release, live state) and a files section grouped under
+#                   their folders, then the counts and the review line for
+#                   repos past their pin
+#   -v              one block per pin: the path alone on its first line, each
+#                   fact an indented `label: value` field beneath it
+#   --format json   the stable interface for programs (LIST_JSON below)
 #
-# A flush-left line is a decoded absolute path, and it is the WHOLE line, so a
-# path holding spaces, tabs or glob metacharacters reads as itself. Every
-# other non-blank line starts with two spaces and reads `<label>: <value>`
-# about the path above it. Blank lines separate entries. This is the form for
-# reading; a program reads `--format json` (LIST_JSON below), which is the
-# stable interface.
+# The two text views are for reading and promise no grammar; a program reads
+# the JSON. Live state (does the file or HEAD still match the record?) is
+# computed for the text views and for --stale, never for a plain JSON
+# listing: it costs a verify per file and a few git calls per repo, and a
+# consumer reading records has no use for it. It is display, not a trust
+# decision -- every gate runs its own `pinned verify`.
+
+# The -v block's first line: the path, bold cyan as a group header, the way
+# the default view heads a folder. Not bold magenta: magenta is the one
+# subject under decision, and a listing decides nothing.
 list_subject() { # found-so-far (0 = this is the first entry)  path
   [ "$1" -eq 0 ] || printf '\n'
-  printf '%s%s%s\n' "$C_B$C_MAG" "$2" "$C_OFF"
+  printf '%s%s%s\n' "$C_B$C_CYN" "$(list_disp "$2")" "$C_OFF"
 }
 
-# The kind (sha256 / git) is the LABEL of the digest field, not a column of
-# its own: it says what the value is, which is what a label is for, and it
-# spares every entry a column sized for the longest kind anyone ever adds.
+# The field gutter is the ceremony's: values start at column 12, so `list
+# -v`, `status` and the review header all line up. Padding is applied to the
+# BARE label, outside the color, because %-9s counts escape bytes. The kind
+# (sha256 / git) is the LABEL of the digest field: it says what the value is.
 list_field() { # label  value-color  value  parenthetical ("" for none)
   local lbl="$1:"
   if [ -n "$4" ]; then
@@ -6789,48 +6793,6 @@ list_has_problem() { # code
   return 1
 }
 
-# The text block for the entry list_entry just read.
-list_text_entry() { # found-so-far  path
-  list_subject "$1" "$2"
-  if list_has_problem slot-malformed; then
-    list_field state "$C_RED$C_B" MALFORMED "slot unreadable"
-    return 0
-  fi
-  if list_has_problem record-corrupt; then
-    if [ "$L_TYPE" = repo ]; then
-      list_field state "$C_RED$C_B" CORRUPT "no readable revision"
-    else
-      list_field state "$C_RED$C_B" CORRUPT "no readable digest"
-    fi
-    return 0
-  fi
-  list_field "$L_KIND" "$C_CYN" "$L_DIGEST" ""
-  if [ -n "$L_RECPATH" ]; then
-    if [ "$L_TYPE" = repo ]; then
-      list_field note "$C_YEL" "record names $L_RECPATH" "review re-states it"
-    else
-      list_field note "$C_YEL" "record names $L_RECPATH" "review --file re-states it"
-    fi
-  fi
-  if [ "$L_TYPE" = repo ]; then
-    if [ -n "$L_RELEASE" ]; then
-      list_field declared "$C_CYN" "$L_RELEASE" "deploy syncs ref= to refs/tags/$L_RELEASE"
-    elif list_has_problem release-unusable; then
-      list_field declared "$C_YEL" "unusable declaration" ""
-    fi
-    return 0
-  fi
-  if [ -n "$L_IGNORED" ]; then
-    list_field ignored "$C_CYN" "$(ign_display "$L_IGNORED")" ""
-  elif list_has_problem ignored-unusable; then
-    list_field ignored "$C_YEL" "unusable declaration" ""
-  fi
-  if [ "$L_CUSTODY" = kept ]; then
-    list_field custody "" "kept in the slot" "pinned cat serves these bytes"
-  else
-    list_field custody "" none "re-approve with --store to keep one"
-  fi
-}
 
 # The JSON record for the entry list_entry just read: its nine fields as
 # NUL-terminated strings, in LIST_JSON's order. NUL is the one byte no path
@@ -6867,88 +6829,393 @@ LIST_JSON='
                custody: (.[7] | nz),
                problems: (.[8] | if . == "" then [] else split(" ") end)}]}'
 
+
+# A path as a person reads it: $HOME as ~, terminal controls stripped (a path
+# is bytes anyone could have chosen, and the text views print it to a
+# terminal). Display only: never compared, hashed or handed to a program.
+list_disp() { # path
+  local p
+  p="$(sanitize_display "$1")"
+  if [ -n "${HOME:-}" ] && [ "$HOME" != / ]; then
+    case "$p" in
+      "$HOME")   p="~" ;;
+      "$HOME"/*) p="~${p#"$HOME"}" ;;
+    esac
+  fi
+  printf '%s' "$p"
+}
+
+# The live state of the entry list_entry just read, into LV_CLASS (ok, part,
+# gone, bad) and LV_MSG, the words after the glyph. LV_PAST=1 marks a repo
+# whose HEAD descends from the pin: the default view names those in its
+# review line. A file's state is verify's own exit (in a subshell, as status
+# does), so the listing can never disagree with the gate. A repo's comes from
+# sgit, the scrubbed git every reading verb uses.
+list_live() { # path
+  local path="$1" rc head n repo
+  LV_CLASS="" LV_MSG="" LV_PAST=0
+  if list_has_problem slot-malformed; then LV_CLASS=bad LV_MSG="malformed slot"; return 0; fi
+  if list_has_problem record-corrupt; then LV_CLASS=bad LV_MSG="corrupt record"; return 0; fi
+  if [ "$L_TYPE" = file ]; then
+    rc=0; (do_verify "$path" >/dev/null 2>&1) || rc=$?
+    case "$rc" in
+      0)  LV_CLASS=ok   LV_MSG=current ;;
+      5)  LV_CLASS=part LV_MSG="changed in ignored keys" ;;
+      11) LV_CLASS=part LV_MSG="changed since approval" ;;
+      17) LV_CLASS=part LV_MSG="record names another path" ;;
+      20) LV_CLASS=gone LV_MSG=gone ;;
+      30) LV_CLASS=bad  LV_MSG="owner or mode not trusted" ;;
+      *)  LV_CLASS=bad  LV_MSG="verify failed (exit $rc)" ;;
+    esac
+    return 0
+  fi
+  if [ ! -e "$path" ]; then LV_CLASS=gone LV_MSG=gone; return 0; fi
+  if list_has_problem record-names-other-path; then
+    LV_CLASS=part LV_MSG="record names another path"
+    return 0
+  fi
+  repo="$path"   # sgit runs git -C "$repo"
+  if ! head="$(sgit rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null)"; then
+    LV_CLASS=bad LV_MSG="not a readable git work tree"
+    return 0
+  fi
+  if [ "$head" = "$L_DIGEST" ]; then
+    LV_CLASS=ok LV_MSG=current
+  elif ! sgit cat-file -e "${L_DIGEST}^{commit}" 2>/dev/null; then
+    LV_CLASS=part LV_MSG="pin missing from this checkout"
+  elif sgit merge-base --is-ancestor "$L_DIGEST" "$head" 2>/dev/null; then
+    n="$(sgit rev-list --count "${L_DIGEST}..${head}" 2>/dev/null || echo '?')"
+    LV_CLASS=part LV_MSG="$n commit$(plural_s "$n") past the pin" LV_PAST=1
+  elif sgit merge-base --is-ancestor "$head" "$L_DIGEST" 2>/dev/null; then
+    LV_CLASS=part LV_MSG="behind the pin"
+  else
+    LV_CLASS=part LV_MSG="diverged from the pin"
+  fi
+  return 0
+}
+
+# A live state as it prints: the color and glyph its class takes, then the
+# words. `∅` is dim: an absence is neither good nor bad.
+list_mark() { # class  message
+  case "$1" in
+    ok)   printf '%s✓ %s%s' "$C_GRN" "$2" "$C_OFF" ;;
+    part) printf '%s∂ %s%s' "$C_YEL" "$2" "$C_OFF" ;;
+    gone) printf '%s∅ %s%s' "$C_DIM" "$2" "$C_OFF" ;;
+    *)    printf '%s✗ %s%s' "$C_RED$C_B" "$2" "$C_OFF" ;;
+  esac
+}
+
+# The -v block for the entry list_entry and list_live just read.
+LIST_NO_CUSTODY=0
+list_verbose_entry() { # found-so-far  path
+  list_subject "$1" "$2"
+  if list_has_problem slot-malformed; then
+    list_field live "" "$(list_mark bad "malformed slot")" "more than one state file"
+    return 0
+  fi
+  if list_has_problem record-corrupt; then
+    if [ "$L_TYPE" = repo ]; then
+      list_field live "" "$(list_mark bad "corrupt record")" "no readable revision"
+    else
+      list_field live "" "$(list_mark bad "corrupt record")" "no readable digest"
+    fi
+    return 0
+  fi
+  list_field "$L_KIND" "$C_CYN" "$L_DIGEST" ""
+  if [ -n "$L_RECPATH" ]; then
+    if [ "$L_TYPE" = repo ]; then
+      list_field note "$C_YEL" "record names $(list_disp "$L_RECPATH")" "review re-states it"
+    else
+      list_field note "$C_YEL" "record names $(list_disp "$L_RECPATH")" "review --file re-states it"
+    fi
+  fi
+  if [ "$L_TYPE" = repo ]; then
+    if [ -n "$L_RELEASE" ]; then
+      list_field release "" "$L_RELEASE" "deploy syncs ref= to refs/tags/$L_RELEASE"
+    elif list_has_problem release-unusable; then
+      list_field release "$C_YEL" "unusable declaration" ""
+    fi
+  else
+    if [ -n "$L_IGNORED" ]; then
+      list_field ignored "$C_CYN" "$(ign_display "$L_IGNORED")" ""
+    elif list_has_problem ignored-unusable; then
+      list_field ignored "$C_YEL" "unusable declaration" ""
+    fi
+    if [ "$L_CUSTODY" = kept ]; then
+      list_field custody "" kept "pinned cat serves these bytes"
+    else
+      list_field custody "" none ""
+      LIST_NO_CUSTODY=1
+    fi
+  fi
+  list_field live "" "$(list_mark "$LV_CLASS" "$LV_MSG")" ""
+}
+
+# Pad by characters, not bytes: printf's %-Ns counts bytes, so a name with
+# an accented letter would push its row's state column out.
+list_pad() { # text  width
+  local n=$(( $2 - ${#1} ))
+  printf '%s' "$1"
+  [ "$n" -le 0 ] || printf '%*s' "$n" ''
+}
+
+# A path as a word in a command line to copy: the ~ form when it is plain,
+# else the absolute path in single quotes, which bash, zsh and fish all read.
+list_cmd_word() { # path
+  local d
+  d="$(list_disp "$1")"
+  case "$d" in
+    *[!A-Za-z0-9._/~+@:,=-]*|'') printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
+    *) printf '%s' "$d" ;;
+  esac
+}
+
+# The indices of one of list_walk's arrays, ordered by displayed path (case
+# folded, as a reader scans), one per line: slot directories sort by their
+# encoded names, which is not the order a reader scans in.
+list_order() { # count  array-name
+  local i v
+  for (( i = 0; i < $1; i++ )); do
+    eval "v=\"\${$2[$i]}\""
+    printf '%s\t%d\n' "$v" "$i"
+  done | LC_ALL=C sort -f | while IFS="$TAB" read -r v i; do printf '%d\n' "$i"; done
+}
+
+# The default view, from the arrays list_walk filled: repos, files grouped
+# under their folders, counts, and the review line. A name column is padded
+# to its longest entry, capped so one long name cannot push every state off
+# the screen; a name past the cap simply pushes its own row.
+list_short() {
+  local i j n w nw relw b name top rel dirs tops k
+  local n_ok=0 n_part=0 n_gone=0 n_bad=0 past="" sep=""
+  local -a names=() tdirs=() ro=() fo=()
+  while IFS= read -r i; do ro[${#ro[@]}]="$i"; done < <(list_order "$RP_N" RP_DISP)
+  while IFS= read -r i; do fo[${#fo[@]}]="$i"; done < <(list_order "$FP_N" FP_DISP)
+  for (( i = 0; i < RP_N; i++ )); do
+    case "${RP_CLASS[$i]}" in ok) n_ok=$((n_ok+1)) ;; part) n_part=$((n_part+1)) ;; gone) n_gone=$((n_gone+1)) ;; *) n_bad=$((n_bad+1)) ;; esac
+  done
+  for (( i = 0; i < FP_N; i++ )); do
+    case "${FP_CLASS[$i]}" in ok) n_ok=$((n_ok+1)) ;; part) n_part=$((n_part+1)) ;; gone) n_gone=$((n_gone+1)) ;; *) n_bad=$((n_bad+1)) ;; esac
+  done
+
+  if [ "$RP_N" -gt 0 ]; then
+    # A repo is named by its folder; two repos sharing one name get their
+    # parent folder too.
+    nw=0 relw=0
+    for (( i = 0; i < RP_N; i++ )); do
+      b="${RP_DISP[$i]##*/}"
+      for (( j = 0; j < RP_N; j++ )); do
+        [ "$j" -ne "$i" ] || continue
+        if [ "${RP_DISP[$j]##*/}" = "$b" ]; then
+          name="${RP_DISP[$i]%/*}"; b="${name##*/}/$b"; break
+        fi
+      done
+      names[$i]="$b"
+      [ "${#b}" -le "$nw" ] || nw="${#b}"
+      [ "${#RP_REL[$i]}" -le "$relw" ] || relw="${#RP_REL[$i]}"
+    done
+    [ "$nw" -le 32 ] || nw=32
+    printf '%srepos%s  %s%d%s\n' "$C_B" "$C_OFF" "$C_DIM" "$RP_N" "$C_OFF"
+    for i in "${ro[@]}"; do
+      printf '  %s%s%s  %s%s%s  ' "$C_CYN" "$(list_pad "${names[$i]}" "$nw")" "$C_OFF" \
+        "$C_DIM" "$(list_pad "${RP_HASH[$i]:0:7}" 7)" "$C_OFF"
+      [ "$relw" -eq 0 ] || printf '%s  ' "$(list_pad "${RP_REL[$i]}" "$relw")"
+      printf '%s\n' "$(list_mark "${RP_CLASS[$i]}" "${RP_MSG[$i]}")"
+      [ "${RP_PAST[$i]}" -eq 0 ] || past="$past $(list_cmd_word "${RP_PATH[$i]}")"
+    done
+    sep=1
+  fi
+
+  if [ "$FP_N" -gt 0 ]; then
+    # Folders: each file's own folder, folded into any listed folder above
+    # it, so ~/p/.claude-lane and ~/p/.claude/settings.local.json read as
+    # one project rather than two folders.
+    dirs=""
+    for (( i = 0; i < FP_N; i++ )); do
+      dirs="$dirs${FP_DISP[$i]%/*}$NL"
+    done
+    while IFS= read -r top; do
+      [ -n "$top" ] || continue
+      k=0
+      while IFS= read -r b; do
+        [ -n "$b" ] && [ "$b" != "$top" ] || continue
+        case "$top" in "$b"/*) k=1; break ;; esac
+      done <<<"$dirs"
+      [ "$k" -eq 1 ] || tdirs[${#tdirs[@]}]="$top"
+    done < <(printf '%s' "$dirs" | LC_ALL=C sort -f | uniq)
+    nw=0
+    for (( i = 0; i < FP_N; i++ )); do
+      [ "${#FP_DISP[$i]}" -le "$nw" ] || nw="${#FP_DISP[$i]}"
+    done
+    [ -z "$sep" ] || printf '\n'
+    printf '%sfiles%s  %s%d in %d folder%s%s\n' "$C_B" "$C_OFF" "$C_DIM" "$FP_N" \
+      "${#tdirs[@]}" "$(plural_s "${#tdirs[@]}")" "$C_OFF"
+    # The name column: the longest name relative to its folder, capped.
+    w=0
+    for top in "${tdirs[@]}"; do
+      for (( i = 0; i < FP_N; i++ )); do
+        case "${FP_DISP[$i]}" in "$top"/*) rel="${FP_DISP[$i]#"$top"/}"; [ "${#rel}" -le "$w" ] || w="${#rel}" ;; esac
+      done
+    done
+    [ "$w" -le 36 ] || w=36
+    for top in "${tdirs[@]}"; do
+      printf '  %s%s%s\n' "$C_B$C_CYN" "$top" "$C_OFF"
+      for i in "${fo[@]}"; do
+        case "${FP_DISP[$i]}" in "$top"/*) ;; *) continue ;; esac
+        rel="${FP_DISP[$i]#"$top"/}"
+        printf '    %s  %s\n' "$(list_pad "$rel" "$w")" "$(list_mark "${FP_CLASS[$i]}" "${FP_MSG[$i]}")"
+      done
+    done
+    sep=1
+  fi
+
+  # Counts: every nonzero state, the dim dot between them. A listing that is
+  # all one state still says so.
+  local -a parts=()
+  [ "$n_ok" -eq 0 ] || parts[${#parts[@]}]="$n_ok current"
+  [ "$n_part" -eq 0 ] || parts[${#parts[@]}]="$C_YEL$n_part changed$C_OFF"
+  [ "$n_gone" -eq 0 ] || parts[${#parts[@]}]="$C_DIM$n_gone gone$C_OFF"
+  [ "$n_bad" -eq 0 ] || parts[${#parts[@]}]="$C_RED$C_B$n_bad broken$C_OFF"
+  printf '\n%s' "${parts[0]}"
+  for (( i = 1; i < ${#parts[@]}; i++ )); do
+    printf ' %s·%s %s' "$C_DIM" "$C_OFF" "${parts[$i]}"
+  done
+  printf '\n'
+  if [ -n "$past" ]; then
+    printf '\n%sReview the repos past their pin:%s\n' "$C_DIM" "$C_OFF"
+    printf '  %spinned%s review%s\n' "$C_BLU" "$C_OFF" "$past"
+  fi
+}
+
 do_list() {
   # Every live (non-tombstoned) pin in the invoking user's tier.
   # Unprivileged -- reading needs membership in the tier's group. Slot
   # names never leave this function: consumers get decoded paths.
   inv="$(tier_user)"  # not id -un: correct tier under sudo (root has none)
-  local under="" format=text
+  local format=text verbose=0
+  LW_UNDER="" LW_REPOS=0 LW_FILES=0 LW_STALE=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --under)
         [ $# -ge 2 ] || { echo "--under needs a directory" >&2; exit 1; }
-        under="$2"; shift 2 ;;
+        LW_UNDER="$2"; shift 2 ;;
       --format)
         [ $# -ge 2 ] || { echo "--format needs a name: text or json" >&2; exit 1; }
         format="$2"; shift 2 ;;
+      -v|--verbose) verbose=1; shift ;;
+      --repos) LW_REPOS=1; shift ;;
+      --files) LW_FILES=1; shift ;;
+      --stale) LW_STALE=1; shift ;;
       *) echo "unknown list option: $1" >&2; usage ;;
     esac
   done
   case "$format" in
     text) ;;
-    json) require_jq "list --format json" || exit 1 ;;
+    json)
+      [ "$verbose" -eq 0 ] || { echo "-v shapes the text form; --format json always carries every field" >&2; exit 1; }
+      require_jq "list --format json" || exit 1 ;;
     *) echo "unknown list format: $format (text or json)" >&2; exit 1 ;;
   esac
-  if [ -n "$under" ]; then
+  # Neither type flag, or both, shows both.
+  if [ "$LW_REPOS" -eq 1 ] && [ "$LW_FILES" -eq 1 ]; then LW_REPOS=0 LW_FILES=0; fi
+  if [ -n "$LW_UNDER" ]; then
     # Matching is on DECODED paths at a component boundary (--under /a/b
     # matches /a/b/c, never /a/bc), so normalize to an absolute path
     # with no trailing slash.
-    case "$under" in
+    case "$LW_UNDER" in
       /*) ;;
-      *) under="$(pwd -P)/$under" ;;
+      *) LW_UNDER="$(pwd -P)/$LW_UNDER" ;;
     esac
-    [ -d "$under" ] && under="$(readlink -f "$under")"
-    while [ "${under%/}" != "$under" ]; do under="${under%/}"; done
-    [ -n "$under" ] || under=/
+    [ -d "$LW_UNDER" ] && LW_UNDER="$(readlink -f "$LW_UNDER")"
+    while [ "${LW_UNDER%/}" != "$LW_UNDER" ]; do LW_UNDER="${LW_UNDER%/}"; done
+    [ -n "$LW_UNDER" ] || LW_UNDER=/
+  fi
+  if [ "$format" = json ]; then LW_VIEW=json
+  elif [ "$verbose" -eq 1 ]; then LW_VIEW=verbose
+  else LW_VIEW=short
   fi
 
   local sroot="$PINNED_ROOT/$inv/slots"
-  if [ "$format" = json ]; then
-    # No tree yet is an empty listing, not an error: a consumer asking
-    # "which pins lie under here" gets the true answer, none, and keeps
-    # the nonzero exit for a listing it could not read.
-    if [ ! -d "$sroot" ]; then
-      printf '' | jq -Rs "$LIST_JSON"
-      return 0
-    fi
-  else
-    [ -d "$PINNED_ROOT" ] || { echo "no pin root ($PINNED_ROOT) -- nothing approved yet" >&2; exit 1; }
-    if [ ! -d "$sroot" ]; then echo "(no pins)"; exit 0; fi
+  # No tree yet is an empty listing, not an error: a consumer asking "which
+  # pins lie under here" gets the true answer, none, and keeps the nonzero
+  # exit for a listing it could not read.
+  if [ ! -d "$sroot" ]; then
+    if [ "$LW_VIEW" = json ]; then printf '' | jq -Rs "$LIST_JSON"; else echo "No pins yet."; fi
+    return 0
   fi
   [ -r "$sroot" ] || {
     echo "ERROR: cannot read $sroot -- are you in group $(pin_group "$inv")?" >&2
     exit 1
   }
-  if [ "$format" = json ]; then
-    list_walk "$sroot" "$under" json | jq -Rs "$LIST_JSON"
-  else
-    list_walk "$sroot" "$under" text
+  RP_N=0 FP_N=0 LW_SEEN=0 LW_FOUND=0 LIST_NO_CUSTODY=0
+  if [ "$LW_VIEW" = json ]; then
+    list_walk "$sroot" | jq -Rs "$LIST_JSON"
+    return 0
+  fi
+  list_walk "$sroot"
+  if [ "$LW_FOUND" -eq 0 ]; then
+    if [ "$LW_STALE" -eq 1 ] && [ "$LW_SEEN" -gt 0 ]; then
+      printf '%s✓ Every pin is current.%s\n' "$C_GRN" "$C_OFF"
+    elif [ "$LW_SEEN" -eq 0 ] && [ -z "$LW_UNDER" ] && [ "$LW_REPOS$LW_FILES" = 00 ]; then
+      echo "No pins yet."
+    else
+      echo "No pins match."
+    fi
+    return 0
+  fi
+  if [ "$LW_VIEW" = short ]; then
+    list_short
+  elif [ "$LIST_NO_CUSTODY" -eq 1 ]; then
+    printf '\n%scustody none: re-approve with%s %s--store%s %sto keep a copy pinned can serve%s\n' \
+      "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
   fi
 }
 
-list_walk() { # slots-dir  under ("" for all)  format
-  local d path found=0
+# One pass over the slots, filtered by the LW_* options. The JSON view
+# streams list_json_entry records; -v prints each block as it goes; the
+# default view fills the RP_* and FP_* arrays list_short renders. Live
+# state is computed only where it is shown or filtered on.
+list_walk() { # slots-dir
+  local d path
   for d in "$1"/*/; do
     d="${d%/}"
     [ -e "$d" ] || continue
     path="$(decode "${d##*/}")"
     # `--under /` names every path; the boundary pattern below would
     # spell it `//*` and match none.
-    if [ -n "$2" ] && [ "$2" != / ]; then
+    if [ -n "$LW_UNDER" ] && [ "$LW_UNDER" != / ]; then
       case "$path" in
-        "$2"|"$2"/*) ;;
+        "$LW_UNDER"|"$LW_UNDER"/*) ;;
         *) continue ;;
       esac
     fi
     list_entry "$d" "$path" || continue
-    if [ "$3" = json ]; then
-      list_json_entry "$path"
-    else
-      list_text_entry "$found" "$path"
+    # A malformed slot has no type, so it shows under either type filter.
+    [ "$LW_REPOS" -eq 0 ] || [ "$L_TYPE" != file ] || continue
+    [ "$LW_FILES" -eq 0 ] || [ "$L_TYPE" != repo ] || continue
+    LW_SEEN=$((LW_SEEN + 1))
+    if [ "$LW_VIEW" != json ] || [ "$LW_STALE" -eq 1 ]; then
+      list_live "$path"
+      [ "$LW_STALE" -eq 0 ] || [ "$LV_CLASS" != ok ] || continue
     fi
-    found=1
+    case "$LW_VIEW" in
+      json) list_json_entry "$path" ;;
+      verbose) list_verbose_entry "$LW_FOUND" "$path" ;;
+      short)
+        if [ "$L_TYPE" = repo ]; then
+          RP_PATH[$RP_N]="$path" RP_DISP[$RP_N]="$(list_disp "$path")"
+          RP_HASH[$RP_N]="$L_DIGEST" RP_REL[$RP_N]="$L_RELEASE"
+          RP_CLASS[$RP_N]="$LV_CLASS" RP_MSG[$RP_N]="$LV_MSG" RP_PAST[$RP_N]="$LV_PAST"
+          RP_N=$((RP_N + 1))
+        else
+          FP_DISP[$FP_N]="$(list_disp "$path")"
+          FP_CLASS[$FP_N]="$LV_CLASS" FP_MSG[$FP_N]="$LV_MSG"
+          FP_N=$((FP_N + 1))
+        fi ;;
+    esac
+    LW_FOUND=$((LW_FOUND + 1))
   done
-  [ "$3" = json ] || [ "$found" -eq 1 ] || echo "(no pins)"
+  return 0
 }
 
 # ---- show ------------------------------------------------------------------
