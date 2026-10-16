@@ -1247,8 +1247,8 @@ ANS=""
 run_pinned tombstone "$SUB/t/quiet.txt" --yes
 assert_exit "$RC" 1 "tombstone --yes still refuses a path that exists"
 rm -f "$SUB/t/quiet.txt"
-run_pinned tombstone "$SUB/t/quiet.txt" --yes
-assert_exit "$RC" 0 "tombstone --yes records with no answer on the terminal"
+run_pinned tombstone --yes "$SUB/t/quiet.txt"
+assert_exit "$RC" 0 "tombstone --yes records with no answer on the terminal (flag before the path)"
 assert_missing "$OUT" "[y/N]" "and asks nothing"
 assert_contains "$OUT" "✓ tombstoned:" "and confirms the tombstone"
 assert_file "$(slot_of "$SUB/t/quiet.txt")/tombstone" "the tombstone state file is written"
@@ -2685,6 +2685,9 @@ n
   assert_missing "$OUT" "Enter run" "no gate is printed under --yes"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW tombstone $FIX/ts-gone --yes" \
     "the flag is shown where it will really be passed"
+  assert_contains "$OUT" "that dialog is the confirmation" \
+    "the contract line says the dialog confirms a tombstone --yes"
+  assert_missing "$OUT" "until you answer y" "and promises no y/N the root side will not ask"
 
   # --yes answers the gate; it is not the path and not a second path.
   ANS=""

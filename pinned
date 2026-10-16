@@ -4066,8 +4066,19 @@ case "$action" in
       # orientation, like review's).
       if { [ "$action" = "tombstone" ] || [ "$action" = "rekey" ] || [ "$action" = "declare" ]; } \
         && [ "$elev" = "$INSTALL_TARGET" ]; then
-        printf '%ssudo asks you to authenticate; the root-side ceremony shows the record\nand confirms -- nothing is written until you answer y after it.%s\n\n' \
-          "$C_YEL$C_B" "$C_OFF"
+        # tombstone --yes takes no root-side y/N (see do_tombstone), so its
+        # contract line must not promise one: the dialog is the confirmation.
+        ts_yes=0
+        if [ "$action" = "tombstone" ]; then
+          for a in "$@"; do [ "$a" = "--yes" ] && ts_yes=1; done
+        fi
+        if [ "$ts_yes" -eq 1 ]; then
+          printf '%ssudo asks you to authenticate, and that dialog is the confirmation: the\nroot side checks the path is gone and retires its record without asking again.%s\n\n' \
+            "$C_YEL$C_B" "$C_OFF"
+        else
+          printf '%ssudo asks you to authenticate; the root-side ceremony shows the record\nand confirms -- nothing is written until you answer y after it.%s\n\n' \
+            "$C_YEL$C_B" "$C_OFF"
+        fi
         printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
         if [ "$action" = "tombstone" ]; then
           elevation_gate "tombstone the record" "slot unchanged" "$@"
