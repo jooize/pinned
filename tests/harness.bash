@@ -588,6 +588,34 @@ run_pinned verify "$SUB/v/vanish.txt"
 assert_exit "$RC" 20 "pinned but missing -> 20"
 assert_contains "$OUT" "pinned but missing" "20 names the absence"
 
+# A path this process cannot stat is not gone. A mode-000 parent stands in
+# for a sandbox that denies file-read-metadata: both make `[ -e ]` false for
+# a file that exists, and only stat's errno tells the two apart.
+if [ "$(id -u)" -ne 0 ]; then
+  mkdir -p "$SUB/v/hidden"
+  printf 'present but unseen\n' > "$SUB/v/hidden/pin.txt"
+  seed_pin "$SUB/v/hidden/pin.txt" "$(digest_of "$SUB/v/hidden/pin.txt")"
+  printf 'retired but back\n' > "$SUB/v/hidden/risen.txt"
+  seed_tombstone "$SUB/v/hidden/risen.txt"
+  chmod 000 "$SUB/v/hidden"
+  run_pinned verify "$SUB/v/hidden/pin.txt"
+  assert_exit "$RC" 1 "an unstattable pinned file -> 1, not 20"
+  assert_contains "$OUT" "cannot tell whether" "and the error says the existence is unknown"
+  assert_missing "$OUT" "pinned but missing" "it never claims the file is missing"
+  run_pinned verify "$SUB/v/hidden/risen.txt"
+  assert_exit "$RC" 1 "an unstattable tombstoned path -> 1, not a pass"
+  run_pinned list --under "$SUB/v/hidden"
+  assert_contains "$OUT" "✗ cannot read" "list reads an unstattable file as cannot read"
+  assert_missing "$OUT" "∅ gone" "and never as gone"
+  run_pinned tombstone "$SUB/v/hidden/pin.txt"
+  assert_exit "$RC" 1 "tombstone refuses a path it cannot stat"
+  assert_contains "$OUT" "cannot tell whether" "and names the reason"
+  chmod 755 "$SUB/v/hidden"
+  rm -f "$SUB/v/hidden/risen.txt"
+else
+  skip "unstattable path cases" "root stats through a mode-000 directory"
+fi
+
 printf 'back from the dead\n' > "$SUB/v/risen.txt"
 seed_tombstone "$SUB/v/risen.txt"
 run_pinned verify "$SUB/v/risen.txt"

@@ -378,6 +378,28 @@ else
   stat_mode()  { stat -Lf '%OLp' "$1"; }
 fi
 
+# Is a path gone? Asked of stat itself, because `[ -e ]` is false both for
+# a path that is missing and for one this process may not look at (a
+# sandbox that denies file-read-metadata answers EPERM, a mode-000 parent
+# EACCES). Only the first is gone: a file hidden from this process still
+# exists, and reading it as gone would let verify answer 20 for live
+# content, pass a resurrected tombstone, or let tombstone and rekey retire
+# a record whose file is still there. Gone means ENOENT, or ENOTDIR (a
+# parent component is not a directory, so nothing can be below it); -L
+# keeps `[ -e ]`'s reading of a dangling symlink as gone. LC_ALL=C pins
+# strerror's wording, which GNU and BSD stat share.
+# 0 gone, 1 present, 2 cannot tell (stat's own message on stderr).
+path_gone() { # path
+  local err
+  [ -e "$1" ] && return 1
+  err="$(LC_ALL=C stat -L "$1" 2>&1 >/dev/null)" && return 1
+  case "$err" in
+    *": No such file or directory"|*": Not a directory") return 0 ;;
+  esac
+  printf '%s\n' "${err:-stat failed without a message: $1}" >&2
+  return 2
+}
+
 # Verify a path is root-owned with no group/other write. Refuses to trust
 # binaries or pin state reachable through a user-writable ancestor. The
 # OWNER must be root; the GROUP may be anything, because every mode the
@@ -2893,9 +2915,15 @@ POLICY_VALID='
 # declaration: 0 valid, 1 absent, 2 present but unusable (loud).
 POLICY_JSON=""
 read_policy_file() {
-  local f="$1" label="$2"
+  local f="$1" label="$2" gone=0
   POLICY_JSON=""
-  [ -e "$f" ] || return 1
+  # A tier this process cannot see is not an absent tier: a hidden machine
+  # policy read as absent would drop its constraint on the user tier.
+  path_gone "$f" || gone=$?
+  case "$gone" in
+    0) return 1 ;;
+    2) echo "REFUSE: cannot tell whether $label $f exists" >&2; return 2 ;;
+  esac
   [ -f "$f" ] || { echo "REFUSE: $label $f is not a regular file" >&2; return 2; }
   verify_record_file "$f" || return 2
   verify_ancestry "$f" || return 2
@@ -3615,7 +3643,12 @@ case "$action" in
           echo "REFUSE: old and new name the same path: $rk_old" >&2
           exit 1
         fi
-        if [ -e "$rk_old" ]; then
+        rk_gone=0; path_gone "$rk_old" || rk_gone=$?
+        if [ "$rk_gone" -eq 2 ]; then
+          echo "REFUSE: cannot tell whether $rk_old still exists -- a rekey follows only a move that happened" >&2
+          exit 1
+        fi
+        if [ "$rk_gone" -eq 1 ]; then
           echo "REFUSE: $rk_old still exists -- you rekey a record whose content has already moved" >&2
           echo "        (move the content first, or review $rk_new instead)" >&2
           exit 1
@@ -5418,9 +5451,14 @@ do_tombstone() {
     path_arg="$a"
   done
   [ -n "$path_arg" ] || usage
-  local path slot answer line
+  local path slot answer line gone=0
   path="$(canon_path "$path_arg")" || exit 1
-  if [ -e "$path" ]; then
+  path_gone "$path" || gone=$?
+  if [ "$gone" -eq 2 ]; then
+    echo "REFUSE: cannot tell whether $path still exists -- you tombstone only what's gone" >&2
+    exit 1
+  fi
+  if [ "$gone" -eq 1 ]; then
     echo "REFUSE: $path still exists -- you tombstone what's gone, not what's live" >&2
     echo "        (retire the content first, or review the current content instead)" >&2
     exit 1
@@ -5539,7 +5577,13 @@ do_rekey() {
   # rekey FOLLOWS a move that already happened. While the old path is still
   # there the premise is simply false, and two live paths would be claiming
   # one record.
-  if [ -e "$old" ]; then
+  local old_gone=0
+  path_gone "$old" || old_gone=$?
+  if [ "$old_gone" -eq 2 ]; then
+    echo "REFUSE: cannot tell whether $old still exists -- a rekey follows only a move that happened" >&2
+    exit 1
+  fi
+  if [ "$old_gone" -eq 1 ]; then
     echo "REFUSE: $old still exists -- you rekey a record whose content has already moved" >&2
     echo "        (move the content first, or review $new instead)" >&2
     exit 1
@@ -6038,7 +6082,13 @@ do_verify() {
       exit 1 ;;
     tombstone)
       verify_record_file "$slot_file" || exit 1
-      if [ -e "$path" ]; then
+      local ts_gone=0
+      path_gone "$path" || ts_gone=$?
+      if [ "$ts_gone" -eq 2 ]; then
+        echo "ERROR: cannot tell whether tombstoned $path is still absent; not passing it" >&2
+        exit 1
+      fi
+      if [ "$ts_gone" -eq 1 ]; then
         IFS= read -r line <"$slot_file" || line=""
         echo "REFUSE: $path is tombstoned ($line) but present -- retired content resurrected" >&2
         exit 13
@@ -6099,7 +6149,13 @@ do_verify() {
     [ -f "$frozen" ] || { echo "ERROR: frozen copy is not a readable file: $frozen" >&2; exit 1; }
     subject="$frozen"
   else
-    if [ ! -e "$path" ]; then
+    local gone=0
+    path_gone "$path" || gone=$?
+    if [ "$gone" -eq 2 ]; then
+      echo "ERROR: cannot tell whether $path exists; it is not read as missing" >&2
+      exit 1
+    fi
+    if [ "$gone" -eq 0 ]; then
       echo "REFUSE: $path is pinned but missing (restore it, or run: pinned tombstone $path)" >&2
       exit 20
     fi
@@ -6261,7 +6317,13 @@ do_cat() {
   verify_record_file "$slot_file" || exit 30
   read_pin_record "$slot_file" "$slot_kind" "$path" || exit 1
 
-  if [ ! -e "$path" ]; then
+  local gone=0
+  path_gone "$path" || gone=$?
+  if [ "$gone" -eq 2 ]; then
+    echo "ERROR: cannot tell whether $path exists; it is not read as missing" >&2
+    exit 1
+  fi
+  if [ "$gone" -eq 0 ]; then
     echo "REFUSE: $path is pinned but missing -- custody does not serve a removed file" >&2
     echo "        (restore it, or run: pinned tombstone $path)" >&2
     exit 20
@@ -6569,12 +6631,15 @@ do_status_file() {
     tombstone)
       IFS= read -r line <"$slot_file" || line=""
       printf '%spinned:%s     tombstoned %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_DIM" "$line" "$C_OFF"
-      if [ -e "$path" ]; then
-        printf '%sstate:%s      %s✗ tombstoned but present (retired content resurrected)%s\n' \
-          "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF"
-      else
-        printf '%sstate:%s      %s✓ tombstoned and absent%s\n' "$C_DIM" "$C_OFF" "$C_GRN" "$C_OFF"
-      fi
+      local ts_gone=0
+      path_gone "$path" 2>/dev/null || ts_gone=$?
+      case "$ts_gone" in
+        0) printf '%sstate:%s      %s✓ tombstoned and absent%s\n' "$C_DIM" "$C_OFF" "$C_GRN" "$C_OFF" ;;
+        1) printf '%sstate:%s      %s✗ tombstoned but present (retired content resurrected)%s\n' \
+             "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF" ;;
+        *) printf '%sstate:%s      %s✗ tombstoned, cannot tell whether still absent%s\n' \
+             "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF" ;;
+      esac
       return ;;
     pin)
       IFS= read -r line <"$slot_file" || line=""
@@ -6852,7 +6917,7 @@ list_disp() { # path
 # does), so the listing can never disagree with the gate. A repo's comes from
 # sgit, the scrubbed git every reading verb uses.
 list_live() { # path
-  local path="$1" rc head n repo
+  local path="$1" rc head n repo gone
   LV_CLASS="" LV_MSG="" LV_PAST=0
   if list_has_problem slot-malformed; then LV_CLASS=bad LV_MSG="malformed slot"; return 0; fi
   if list_has_problem record-corrupt; then LV_CLASS=bad LV_MSG="corrupt record"; return 0; fi
@@ -6867,9 +6932,18 @@ list_live() { # path
       30) LV_CLASS=bad  LV_MSG="owner or mode not trusted" ;;
       *)  LV_CLASS=bad  LV_MSG="verify failed (exit $rc)" ;;
     esac
+    # verify's 1 is every error; name the one a sandboxed caller meets.
+    if [ "$rc" -eq 1 ]; then
+      gone=0; path_gone "$path" 2>/dev/null || gone=$?
+      [ "$gone" -ne 2 ] || LV_MSG="cannot read"
+    fi
     return 0
   fi
-  if [ ! -e "$path" ]; then LV_CLASS=gone LV_MSG=gone; return 0; fi
+  gone=0; path_gone "$path" 2>/dev/null || gone=$?
+  case "$gone" in
+    0) LV_CLASS=gone LV_MSG=gone; return 0 ;;
+    2) LV_CLASS=bad LV_MSG="cannot read"; return 0 ;;
+  esac
   if list_has_problem record-names-other-path; then
     LV_CLASS=part LV_MSG="record names another path"
     return 0

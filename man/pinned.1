@@ -844,7 +844,9 @@ from the checkout;
 .B \(u2205 gone
 for a path that no longer exists; and
 .B \(u2717
-for a slot or record that cannot be read, or a file whose owner or mode
+for a slot or record that cannot be read, a path this process cannot
+stat (\(lqcannot read\(rq: a sandbox can hide a file that exists), or a
+file whose owner or mode
 .B verify
 refuses.
 A file's state is
@@ -991,6 +993,17 @@ l l.
 20	pinned-but-missing
 30	mode/owner violation
 .TE
+.PP
+Missing means stat answered ENOENT (or ENOTDIR).
+A path stat may not look at (EPERM from a sandbox, EACCES from a
+parent's mode) is never 20, and never a pass for a tombstone:
+.B verify
+exits 1 and says it cannot tell.
+.BR cat ,
+.B tombstone
+and
+.B rekey
+refuse it the same way.
 .PP
 The owner half of 30 admits the tier user and root, plus any account the
 build named in
