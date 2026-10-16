@@ -5442,11 +5442,15 @@ EOF
 # semantics, the line is forensics.
 do_tombstone() {
   require_root tombstone
-  # The elevation gate's answer, riding through in the displayed argv; the
-  # ceremony's own y/N below is untouched by it.
-  local a path_arg=""
+  # --yes answers BOTH gates here, the one verb where it does. Every other
+  # ceremony shows the root side something the elevation dialog cannot (a
+  # diff, a record), so its y/N stays. A tombstone's whole decision is one
+  # path, which the elevation dialog already shows in the argv, and what
+  # the y/N would add is checked here by machine: the path must be gone
+  # (path_gone, so a hidden one refuses) and the slot must hold a record.
+  local a path_arg="" yes=0
   for a in "$@"; do
-    [ "$a" = "--yes" ] && continue
+    [ "$a" = "--yes" ] && { yes=1; continue; }
     [ -z "$path_arg" ] || usage
     path_arg="$a"
   done
@@ -5477,15 +5481,17 @@ do_tombstone() {
   esac
   printf '%spath:%s       %s %s(gone)%s\n' "$C_B" "$C_OFF" "$path" "$C_DIM" "$C_OFF"
   printf '%sslot:%s       %s state: %s\n' "$C_B" "$C_OFF" "$(show_slot "$slot")" "$slot_state"
-  printf '%stombstone %s%s%s? verify will then refuse it until re-approved [%sy%s/%sN%s]%s ' \
-    "$C_B" "$C_CYN" "$path" "$C_OFF$C_B" \
-    "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
-  drain_tty
-  read -r answer </dev/tty
-  case "$answer" in
-    y|Y|yes) ;;
-    *) echo "aborted; slot unchanged"; log_action tombstone "$path" "" abort; exit 2 ;;
-  esac
+  if [ "$yes" -eq 0 ]; then
+    printf '%stombstone %s%s%s? verify will then refuse it until re-approved [%sy%s/%sN%s]%s ' \
+      "$C_B" "$C_CYN" "$path" "$C_OFF$C_B" \
+      "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+    drain_tty
+    read -r answer </dev/tty
+    case "$answer" in
+      y|Y|yes) ;;
+      *) echo "aborted; slot unchanged"; log_action tombstone "$path" "" abort; exit 2 ;;
+    esac
+  fi
   write_slot_state "$slot" tombstone "$(date -u +%Y-%m-%dT%H:%M:%SZ) retired by $inv"
   rm -f "$slot/release"   # a declared release name has no meaning on a tombstone
   clear_slot_ignore "$slot"   # nor do tolerated keys, or a copy of what is gone

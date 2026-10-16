@@ -1234,6 +1234,27 @@ assert_eq "$(count_state "$LIVE_SLOT")" 1 "tombstone replaced the pin (exactly o
 ANS=""
 run_pinned verify "$SUB/t/live.txt"
 assert_exit "$RC" 0 "tombstoned and absent verifies 0"
+
+# --yes answers tombstone's own y/N too: no answer is read, and the record
+# is retired all the same. The machine checks still refuse.
+printf 'quiet one\n' > "$SUB/t/quiet.txt"
+ANS='
+y
+'
+run_pinned review --file "$SUB/t/quiet.txt"
+assert_exit "$RC" 0 "fixture: quiet.txt approved"
+ANS=""
+run_pinned tombstone "$SUB/t/quiet.txt" --yes
+assert_exit "$RC" 1 "tombstone --yes still refuses a path that exists"
+rm -f "$SUB/t/quiet.txt"
+run_pinned tombstone "$SUB/t/quiet.txt" --yes
+assert_exit "$RC" 0 "tombstone --yes records with no answer on the terminal"
+assert_missing "$OUT" "[y/N]" "and asks nothing"
+assert_contains "$OUT" "✓ tombstoned:" "and confirms the tombstone"
+assert_file "$(slot_of "$SUB/t/quiet.txt")/tombstone" "the tombstone state file is written"
+run_pinned tombstone "$SUB/t/never-pinned.txt" --yes
+assert_exit "$RC" 1 "tombstone --yes refuses a path with no record"
+
 printf 'resurrected\n' > "$SUB/t/live.txt"
 run_pinned verify "$SUB/t/live.txt"
 assert_exit "$RC" 13 "the file reappearing turns the verdict into 13"

@@ -77,7 +77,8 @@ complete -c pinned -n '__pinned_action_is review' -l yes -d 'Skip the pre-sudo g
 
 # --- tombstone, rekey, setup --------------------------------------------------
 complete -c pinned -n '__pinned_action_is tombstone rekey' -F
-complete -c pinned -n '__pinned_action_is tombstone rekey' -l yes -d 'Skip the pre-sudo gate'
+complete -c pinned -n '__pinned_action_is rekey' -l yes -d 'Skip the pre-sudo gate'
+complete -c pinned -n '__pinned_action_is tombstone' -l yes -d 'Skip the pre-sudo gate and the root-side confirmation'
 complete -c pinned -n '__pinned_action_is setup' -l yes -d 'Skip the setup confirmation'
 
 # --- declare ------------------------------------------------------------------

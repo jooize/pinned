@@ -571,7 +571,10 @@ refuses until it is re-approved.
 The pre-sudo gate reads
 .RB \(dq "tombstone the record as root" \(dq;
 .B \-\-yes
-skips it and leaves the root-side confirmation untouched.
+skips it and, here alone, the root-side confirmation too: the path is the
+whole decision, and the elevation dialog shows it.
+The root side still refuses a path that exists or that it cannot stat,
+and a slot with no record.
 .TP
 .B rekey \fIold\fP \fInew\fP [\-\-yes]
 (sudo) Re-key an existing record to the path its content has moved to.

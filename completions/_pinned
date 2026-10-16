@@ -64,7 +64,7 @@ _pinned() {
           ;;
         tombstone)
           _arguments \
-            '--yes[skip the pre-sudo gate]' \
+            '--yes[skip the pre-sudo gate and the root-side confirmation]' \
             '1:path:_files' && ret=0
           ;;
         rekey)
