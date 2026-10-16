@@ -8,7 +8,7 @@
 # It runs inside the Claude Code sandbox. One part needs the sandbox off: S20's
 # behavioral half drives a real pty, which the sandbox refuses, so a sandboxed
 # run skips it and names it again in the summary after the plan. Run it
-# sandbox-off before a release.
+# sandbox-off before a public release (pushing its tag).
 #
 # The scratch dir is the per-user temp dir (getconf DARWIN_USER_TEMP_DIR), not
 # $TMPDIR: Claude Code points TMPDIR under /private/tmp, a world-writable
@@ -4748,7 +4748,7 @@ if command -v script >/dev/null 2>&1; then
     assert_missing "$FIX/pty-drained" "ANSWERED:" \
       "so nothing queued is read as an answer"
   else
-    skip "S20 behavioral half" "script(1) reproduced no un-drained read: no usable pty; the sandbox refuses one, so run this harness sandbox-off before a release"
+    skip "S20 behavioral half" "script(1) reproduced no un-drained read: no usable pty; the sandbox refuses one, so run this harness sandbox-off before a public release"
   fi
 else
   skip "S20 behavioral half" "no script(1)"
