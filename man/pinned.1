@@ -458,7 +458,7 @@ live, rev-only, or stale (the live tag no longer names the pin), the
 last being the early warning for a deploy that would refuse.
 .SS File approval
 .TP
-.B review \-\-file \fIpath\fP [\fB\-\-baseline\fP \fIcopy\fP] [\fB\-\-ignore\-json\-key\fP \fIkey\fP ...] [\fB\-\-file\fP \fIpath\fP ...] [\fB\-\-baseline\-store\fP \fIdir\fP] [\fB\-\-algo\fP \fIname\fP] [\fB\-\-store\fP] [\fB\-\-yes\fP]
+.B review \-\-file \fIpath\fP [\fB\-\-baseline\fP \fIcopy\fP] [\fB\-\-ignore\-json\-key\fP \fIkey\fP ... | \fB\-\-ignore\-none\fP] [\fB\-\-file\fP \fIpath\fP ...] [\fB\-\-baseline\-store\fP \fIdir\fP] [\fB\-\-algo\fP \fIname\fP] [\fB\-\-store\fP | \fB\-\-no\-store\fP] [\fB\-\-yes\fP]
 (sudo) File-pin ceremony: each file is frozen, displayed root-side,
 confirmed, and its hash recorded.
 Multiple
@@ -478,8 +478,19 @@ The ceremony re-states
 .B \-\-ignore\-json\-key
 and
 .B \-\-store
-every time: an approval without them clears the declaration and drops
-the stored copy, loudly.
+every time.
+A slot that declares ignored keys or keeps a stored copy today needs
+each stated: kept with
+.B \-\-ignore\-json\-key
+or
+.BR \-\-store ,
+or dropped with
+.B \-\-ignore\-none
+or
+.BR \-\-no\-store .
+A review that leaves one unstated refuses before anything is shown,
+lists both flags for each, and records nothing; the same check runs
+before sudo.
 .IP
 This ceremony is also the repair for a record left behind by a
 respelled path.  On a case\-insensitive volume a case\-only rename
@@ -561,6 +572,14 @@ Keep a copy of the approved bytes in the slot \(em the "approved"
 witness: what the ignored-key comparison reads, and what
 .B pinned cat
 serves.
+.TP
+.B \-\-no\-store
+Keep no copy, said on purpose: drops a copy the slot holds today.
+.TP
+.B \-\-ignore\-none
+Declare no ignored keys for the preceding
+.BR \-\-file ,
+said on purpose: clears a declaration the slot holds today.
 .RE
 .TP
 .B tombstone \fIpath\fP [\-\-yes]

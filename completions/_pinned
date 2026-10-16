@@ -58,7 +58,9 @@ _pinned() {
             '--baseline-store[directory of stored witnesses]:directory:_directories' \
             '*--ignore-json-key[dotted JSON key the preceding --file may drift]:key: ' \
             "--algo[hash algorithm for file pins]:algorithm:(${algos[*]})" \
-            '--store[keep the approved bytes in root custody]' \
+            '*--ignore-none[clear the preceding --file'"'"'s ignored keys on purpose]' \
+            '(--no-store)--store[keep the approved bytes in root custody]' \
+            '(--store)--no-store[drop the stored copy on purpose]' \
             '--yes[skip the pre-sudo gate]' \
             '*:repository:_directories' && ret=0
           ;;

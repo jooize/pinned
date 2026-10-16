@@ -62,8 +62,8 @@ the nix module; a manual install copies it onto `fish_complete_path` / `fpath`.
                                       signature gate: verify each signed tag,
                                       all naming one commit -> pin (--tag:
                                       an unsigned name that must agree)
-    pinned review --file <path> [--baseline <copy>] [--ignore-json-key <key> ...]
-                   [--file <path> ...] [--baseline-store <dir>] [--algo <name>] [--store]
+    pinned review --file <path> [--baseline <copy>] [--ignore-json-key <key> ... | --ignore-none]
+                   [--file <path> ...] [--baseline-store <dir>] [--algo <name>] [--store | --no-store]
                                       file-pin ceremony: freeze, display
                                       root-side, confirm, record the hash;
                                       several --file share one sudo
@@ -71,7 +71,10 @@ the nix module; a manual install copies it onto `fish_complete_path` / `fpath`.
                                       drift verify tolerates, each of which
                                       the ignorable policy must grant for
                                       that path; --store keeps a copy of
-                                      the approved bytes in the slot)
+                                      the approved bytes in the slot; a
+                                      slot that keeps either today needs
+                                      it stated: kept, or dropped with
+                                      --ignore-none / --no-store)
     pinned verify <path>              file-pin verdict for gates: 0 ok,
                                       5 differs only in ignored keys,
                                       10 no slot, 11 mismatch,
@@ -335,13 +338,20 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
     proves a duplicate anywhere at any depth -- including duplicates whose
     values are objects, where the leaf paths differ and a path-multiset
     comparison would miss them.
-  - The ceremony states the declaration prominently before the y/N, and an
-    review without `--ignore-json-key` clears the declaration -- with a
-    loud note whenever that narrows or widens what was there. The tag rule
+  - The ceremony states the declaration prominently before the y/N, with
+    a loud note whenever it narrows or widens what was there. The tag rule
     covers every extra a slot can hold: each is re-stated by every
-    ceremony, so a review without `--store` drops a stored copy too, and
-    identical bytes are a no-op only when the declaration and the custody
-    state are identical as well.
+    ceremony, and identical bytes are a no-op only when the declaration
+    and the custody state are identical as well.
+  - The restatement floor guards the tag rule. A review that leaves an
+    extra the slot keeps today unstated refuses before anything is shown:
+    a declaring slot needs `--ignore-json-key` (keep) or `--ignore-none`
+    (drop) on its `--file`, and a slot holding a copy needs `--store` or
+    `--no-store` on the ceremony. Dropping is the strict direction, but a
+    missing flag made the decision silently, and it surfaced only at the
+    next drift as a review nobody expected. The refusal lists each kept
+    extra with both flags, records nothing, and runs pre-sudo too, so it
+    costs no authentication.
   - A non-JSON file simply fails the parse step and always gets the
     byte-exact verdict; pinned never restricts which kinds of path may
     carry a declaration, only which keys (below).

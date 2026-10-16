@@ -148,8 +148,9 @@
 # launch-time payload of only the slot dirs it is measured against, whose
 # files the lane already reads through its own mounts. Bounded is not
 # nothing, though, so it stays a per-slot human decision, re-stated by every
-# ceremony exactly like `release`: a review without --store DROPS a copy the
-# slot holds today, loudly. `pinned cat` is custody's verified reader --
+# ceremony exactly like `release`. A slot that holds a copy today needs it
+# stated either way (--store keeps it, --no-store drops it); a review that
+# says neither refuses (restate_gaps). `pinned cat` is custody's verified reader --
 # consumers must never open a slot file directly; `pinned rev` is the repo
 # slot's, for the consumer that syncs a flake input to the pin.
 #
@@ -2860,6 +2861,63 @@ slot_declares_ignore() {
   return 1
 }
 
+# THE RESTATEMENT FLOOR, the tag rule's guard. Every ceremony re-states a
+# slot's extras, so a flag left off drops what the slot keeps: its
+# ignored-key declaration, its stored copy. Dropping is the strict
+# direction, but it is still a decision, and a missing flag is too easy to
+# make it by accident (the drop surfaces only at the next drift, as a
+# review nobody expected). So an extra the slot holds today must be stated
+# either way: kept (--ignore-json-key, --store) or dropped by name
+# (--ignore-none, --no-store). An unstated one refuses the WHOLE ceremony
+# before anything is shown, so nothing is recorded and no gate is answered
+# for a review that has to run again anyway. The pre-sudo side runs the
+# same check to save the authentication; the root side is the authority.
+#
+# restate_gaps prints the gap lines for ONE slot (nothing when there is
+# none). $1 slot dir, $2 1 if this --file states its keys either way,
+# $3 1 if the ceremony states custody either way.
+restate_gaps() {
+  local slot="$1" ign_stated="$2" cust_stated="$3" keys flags
+  [ -d "$slot" ] || return 0
+  if [ "$ign_stated" -eq 0 ] && slot_declares_ignore "$slot"; then
+    if read_ignored_paths "$slot" 2>/dev/null \
+       && keys="$(ign_display "$IGN_PATHS")" \
+       && flags="$(printf '%s' "$IGN_PATHS" | jq -r 'map("--ignore-json-key " + join(".")) | join(" ")')"; then
+      echo "          ignored keys: $keys"
+      echo "            keep: $flags"
+    else
+      echo "          ignored keys: the declaration is unreadable"
+      echo "            keep: --ignore-json-key KEY for each key to keep"
+    fi
+    echo "            drop: --ignore-none"
+  fi
+  if [ "$cust_stated" -eq 0 ] && [ -e "$slot/approved" ]; then
+    echo "          stored copy  (one choice for the whole review)"
+    echo "            keep: --store"
+    echo "            drop: --no-store"
+  fi
+}
+
+# The batch half: $1 tier, $2 1 if the ceremony states custody either way;
+# the files come in rf_files and whether each states its keys either way in
+# rf_ign_stated (1/0), index for index. A path that does not canonicalize
+# is skipped here: the ceremony refuses it on its own, by name.
+restate_floor() {
+  local tier="$1" cust_stated="$2" i=0 p one body=""
+  while [ "$i" -lt "${#rf_files[@]}" ]; do
+    if p="$(canon_path "${rf_files[$i]}" 2>/dev/null)"; then
+      one="$(restate_gaps "$(slot_dir_for "$tier" "$p")" "${rf_ign_stated[$i]}" "$cust_stated")"
+      [ -z "$one" ] || body="$body        $p$NL$one$NL"
+    fi
+    i=$((i + 1))
+  done
+  [ -n "$body" ] || return 0
+  printf '\n%sREFUSE: this review would drop what a slot keeps today%s\n' "$C2_RED$C2_B" "$C2_OFF" >&2
+  printf '%s' "$body" >&2
+  echo "        state keep or drop for each, then run the review again; nothing recorded" >&2
+  return 1
+}
+
 # ---- the ignorable policy (machine tier, user tier) ------------------------
 #
 # What a slot MAY declare, root-owned and separate from the declaration
@@ -3844,6 +3902,29 @@ case "$action" in
             exit 1
           fi
         fi
+        # The restatement floor, mirrored like --step's refusals: a review
+        # that leaves a kept extra unstated would refuse root-side, so it
+        # refuses here before costing the authentication. A slot this side
+        # cannot read simply passes; the root side re-checks every file.
+        if [ "$file_mode" -eq 1 ]; then
+          rf_files=() rf_ign_stated=() pv_cust=0 skip_next=0 skip_next_file=0
+          for a in "$@"; do
+            if [ "$skip_next" -eq 1 ]; then
+              [ "$skip_next_file" -eq 1 ] && { rf_files+=("$a"); rf_ign_stated+=(0); }
+              skip_next=0; continue
+            fi
+            skip_next_file=0
+            case "$a" in
+              --file) skip_next=1; skip_next_file=1 ;;
+              --ignore-json-key|--ignore-none)
+                [ "${#rf_files[@]}" -eq 0 ] || rf_ign_stated[$((${#rf_files[@]} - 1))]=1
+                [ "$a" = "--ignore-none" ] || skip_next=1 ;;
+              --baseline|--baseline-store|--algo) skip_next=1 ;;
+              --store|--no-store) pv_cust=1 ;;
+            esac
+          done
+          restate_floor "$(tier_user)" "$pv_cust" || exit 1
+        fi
         if [ "${#preview_repos[@]}" -gt 0 ] && [ "$file_mode" -eq 0 ]; then
           # One preview per repo; sequential root-side ceremonies follow,
           # sharing the single authentication below.
@@ -4193,8 +4274,8 @@ do_approve() {
   # must verify against the allowed signers AND name the same commit, or
   # nothing is pinned. k-of-n is the caller demanding whichever k tags they
   # trust.
-  local trust=0 repo_args sel_tag="" tag_args files file_base file_ign file_algo=sha256 algo_given=0
-  local store=0 ign_given=0 last step=0 decl_class="" baseline_store=""
+  local trust=0 repo_args sel_tag="" tag_args files file_base file_ign file_ign_none file_algo=sha256 algo_given=0
+  local store=0 no_store=0 ign_given=0 last step=0 decl_class="" baseline_store=""
   # Empty or the word print_commit_range reads, like decl_class: every
   # listing site passes it through untouched, so there is no 0/1 to
   # translate on the way down.
@@ -4202,7 +4283,7 @@ do_approve() {
   # The six words of the commit being approved, hyphen-joined (approve by
   # words, above commit_words). Empty: the review reads, as always.
   local words_arg=""
-  repo_args=(); tag_args=(); files=(); file_base=(); file_ign=()
+  repo_args=(); tag_args=(); files=(); file_base=(); file_ign=(); file_ign_none=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --signed-tag) tag_args+=("$2"); shift 2 ;;
@@ -4248,7 +4329,7 @@ do_approve() {
         shift ;;
       --file)
         [ $# -ge 2 ] || { echo "--file needs a path" >&2; exit 1; }
-        files+=("$2"); file_base+=(""); file_ign+=(""); shift 2 ;;
+        files+=("$2"); file_base+=(""); file_ign+=(""); file_ign_none+=(0); shift 2 ;;
       --baseline)
         [ $# -ge 2 ] || { echo "--baseline needs a path" >&2; exit 1; }
         [ "${#files[@]}" -gt 0 ] \
@@ -4272,8 +4353,20 @@ do_approve() {
           exit 1
         }
         last=$((${#files[@]} - 1))
+        [ "${file_ign_none[last]}" -eq 0 ] \
+          || { echo "--ignore-none and --ignore-json-key state different declarations for one --file; give one" >&2; exit 1; }
         file_ign[last]="${file_ign[last]:+${file_ign[last]} }$2"
         ign_given=1; shift 2 ;;
+      # The other half of stating the declaration (see restate_gaps): this
+      # --file keeps NO ignored keys, said on purpose. Without it, a review
+      # of a slot that declares keys today refuses rather than clear them.
+      --ignore-none)
+        [ "${#files[@]}" -gt 0 ] \
+          || { echo "--ignore-none must follow the --file it belongs to" >&2; exit 1; }
+        last=$((${#files[@]} - 1))
+        [ -z "${file_ign[last]}" ] \
+          || { echo "--ignore-none and --ignore-json-key state different declarations for one --file; give one" >&2; exit 1; }
+        file_ign_none[last]=1; shift ;;
       # Custody, for the whole ceremony rather than per --file: it is one
       # disclosure decision the human is confirming, and a ceremony that
       # stored some of its files and not others would be a decision nobody
@@ -4281,7 +4374,15 @@ do_approve() {
       # the ignored-key comparison, but also archives exactly what was
       # approved and feeds the next ceremony's diff, so it means something on
       # a ceremony that declares nothing.
-      --store)     store=1; shift ;;
+      --store)
+        [ "$no_store" -eq 0 ] || { echo "--store and --no-store state different custody; give one" >&2; exit 1; }
+        store=1; shift ;;
+      # Custody's other half, ceremony-wide like --store: keep no copy, said
+      # on purpose. Without it, a review of a slot that keeps a copy today
+      # refuses rather than drop it (see restate_gaps).
+      --no-store)
+        [ "$store" -eq 0 ] || { echo "--store and --no-store state different custody; give one" >&2; exit 1; }
+        no_store=1; shift ;;
       # The ceremony-wide witness directory: a --file that brings no
       # --baseline of its own looks for the approved bytes to diff against
       # at <dir>/<slot name>/<prior digest>. Both name parts are pinned's own
@@ -4317,7 +4418,8 @@ do_approve() {
     return
   fi
   [ "$algo_given" -eq 0 ] || { echo "--algo applies to the --file ceremony only" >&2; exit 1; }
-  [ "$store" -eq 0 ] || { echo "--store applies to the --file ceremony only" >&2; exit 1; }
+  [ "$store" -eq 0 ] && [ "$no_store" -eq 0 ] \
+    || { echo "--store and --no-store apply to the --file ceremony only" >&2; exit 1; }
   [ -z "$baseline_store" ] || { echo "--baseline-store applies to the --file ceremony only" >&2; exit 1; }
   [ "${#repo_args[@]}" -ge 1 ] || usage
   case "$sel_tag" in
@@ -5002,6 +5104,20 @@ do_approve_files() {
   fi
 
   ceremony_banner
+
+  # THE RESTATEMENT FLOOR (restate_gaps), over the whole batch before any
+  # file is shown.
+  rf_files=("${files[@]}"); rf_ign_stated=()
+  while [ "$i" -lt "$n" ]; do
+    if [ -n "${file_ign[$i]}" ] || [ "${file_ign_none[$i]}" -eq 1 ]; then
+      rf_ign_stated+=(1)
+    else
+      rf_ign_stated+=(0)
+    fi
+    i=$((i + 1))
+  done
+  i=0
+  restate_floor "$inv" "$(( store || no_store ))" || exit 1
 
   while [ "$i" -lt "$n" ]; do
     f="${files[$i]}"; base="${file_base[$i]}"; ign="${file_ign[$i]}"; i=$((i + 1))

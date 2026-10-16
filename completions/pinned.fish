@@ -72,7 +72,9 @@ complete -c pinned -n '__pinned_action_is review' -l baseline -r -F -d 'Copy of 
 complete -c pinned -n '__pinned_action_is review' -l baseline-store -x -a '(__fish_complete_directories)' -d 'Directory of stored witnesses'
 complete -c pinned -n '__pinned_action_is review' -l ignore-json-key -x -d 'Dotted JSON key the preceding --file may drift'
 complete -c pinned -n '__pinned_action_is review' -l algo -x -a "$algos" -d 'Hash algorithm for file pins'
+complete -c pinned -n '__pinned_action_is review' -l ignore-none -d 'Clear the preceding --file\'s ignored keys on purpose'
 complete -c pinned -n '__pinned_action_is review' -l store -d 'Keep the approved bytes in root custody'
+complete -c pinned -n '__pinned_action_is review' -l no-store -d 'Drop the stored copy on purpose'
 complete -c pinned -n '__pinned_action_is review' -l yes -d 'Skip the pre-sudo gate'
 
 # --- tombstone, rekey, setup --------------------------------------------------

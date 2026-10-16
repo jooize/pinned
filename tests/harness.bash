@@ -770,13 +770,29 @@ run_pinned review --file "$SUB/a/first.txt" --store
 assert_exit "$RC" 0 "identical bytes with unchanged custody need no answer"
 assert_contains "$OUT" "already approved" "unchanged custody keeps the short-circuit"
 
+# THE RESTATEMENT FLOOR: leaving --store off a review of a slot that keeps a
+# copy no longer drops it. The review refuses before anything is shown, names
+# both ways to state custody, and leaves the slot as it was.
+ANS=""
+run_pinned review --file "$SUB/a/first.txt"
+assert_exit "$RC" 1 "a review that leaves kept custody unstated is refused"
+assert_contains "$OUT" "would drop what a slot keeps today" "the refusal says what would have been lost"
+assert_contains "$OUT" "keep: --store" "it names the flag that keeps the copy"
+assert_contains "$OUT" "drop: --no-store" "and the flag that drops it on purpose"
+assert_contains "$OUT" "nothing recorded" "and that nothing changed"
+assert_missing "$OUT" "approve $SUB/a/first.txt?" "no y/N is asked for a refused review"
+assert_file "$FIRST_SLOT/approved" "the refused review leaves the stored copy in place"
+run_pinned review --file "$SUB/a/first.txt" --store --no-store
+assert_exit "$RC" 1 "--store with --no-store is refused"
+assert_contains "$OUT" "give one" "the refusal asks for one of them"
+
 # Dropping it is equally a decision, and equally loud -- stated before the
 # confirm and again in the result.
 ANS='
 y
 '
-run_pinned review --file "$SUB/a/first.txt"
-assert_exit "$RC" 0 "re-approving a custody slot without --store runs"
+run_pinned review --file "$SUB/a/first.txt" --no-store
+assert_exit "$RC" 0 "re-approving a custody slot with --no-store runs"
 assert_missing "$OUT" "already approved" "dropping custody defeats the no-op short-circuit"
 assert_contains "$OUT" "custody:    kept in the slot → none" "the custody line says the copy is going"
 assert_contains "$OUT" "was dropped" "the result line says it went"
@@ -3191,8 +3207,28 @@ assert_exit "$RC" 0 "fixture: clear.json approved with a declaration + stored co
 ANS='
 y
 '
+ANS=""
 run_pinned review --file "$SUB/ig/clear.json"
-assert_exit "$RC" 0 "re-approving identical bytes without a declaration still runs"
+assert_exit "$RC" 1 "a plain review of a declaring slot is refused, not cleared"
+assert_contains "$OUT" "ignored keys: model" "the refusal names the keys the slot keeps"
+assert_contains "$OUT" "keep: --ignore-json-key model" "it spells the flags that keep them"
+assert_contains "$OUT" "drop: --ignore-none" "and the flag that clears them on purpose"
+assert_file "$CLEAR_SLOT/ignored.json" "the refused review leaves the declaration in place"
+run_pinned review --file "$SUB/ig/clear.json" --ignore-none --ignore-json-key model
+assert_exit "$RC" 1 "--ignore-none with --ignore-json-key on one --file is refused"
+assert_contains "$OUT" "give one" "the refusal asks for one of them"
+run_pinned review --ignore-none --file "$SUB/ig/clear.json"
+assert_exit "$RC" 1 "--ignore-none before any --file is refused"
+# The floor is mirrored pre-sudo: the same refusal before the authentication.
+NOTTY="" run_preview review --file "$SUB/ig/clear.json"
+assert_exit "$RC" 1 "the pre-sudo side refuses an unstated declaration too"
+assert_contains "$OUT" "would drop what a slot keeps today" "with the same words"
+assert_missing "$OUT" "review 1 file as root" "and before the elevation gate"
+ANS='
+y
+'
+run_pinned review --file "$SUB/ig/clear.json" --ignore-none --no-store
+assert_exit "$RC" 0 "re-approving identical bytes with --ignore-none --no-store runs"
 assert_missing  "$OUT" "already approved" "a changed declaration defeats the no-op short-circuit"
 assert_contains "$OUT" "clearing the ignored keys" "the ceremony says the tolerance is being withdrawn"
 assert_contains "$OUT" "kept in the slot → none" "and that custody is going with it"
@@ -3243,7 +3279,7 @@ assert_contains "$OUT" "outside the key grammar" "the refusal names the grammar"
 ANS='
 n
 '
-run_pinned review --file "$SUB/ig/nocopy.json" --store
+run_pinned review --file "$SUB/ig/nocopy.json" --ignore-none --store
 assert_exit "$RC" 0 "--store on a ceremony that declares NO ignored keys is accepted"
 assert_missing "$OUT" "--store applies to a ceremony" "the retired pairing refusal does not come back"
 assert_contains "$OUT" "kept in the slot" "custody stands on its own in the display"
@@ -3251,7 +3287,9 @@ assert_contains "$OUT" "kept in the slot" "custody stands on its own in the disp
 ANS=""
 run_pinned review "$SUB" --store
 assert_exit "$RC" 1 "--store outside the --file ceremony is refused"
-assert_contains "$OUT" "--store applies to the --file ceremony only" "the refusal names the ceremony"
+assert_contains "$OUT" "--store and --no-store apply to the --file ceremony only" "the refusal names the ceremony"
+run_pinned review "$SUB" --no-store
+assert_exit "$RC" 1 "--no-store outside the --file ceremony is refused"
 run_pinned review --ignore-json-key model --file "$SUB/ig/nocopy.json"
 assert_exit "$RC" 1 "--ignore-json-key before any --file is refused"
 assert_contains "$OUT" "must follow the --file" "the refusal names the ordering rule"
@@ -3406,7 +3444,7 @@ printf '%s\n' "$JSON_IN" > "$SUB/pol/in/s.json"
 ANS='
 y
 '
-run_pinned review --file "$SUB/pol/in/s.json" --ignore-json-key model
+run_pinned review --file "$SUB/pol/in/s.json" --ignore-json-key model --store
 assert_exit "$RC" 1 "an unscoped user grant is NOT covered by a scoped machine entry"
 assert_contains "$OUT" "does not grant these keys" "the intersection refuses it"
 
