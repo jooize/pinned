@@ -338,8 +338,9 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
     proves a duplicate anywhere at any depth -- including duplicates whose
     values are objects, where the leaf paths differ and a path-multiset
     comparison would miss them.
-  - The ceremony states the declaration prominently before the y/N, with
-    a loud note whenever it narrows or widens what was there. The tag rule
+  - The ceremony states the declaration prominently before the y/N, in
+    the attention color, and draws a change as `<from> → <to>` on the
+    same row (`model → none` when it clears). The tag rule
     covers every extra a slot can hold: each is re-stated by every
     ceremony, and identical bytes are a no-op only when the declaration
     and the custody state are identical as well.
@@ -638,8 +639,8 @@ one.
   alternate screen; longer content gets the alternate screen and real
   scrollback.
 - **Structural views are derived; the raw byte diff is authoritative.**
-  Section labels, changed-key summaries and shape lines (`3 hunks,
-  +12/-4 lines`) orient a reader; they can lie about where a change sits
+  Section labels, changed-key summaries and the gate's `+12 -4` orient
+  a reader; they can lie about where a change sits
   and never about what changed, because every changed line prints
   regardless and the digest comes from the bytes, not the view.
 

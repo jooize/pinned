@@ -744,8 +744,7 @@ assert_contains "$OUT" "already approved" "re-approval short-circuits"
 
 # ADDING custody is a disclosure decision, so the human confirms it: identical
 # bytes stop being a no-op the moment --store changes the custody state.
-ANS='
-y
+ANS='y
 '
 run_pinned review --file "$SUB/a/first.txt" --store
 assert_exit "$RC" 0 "adding --store to a copy-less slot runs"
@@ -788,8 +787,7 @@ assert_contains "$OUT" "give one" "the refusal asks for one of them"
 
 # Dropping it is equally a decision, and equally loud -- stated before the
 # confirm and again in the result.
-ANS='
-y
+ANS='y
 '
 run_pinned review --file "$SUB/a/first.txt" --no-store
 assert_exit "$RC" 0 "re-approving a custody slot with --no-store runs"
@@ -827,8 +825,7 @@ assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(awk '{print $1}' "$FIRST_SLOT
 # is what verify tells you to run -- so it must not short-circuit away.
 printf 'tampered\n' > "$FIRST_SLOT/approved"
 chmod 600 "$FIRST_SLOT/approved"
-ANS='
-y
+ANS='y
 '
 run_pinned review --file "$SUB/a/first.txt" --store
 assert_exit "$RC" 0 "re-approving over an incoherent witness runs"
@@ -3224,13 +3221,15 @@ NOTTY="" run_preview review --file "$SUB/ig/clear.json"
 assert_exit "$RC" 1 "the pre-sudo side refuses an unstated declaration too"
 assert_contains "$OUT" "would drop what a slot keeps today" "with the same words"
 assert_missing "$OUT" "review 1 file as root" "and before the elevation gate"
-ANS='
-y
+ANS='y
 '
 run_pinned review --file "$SUB/ig/clear.json" --ignore-none --no-store
 assert_exit "$RC" 0 "re-approving identical bytes with --ignore-none --no-store runs"
 assert_missing  "$OUT" "already approved" "a changed declaration defeats the no-op short-circuit"
-assert_contains "$OUT" "clearing the ignored keys" "the ceremony says the tolerance is being withdrawn"
+assert_contains "$OUT" "ignored:    model → none" "the ignored row says the tolerance is being withdrawn"
+assert_contains "$OUT" "every key returns to byte-exact" "and what that means"
+assert_contains "$OUT" "✓ unchanged" "identical bytes say so on the candidate row"
+assert_missing "$OUT" "Enter open" "and open no gate over an empty diff"
 assert_contains "$OUT" "kept in the slot → none" "and that custody is going with it"
 assert_absent "$CLEAR_SLOT/ignored.json" "a plain review clears the declaration"
 assert_absent "$CLEAR_SLOT/approved" "a plain review drops the stored copy"
@@ -3658,8 +3657,7 @@ assert_contains "$ERRF" "re-approve" "the error names the remediation"
 # gate, a record it cannot trust is a structural failure of the tool); cat
 # answers 30, because for a READER it is the same class as a wrong-mode live
 # file -- something chmod fixes, not something to re-approve.
-ANS='
-y
+ANS='y
 '
 run_pinned review --file "$SUB/c/served.json" --store
 assert_exit "$RC" 0 "fixture: served.json re-approved to reset the slot"
@@ -4484,8 +4482,7 @@ assert_contains "$OUT" "review --file" "the refusal names the ceremony out"
 
 # ... and review --file is the repair: the record is re-stated for the path
 # as it is now spelled, through the full ceremony.
-ANS='
-y
+ANS='y
 '
 run_pinned review --file "$SUB/rs/other.txt"
 assert_exit "$RC" 0 "review --file repairs a record naming another path"
@@ -4513,8 +4510,7 @@ if [ "$CASEFOLD_OK" -eq 1 ]; then
   assert_exit "$RC" 17 "verify: a case-respelled record -> 17"
   assert_contains "$OUT" "case changed on disk" "the refusal diagnoses the respelling"
 
-  ANS='
-y
+  ANS='y
 '
   run_pinned review --file "$SUB/rs/Renamed.txt"
   assert_exit "$RC" 0 "review --file repairs the case-respelled record"
@@ -4536,8 +4532,7 @@ y
   printf 'kept content\n' > "$SUB/rs/Keep.txt"
   seed_state "$SUB/rs/keep.txt" pin.sha256 \
     "$(digest_of "$SUB/rs/Keep.txt")  $SUB/rs/keep.txt"
-  ANS='
-n
+  ANS='n
 '
   run_pinned review --file "$SUB/rs/Keep.txt"
   assert_contains "$OUT" "declined; record unchanged" "a decline is a normal outcome"
@@ -4557,8 +4552,7 @@ n
     "$(digest_of "$SUB/rs/Dirfix.txt")  $SUB/rs/Dirfix.txt"
   run_pinned verify "$SUB/rs/Dirfix.txt"
   assert_exit "$RC" 0 "a correct record verifies through a stale-named slot"
-  ANS='
-y
+  ANS='y
 '
   run_pinned review --file "$SUB/rs/Dirfix.txt"
   assert_missing "$OUT" "already approved" "a stale directory name defeats the short-circuit"
