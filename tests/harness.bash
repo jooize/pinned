@@ -2525,25 +2525,23 @@ n
   assert_exit "$RC" 2 "EOF at the elevation gate stops"
   assert_contains "$OUT" "stopped; pin unchanged" "and takes the same decline line"
 
-  # --yes answers the gate at the command line -- and rides through in the
-  # displayed argv, because the display IS the argv sudo gets.
+  # review has no --yes: its root side asks its own y/N on the terminal, so
+  # the flag could only skip the gate that announces the authentication. It
+  # is refused before sudo, as a usage error.
   ANS=""
   run_preview review "$EV_STALE" --yes
-  assert_exit "$RC" 97 "--yes elevates review without a gate"
-  assert_missing "$OUT" "Enter run" "no gate is printed under --yes"
-  assert_shows_cmd "$OUT" "sudo -- $PREVIEW review $EV_STALE --yes" \
-    "the flag is shown where it will really be passed"
+  assert_exit "$RC" 1 "review refuses --yes before sudo"
+  assert_contains "$OUT" "usage: pinned" "as a usage error"
+  assert_missing "$OUT" "sudo --" "and shows no command to elevate"
 
-  # Off-tty there is nobody to answer: refuse rather than elevate unasked.
+  # Off-tty there is nobody to answer: refuse rather than elevate unasked,
+  # and name the terminal, since there is no flag that proceeds.
   NOTTY=1
   ANS=""
   run_preview review "$EV_STALE"
-  assert_exit "$RC" 2 "off-tty review without --yes refuses"
-  assert_contains "$OUT" "no tty for confirmation -- pass --yes to proceed non-interactively" \
-    "the refusal names the flag that proceeds"
-  ANS=""
-  run_preview review "$EV_STALE" --yes
-  assert_exit "$RC" 97 "off-tty WITH --yes still elevates"
+  assert_exit "$RC" 2 "off-tty review refuses"
+  assert_contains "$OUT" "no tty for confirmation -- run it in a terminal" \
+    "the refusal names the terminal"
   NOTTY=""
 
   # --- review --file --------------------------------------------------------
@@ -2605,7 +2603,7 @@ n
   # A verb with no group-opening flag keeps a single, flat level.
   ANS='
 '
-  run_preview review "$EV_STALE" --yes
+  run_preview review "$EV_STALE"
   assert_exit "$RC" 97 "a repo review reaches the elevation"
   if grep -qE '^      --' "$OUT"; then
     fail "a verb with no --file groups must not indent a second level"
@@ -2654,13 +2652,13 @@ n
   NOTTY=1
   ANS=""
   run_preview signer add alice --file "$SUB/alice.pub"
-  assert_exit "$RC" 2 "off-tty signer without --yes refuses"
-  assert_contains "$OUT" "no tty for confirmation -- pass --yes to proceed non-interactively" \
+  assert_exit "$RC" 2 "off-tty signer refuses"
+  assert_contains "$OUT" "no tty for confirmation -- run it in a terminal" \
     "with the same refusal every gate uses"
   ANS=""
   run_preview ignorable add model --yes
-  assert_exit "$RC" 97 "off-tty ignorable WITH --yes elevates"
-  assert_missing "$OUT" "Enter run" "and prints no gate"
+  assert_exit "$RC" 1 "ignorable refuses --yes before sudo"
+  assert_contains "$OUT" "usage: pinned" "as a usage error"
   NOTTY=""
 
   # --- tombstone / rekey ------------------------------------------------------
@@ -2708,60 +2706,47 @@ n
   assert_exit "$RC" 1 "tombstone with only --yes is still missing its path"
   assert_contains "$OUT" "usage: pinned" "and says so as a usage error"
   ANS=""
-  run_preview rekey "$FIX/mv-old-gone" --yes
-  assert_exit "$RC" 1 "rekey with one path and --yes is still missing the other"
+  run_preview rekey "$FIX/mv-old-gone" "$FIX/mv-new" --yes
+  assert_exit "$RC" 1 "rekey refuses --yes before sudo"
   assert_contains "$OUT" "usage: pinned" "as a usage error too"
 
   NOTTY=1
   ANS=""
   run_preview rekey "$FIX/mv-old-gone" "$FIX/mv-new"
-  assert_exit "$RC" 2 "off-tty rekey without --yes refuses"
-  assert_contains "$OUT" "no tty for confirmation -- pass --yes to proceed non-interactively" \
+  assert_exit "$RC" 2 "off-tty rekey refuses"
+  assert_contains "$OUT" "no tty for confirmation -- run it in a terminal" \
     "with the shared refusal"
   ANS=""
   run_preview tombstone "$FIX/ts-gone"
   assert_exit "$RC" 2 "off-tty tombstone without --yes refuses"
+  assert_contains "$OUT" "pass --yes to let the sudo dialog confirm" \
+    "and names the flag that is its consent"
   NOTTY=""
 
-  # --- the root side accepts the answer it was handed -----------------------
-  # The gate's --yes rides through in "$@" (the display IS the argv), so every
-  # root-side parser must take it as the no-op it is. A parser that did not
-  # would turn the documented non-interactive path into a usage error AFTER
-  # the authentication.
-  ANS='
-y
-'
+  # --- the root side has no --yes either -----------------------------------
+  # A direct `sudo pinned <verb> --yes` reaches the root parsers without the
+  # pre-sudo check; each refuses it as a usage error, before any ceremony.
+  ANS=""
   run_pinned review "$EV_STALE2" --yes
-  assert_exit "$RC" 0 "the root side reviews with --yes in its argv"
-  assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there"
-  assert_eq "$(rev_in "$(slot_of "$EV_STALE2")/rev.git")" \
-            "$(bgit "$EV_STALE2" rev-parse 'HEAD^{commit}')" \
-            "and the ceremony still wrote the pin it was asked for"
-
+  assert_exit "$RC" 1 "the root side refuses review --yes"
+  assert_contains "$OUT" "usage: pinned" "as a usage error"
   if command -v ssh-keygen >/dev/null 2>&1; then
-    # Far enough into do_signer to prove the option parser took --yes: the
-    # refusal below comes from the key file, not from the grammar.
-    ANS=""
     run_pinned signer add --file "$FIX/no-such-key.pub" --yes
-    assert_exit "$RC" 1 "signer with --yes reaches its own checks"
-    assert_contains "$OUT" "not a readable file" "and fails on the key, not on the flag"
-    assert_missing "$OUT" "unknown signer option" "--yes is not an unknown option"
+    assert_exit "$RC" 1 "the root side refuses signer --yes"
+    assert_contains "$OUT" "unknown signer option: --yes" "by name"
   else
     skip "S8i signer --yes" "no ssh-keygen"
   fi
-
   if command -v jq >/dev/null 2>&1; then
-    ANS=""
-    run_pinned ignorable add 'bad!key' --yes
-    assert_exit "$RC" 1 "ignorable with --yes reaches its own checks"
-    assert_contains "$OUT" "outside the key grammar" "and fails on the key, not on the flag"
-    assert_missing "$OUT" "unknown ignorable option" "--yes is not an unknown option"
+    run_pinned ignorable add model --yes
+    assert_exit "$RC" 1 "the root side refuses ignorable --yes"
+    assert_contains "$OUT" "unknown ignorable option: --yes" "by name"
   else
     skip "S8i ignorable --yes" "no jq"
   fi
 
-  # Far enough into do_tombstone / do_rekey to prove their parsers took --yes:
-  # the refusals below come from the slot, not from the grammar.
+  # Far enough into do_tombstone to prove its parser took --yes (the refusal
+  # comes from the slot, not from the grammar); rekey has no --yes.
   ANS=""
   run_pinned tombstone "$FIX/ts-gone" --yes
   assert_exit "$RC" 1 "tombstone with --yes reaches its own checks"
@@ -2769,9 +2754,8 @@ y
   assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there"
   ANS=""
   run_pinned rekey "$FIX/mv-old-gone" "$FIX/mv-new" --yes
-  assert_exit "$RC" 1 "rekey with --yes reaches its own checks"
-  assert_contains "$OUT" "there is no record to re-key" "and fails on the slot, not on the flag"
-  assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there either"
+  assert_exit "$RC" 1 "the root side refuses rekey --yes"
+  assert_contains "$OUT" "usage: pinned" "as a usage error"
 else
   skip "S8i" "no git fixture"
 fi
@@ -2951,12 +2935,15 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_contains "$OUT" "clear the declaration as root" \
     "its gate names the clearing"
 
-  # --yes answers the gate at the command line, never the root confirm.
+  # declare has no --yes; the root side refuses it, and the plain form lands.
+  ANS=""
+  run_pinned declare "$REPO_DC" --release v1 --yes
+  assert_exit "$RC" 1 "the root side refuses declare --yes"
+  assert_contains "$OUT" "usage: pinned" "as a usage error"
   ANS='y
 '
-  run_pinned declare "$REPO_DC" --release v1 --yes
-  assert_exit "$RC" 0 "the root side declares with --yes in its argv"
-  assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there"
+  run_pinned declare "$REPO_DC" --release v1
+  assert_exit "$RC" 0 "the root side declares"
   assert_eq "$(cat "$DC_SLOT/release")" "v1" "and the declaration landed"
 
   # --- the legacy `tag` record heals at the first root ceremony ------------
@@ -3032,7 +3019,7 @@ assert_exit "$RC" 0 "review with --ignore-json-key succeeds"
 assert_contains "$OUT" "ignored:" "ceremony displays the proposed ignored keys"
 assert_contains "$OUT" "model, effortLevel" "ceremony names them before the confirm"
 assert_contains "$OUT" "may drift without re-approval" "ceremony states what ignoring means"
-assert_contains "$OUT" "granted by user policy, everywhere: model, effortLevel" \
+assert_contains "$OUT" "granted by user policy, everywhere" \
                 "ceremony shows the keys' grant provenance on one line"
 assert_contains "$OUT" "No copy is kept at rest" "ceremony states the custody consequence"
 assert_file "$(slot_file_of "$SUB/ig/nocopy.json" ignored.json)" "ignored.json recorded"
@@ -3226,7 +3213,7 @@ ANS='y
 run_pinned review --file "$SUB/ig/clear.json" --ignore-none --no-store
 assert_exit "$RC" 0 "re-approving identical bytes with --ignore-none --no-store runs"
 assert_missing  "$OUT" "already approved" "a changed declaration defeats the no-op short-circuit"
-assert_contains "$OUT" "ignored:    model → none" "the ignored row says the tolerance is being withdrawn"
+assert_contains "$OUT" "ignored:  - model" "the ignored list marks the withdrawn key"
 assert_contains "$OUT" "every key returns to byte-exact" "and what that means"
 assert_contains "$OUT" "✓ unchanged" "identical bytes say so on the candidate row"
 assert_missing "$OUT" "Enter open" "and open no gate over an empty diff"
@@ -3236,6 +3223,74 @@ assert_absent "$CLEAR_SLOT/approved" "a plain review drops the stored copy"
 printf '{"model": "sonnet", "keep": 1}\n' > "$SUB/ig/clear.json"
 run_pinned verify "$SUB/ig/clear.json"
 assert_exit "$RC" 11 "after clearing, the same drift is a plain mismatch again"
+
+# --keep, per --file: keep what the slot holds (keys and copy), and typed keys
+# ADD to the kept ones. The review screen lists the keys one per row and
+# marks a change in the gutter like a diff.
+printf '{"model": "opus", "effortLevel": "high", "keep": 1}\n' > "$SUB/ig/keep.json"
+KEEP_SLOT="$(slot_of "$SUB/ig/keep.json")"
+ANS='
+y
+'
+run_pinned review --file "$SUB/ig/keep.json" --ignore-json-key model --store
+assert_exit "$RC" 0 "fixture: keep.json approved with model and a stored copy"
+ANS=""
+run_pinned review --file "$SUB/ig/keep.json" --keep
+assert_exit "$RC" 0 "--keep on unchanged bytes needs no answer"
+assert_contains "$OUT" "already approved" "--keep restates exactly what the slot holds"
+ANS='y
+'
+run_pinned review --file "$SUB/ig/keep.json" --keep --ignore-json-key effortLevel
+assert_exit "$RC" 0 "--keep with a typed key runs"
+assert_contains "$OUT" "ignored:    model" "the kept key is listed unmarked"
+assert_contains "$OUT" "          + effortLevel" "the added key is marked +"
+assert_contains "$OUT" "(--keep · these keys may drift without re-approval)" "the list names --keep as its source"
+assert_contains "$OUT" "custody:    kept in the slot  (--keep ·" "custody names --keep as its source"
+assert_eq "$(cat "$KEEP_SLOT/ignored.json")" '[["model"],["effortLevel"]]' "the kept and the added key are recorded"
+assert_file "$KEEP_SLOT/approved" "--keep keeps the stored copy"
+ANS='y
+'
+run_pinned review --file "$SUB/ig/keep.json" --ignore-json-key effortLevel --store
+assert_exit "$RC" 0 "listing the keys without --keep removes the others"
+assert_contains "$OUT" "ignored:  - model" "the removed key is marked -"
+assert_contains "$OUT" "            effortLevel" "the remaining key is listed unmarked"
+assert_eq "$(cat "$KEEP_SLOT/ignored.json")" '[["effortLevel"]]' "only the listed key is recorded"
+ANS=""
+run_pinned review --file "$SUB/ig/keep.json"
+assert_exit "$RC" 1 "a bare review of a slot with extras refuses"
+assert_contains "$OUT" "✗ refused: this review would drop what a slot keeps today" "with the verdict label"
+assert_contains "$OUT" "to keep everything as it is:" "and offers the one-flag form"
+assert_contains "$OUT" "pinned review --file $SUB/ig/keep.json --keep" "as a command to paste"
+run_pinned review --file "$SUB/ig/keep.json" --ignore-json-key model --no-store
+assert_exit "$RC" 1 "a review that typed some extras refuses on the rest"
+assert_missing "$OUT" "to keep everything as it is:" "without the --keep line, which would add the kept keys to the typed ones"
+run_pinned review --file "$SUB/ig/keep.json" --keep --ignore-none
+assert_exit "$RC" 1 "--keep with --ignore-none is refused"
+assert_contains "$OUT" "give one" "as a contradiction"
+run_pinned review --keep --file "$SUB/ig/keep.json"
+assert_exit "$RC" 1 "--keep before any --file is refused"
+assert_contains "$OUT" "--keep must follow the --file" "the refusal names the rule"
+run_pinned review --store --file "$SUB/ig/keep.json"
+assert_exit "$RC" 1 "--store before any --file is refused"
+assert_contains "$OUT" "--store must follow the --file" "custody belongs to a file now"
+run_pinned review --file "$SUB/ig/keep.json" --store --no-store
+assert_exit "$RC" 1 "--store with --no-store on one --file is refused"
+# Custody per --file: one review can keep one copy and drop another.
+printf '{"model": "opus"}\n' > "$SUB/ig/other.json"
+OTHER_SLOT="$(slot_of "$SUB/ig/other.json")"
+ANS='
+y
+'
+run_pinned review --file "$SUB/ig/other.json" --ignore-json-key model --store
+assert_exit "$RC" 0 "fixture: other.json approved with a copy"
+ANS='y
+y
+'
+run_pinned review --file "$SUB/ig/keep.json" --keep --file "$SUB/ig/other.json" --keep --no-store
+assert_exit "$RC" 0 "one review keeps one copy and drops another"
+assert_file "$KEEP_SLOT/approved" "the --keep file keeps its copy"
+assert_absent "$OTHER_SLOT/approved" "the --no-store file drops its copy"
+assert_eq "$(cat "$OTHER_SLOT/ignored.json")" '[["model"]]' "and --keep still kept its keys"
 
 # Tombstoning retires the extras with the record.
 printf '{"model": "opus"}\n' > "$SUB/ig/doomed.json"
@@ -3286,7 +3341,7 @@ assert_contains "$OUT" "kept in the slot" "custody stands on its own in the disp
 ANS=""
 run_pinned review "$SUB" --store
 assert_exit "$RC" 1 "--store outside the --file ceremony is refused"
-assert_contains "$OUT" "--store and --no-store apply to the --file ceremony only" "the refusal names the ceremony"
+assert_contains "$OUT" "--store must follow the --file it belongs to" "the refusal names the rule"
 run_pinned review "$SUB" --no-store
 assert_exit "$RC" 1 "--no-store outside the --file ceremony is refused"
 run_pinned review --ignore-json-key model --file "$SUB/ig/nocopy.json"
@@ -3391,7 +3446,7 @@ y
 '
 run_pinned review --file "$SUB/pol/in/s.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "a granted key in scope approves"
-assert_contains "$OUT" "granted by user policy, under $SUB/pol/in: model" "provenance names the scope"
+assert_contains "$OUT" "granted by user policy, under $SUB/pol/in" "provenance names the scope"
 
 # MIXED SCOPES: keys whose grants reach differently cannot share one clause,
 # so the collapsed line names the reach per key instead.
@@ -3402,7 +3457,9 @@ y
 '
 run_pinned review --file "$SUB/pol/in/m.json" --ignore-json-key model --ignore-json-key effortLevel
 assert_exit "$RC" 0 "two granted keys at different scopes approve"
-assert_contains "$OUT" "granted by user policy: model (under $SUB/pol/in), effortLevel (everywhere)" \
+assert_contains "$OUT" "model  (under $SUB/pol/in)" "a mixed set puts each key's scope on its row"
+assert_contains "$OUT" "effortLevel  (everywhere)" "for every key"
+assert_contains "$OUT" "granted by user policy, scope per key" \
                 "mixed scopes name each key's reach"
 seed_policy_user "[{\"path\":[\"model\"],\"under\":\"$SUB/pol/in\"}]"
 

@@ -74,10 +74,16 @@ echoing what was typed, so a typo cannot buy an authentication.
 Continuing still decides nothing on its own \(em the ceremony's own
 .RB \(dq [y/N] \(dq
 comes later, as root, and nothing is recorded until it is answered.
+Off a tty, the gate refuses with exit 2 rather than elevate unasked.
 .B \-\-yes
-skips the gate (and rides through into the root-side argv, where it
-decides nothing); off a tty, a verb whose gate cannot be answered
-refuses with exit 2 rather than elevate unasked.
+exists only where it carries a consent:
+.B tombstone
+(the sudo dialog confirms) and
+.B setup
+(its plan is confirmed before sudo).
+Every other verb asks its own y/N as root, on the terminal, so it has
+no
+.BR \-\-yes .
 The gate applies to
 .BR review ,
 .BR tombstone ,
@@ -93,7 +99,7 @@ takes its own confirmation instead, before any authentication.
 .SH COMMANDS
 .SS Repository approval
 .TP
-.B review \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP | \fB\-\-words\fP \fIwords\fP] [\fB\-\-step\fP] [\fB\-\-messages\fP] [\fB\-\-backward\fP|\fB\-\-diverged\fP] [\fB\-\-yes\fP]
+.B review \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP | \fB\-\-words\fP \fIwords\fP] [\fB\-\-step\fP] [\fB\-\-messages\fP] [\fB\-\-backward\fP|\fB\-\-diverged\fP]
 (sudo) Review the diff since the last pin (the full tree on a first
 approval), approve, write the pin.
 .I repo
@@ -277,11 +283,6 @@ Review and pin the tag's commit, not HEAD.
 Skip a first approval's full-tree review, loudly.
 Later approvals always show the diff.
 .TP
-.B \-\-yes
-Skip the pre-sudo gate, and nothing else: every repo is still displayed
-and confirmed as root.
-Required off a tty, where the gate cannot be answered.
-.TP
 .B \-\-step
 A reading aid for a large delta: instead of one diff of the whole
 delta, walk the commits since the pin oldest-first \(em one diff and
@@ -371,7 +372,7 @@ exists to catch \(em and a deliberate, declared downgrade to a signed
 release is the legitimate manual override it exists to allow.
 .RE
 .TP
-.B review \fIrepo\fP \fB\-\-signed\-tag\fP \fItag\fP [\fB\-\-signed\-tag\fP \fItag\fP ...] [\fB\-\-tag\fP \fItag\fP] [\fB\-\-yes\fP]
+.B review \fIrepo\fP \fB\-\-signed\-tag\fP \fItag\fP [\fB\-\-signed\-tag\fP \fItag\fP ...] [\fB\-\-tag\fP \fItag\fP]
 (sudo) Verify each signed tag against root-owned allowed signers (the
 slot's own
 .IR signers/allowed_signers ,
@@ -383,7 +384,7 @@ may add an unsigned name (a clean release name) that must name the
 same commit.
 .SS Declaring a release name
 .TP
-.B declare \fIrepo\fP (\fB\-\-release\fP \fIname\fP | \fB\-\-no\-release\fP) [\fB\-\-yes\fP]
+.B declare \fIrepo\fP (\fB\-\-release\fP \fIname\fP | \fB\-\-no\-release\fP)
 (sudo) Name the release a pinned rev already is \(em or clear that
 name.
 The declaration is the slot's
@@ -449,26 +450,21 @@ The pre-sudo gate reads
 .RB \(dq "declare the release name as root" \(dq
 (for
 .BR \-\-no\-release :
-.RB \(dq "clear the declaration" \(dq);
-.B \-\-yes
-skips it and leaves the root-side confirmation untouched.
+.RB \(dq "clear the declaration" \(dq).
 .B status
 reports the declaration in all three of its states \(em declared and
 live, rev-only, or stale (the live tag no longer names the pin), the
 last being the early warning for a deploy that would refuse.
 .SS File approval
 .TP
-.B review \-\-file \fIpath\fP [\fB\-\-baseline\fP \fIcopy\fP] [\fB\-\-ignore\-json\-key\fP \fIkey\fP ... | \fB\-\-ignore\-none\fP] [\fB\-\-file\fP \fIpath\fP ...] [\fB\-\-baseline\-store\fP \fIdir\fP] [\fB\-\-algo\fP \fIname\fP] [\fB\-\-store\fP | \fB\-\-no\-store\fP] [\fB\-\-yes\fP]
+.B review \-\-file \fIpath\fP [\fB\-\-baseline\fP \fIcopy\fP] [\fB\-\-ignore\-json\-key\fP \fIkey\fP ... | \fB\-\-ignore\-none\fP] [\fB\-\-keep\fP] [\fB\-\-store\fP | \fB\-\-no\-store\fP] [\fB\-\-file\fP \fIpath\fP ...] [\fB\-\-baseline\-store\fP \fIdir\fP] [\fB\-\-algo\fP \fIname\fP]
 (sudo) File-pin ceremony: each file is frozen, displayed root-side,
 confirmed, and its hash recorded.
 Multiple
 .B \-\-file
 arguments share one authentication.
 The pre-sudo handoff counts the files named on the command line
-.RB ( "review 2 files as root" );
-.B \-\-yes
-skips that gate and no other, so each file is still displayed and
-confirmed as root.
+.RB ( "review 2 files as root" ).
 Each file's display opens behind its own gate line; answering
 .B n
 there declines without opening it \(em record unchanged, counted as
@@ -488,6 +484,9 @@ or dropped with
 .B \-\-ignore\-none
 or
 .BR \-\-no\-store .
+Each of these follows the
+.B \-\-file
+it belongs to.
 A review that leaves one unstated refuses before anything is shown,
 lists both flags for each, and records nothing; the same check runs
 before sudo.
@@ -568,13 +567,35 @@ Hash algorithm; see
 for the recognized names.
 .TP
 .B \-\-store
-Keep a copy of the approved bytes in the slot \(em the "approved"
+Keep a copy of the preceding
+.BR \-\-file 's
+approved bytes in its slot \(em the "approved"
 witness: what the ignored-key comparison reads, and what
 .B pinned cat
 serves.
 .TP
 .B \-\-no\-store
-Keep no copy, said on purpose: drops a copy the slot holds today.
+Keep no copy for the preceding
+.BR \-\-file ,
+said on purpose: drops a copy the slot holds today.
+.TP
+.B \-\-keep
+Keep what the preceding
+.BR \-\-file 's
+slot holds today: its ignored keys and its stored copy, read as root
+from the slot about to be written.
+An
+.B \-\-ignore\-json\-key
+on the same
+.B \-\-file
+adds to the kept keys;
+.B \-\-store
+or
+.B \-\-no\-store
+decides the copy instead.
+To remove a key, list the keys to keep without
+.BR \-\-keep .
+The review lists every key before its y/N.
 .TP
 .B \-\-ignore\-none
 Declare no ignored keys for the preceding
@@ -595,7 +616,7 @@ whole decision, and the elevation dialog shows it.
 The root side still refuses a path that exists or that it cannot stat,
 and a slot with no record.
 .TP
-.B rekey \fIold\fP \fInew\fP [\-\-yes]
+.B rekey \fIold\fP \fInew\fP
 (sudo) Re-key an existing record to the path its content has moved to.
 The record travels verbatim \(em same commit hash or digest, same
 declarations \(em so this is a rename, never a re-approval, and it
@@ -645,9 +666,7 @@ the repair is a review (see
 and exit 17 under EXIT STATUS).
 .IP
 The pre-sudo gate reads
-.RB \(dq "re-key the record as root" \(dq;
-.B \-\-yes
-skips it and leaves the root-side confirmation untouched.
+.RB \(dq "re-key the record as root" \(dq.
 .SS Verification and serving
 .TP
 .B verify \fIpath\fP
@@ -703,7 +722,7 @@ Create signed tag
 .I tag
 at the pinned hash \(em no sudo (needs your SSH agent, e.g. 1Password).
 .TP
-.B signer add [\-\-repo \fIpath\fP] (\-\-file \fIpubkey\fP | \-\-key \fIline\fP) [\-\-principal \fIid\fP] [\-\-yes]
+.B signer add [\-\-repo \fIpath\fP] (\-\-file \fIpubkey\fP | \-\-key \fIline\fP) [\-\-principal \fIid\fP]
 (sudo) Allowed-signers ceremony: fingerprint, confirm, root-owned
 write.
 A bare public key needs
@@ -712,19 +731,13 @@ A bare public key needs
 .B \-\-repo
 targets the per-repo override.
 The pre-sudo gate reads
-.RB \(dq "record the key as root" \(dq;
-.B \-\-yes
-skips it and leaves the fingerprint confirmation, which runs as root,
-untouched.
+.RB \(dq "record the key as root" \(dq.
 .TP
-.B signer remove [\-\-repo \fIpath\fP] (\-\-file \fIpubkey\fP | \-\-key \fIline\fP) [\-\-yes]
+.B signer remove [\-\-repo \fIpath\fP] (\-\-file \fIpubkey\fP | \-\-key \fIline\fP)
 (sudo) Remove that key's entries (key compromise must not be the
 hand-edited path).
 Its gate reads
-.RB \(dq "remove the key as root" \(dq,
-and
-.B \-\-yes
-skips that gate only.
+.RB \(dq "remove the key as root" \(dq.
 .TP
 .B signer list [\-\-repo \fIpath\fP]
 Principals, key types, fingerprints.
@@ -745,7 +758,7 @@ Unprivileged, like
 .BR "signer list" .
 .SS Ignorable-key policy
 .TP
-.B ignorable add \fIkey\fP [\-\-under \fIdir\fP] [\-\-yes]
+.B ignorable add \fIkey\fP [\-\-under \fIdir\fP]
 (sudo) Grant a dotted JSON key that
 .B review \-\-file
 may then declare ignored.
@@ -753,18 +766,13 @@ may then declare ignored.
 scopes the grant to that directory's subtree; omitted means
 everywhere.
 The pre-sudo gate reads
-.RB \(dq "record the grant as root" \(dq;
-.B \-\-yes
-skips it and leaves the root-side confirmation untouched.
+.RB \(dq "record the grant as root" \(dq.
 .TP
-.B ignorable remove \fIkey\fP [\-\-under \fIdir\fP] [\-\-yes]
+.B ignorable remove \fIkey\fP [\-\-under \fIdir\fP]
 (sudo) Withdraw exactly that grant (same key, same scope).
 Slots recording it fall back to byte-exact.
 Its gate reads
-.RB \(dq "withdraw the grant as root" \(dq,
-and
-.B \-\-yes
-skips that gate only.
+.RB \(dq "withdraw the grant as root" \(dq.
 .TP
 .B ignorable list
 Machine tier, user tier and the effective intersection, each entry

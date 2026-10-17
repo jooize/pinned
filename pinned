@@ -278,6 +278,11 @@ else
 fi
 NL=$'\n' TAB=$'\t'
 
+# A refusal is a verdict, so it reads like `✓ approved:`: the glyph and a
+# past-tense label in red bold, the reason plain. Detail lines below it keep
+# the 8-space indent. Full caps are left to the `!!!` alarms.
+refused() { printf '%s✗ refused:%s %s\n' "$C2_RED$C2_B" "$C2_OFF" "$1" >&2; }
+
 # Separate gate for the two review-display highlighters ported from the
 # hardening repo's claude-shim.bash (color_diff, highlight_json): they keep
 # their origin's condition -- a tty AND no NO_COLOR (https://no-color.org).
@@ -541,7 +546,7 @@ verify_interpreter_pin() { # <installed-script>
     esac
   fi
   [ -n "$why" ] || return 0
-  echo "REFUSE: $why" >&2
+  refused "$why"
   echo "        The sudoers digest pins this script's bytes, not its interpreter, and" >&2
   echo "        sudo passes the caller's PATH through to the root process. An" >&2
   echo "        unpinned interpreter therefore lets the invoker choose which bash" >&2
@@ -2084,7 +2089,7 @@ ancestry_gate() {
   case "$actual" in
     equal|forward)
       [ -n "$declared" ] || return 0
-      printf '%sREFUSE: nothing to override -- the candidate is a descendant of the pin%s\n' \
+      printf '%s✗ refused:%s nothing to override -- the candidate is a descendant of the pin\n' \
         "$C2_RED$C2_B" "$C2_OFF" >&2
       echo "        pinned:    $old" >&2
       echo "        candidate: $new" >&2
@@ -2094,10 +2099,10 @@ ancestry_gate() {
     *)        phrase="has diverged from the pin" ;;
   esac
   if [ -z "$declared" ]; then
-    printf '%sREFUSE: the candidate %s%s\n' "$C2_RED$C2_B" "$phrase" "$C2_OFF" >&2
+    printf '%s✗ refused:%s the candidate %s\n' "$C2_RED$C2_B" "$C2_OFF" "$phrase" >&2
   elif [ "$declared" != "$actual" ]; then
-    printf '%sREFUSE: --%s declared, but the candidate %s%s\n' \
-      "$C2_RED$C2_B" "$declared" "$phrase" "$C2_OFF" >&2
+    printf '%s✗ refused:%s --%s declared, but the candidate %s\n' \
+      "$C2_RED$C2_B" "$C2_OFF" "$declared" "$phrase" >&2
   else
     return 0
   fi
@@ -2818,7 +2823,7 @@ read_ignored_paths() {
   for f in "$d"/ignored.*; do
     [ -e "$f" ] || continue
     if [ -n "$found" ]; then
-      echo "REFUSE: slot $d declares more than one ignored.<format>; refusing all of them" >&2
+      refused "slot $d declares more than one ignored.<format>; refusing all of them"
       return 2
     fi
     found="$f"
@@ -2828,7 +2833,7 @@ read_ignored_paths() {
   case "$fmt" in
     json) ;;
     *)
-      echo "REFUSE: $found declares unsupported ignored-key format '$fmt'; refusing" >&2
+      refused "$found declares unsupported ignored-key format '$fmt'; refusing"
       echo "        (the shipped format is ignored.json -- a JSON array of key paths)" >&2
       return 2 ;;
   esac
@@ -2838,12 +2843,12 @@ read_ignored_paths() {
               and all(.[]; type == "array" and length > 0
                            and all(.[]; type == "string"))' \
        <"$found" >/dev/null 2>&1; then
-    echo "REFUSE: $found is outside the ignored-key shape: a JSON array of nonempty" >&2
+    refused "$found is outside the ignored-key shape: a JSON array of nonempty"
     echo '        arrays of strings, e.g. [["model"],["statusLine","command"]]' >&2
     return 2
   fi
   [ "$(jq 'length' <"$found")" -gt 0 ] || {
-    echo "REFUSE: $found declares no keys; an empty declaration tolerates nothing" >&2
+    refused "$found declares no keys; an empty declaration tolerates nothing"
     return 2
   }
   IGN_PATHS="$(jq -c . <"$found")" || return 2
@@ -2875,7 +2880,7 @@ slot_declares_ignore() {
 #
 # restate_gaps prints the gap lines for ONE slot (nothing when there is
 # none). $1 slot dir, $2 1 if this --file states its keys either way,
-# $3 1 if the ceremony states custody either way.
+# $3 1 if it states custody either way.
 restate_gaps() {
   local slot="$1" ign_stated="$2" cust_stated="$3" keys flags
   [ -d "$slot" ] || return 0
@@ -2892,28 +2897,53 @@ restate_gaps() {
     echo "            drop: --ignore-none"
   fi
   if [ "$cust_stated" -eq 0 ] && [ -e "$slot/approved" ]; then
-    echo "          stored copy  (one choice for the whole review)"
+    echo "          stored copy"
     echo "            keep: --store"
     echo "            drop: --no-store"
   fi
 }
 
-# The batch half: $1 tier, $2 1 if the ceremony states custody either way;
-# the files come in rf_files and whether each states its keys either way in
-# rf_ign_stated (1/0), index for index. A path that does not canonicalize
-# is skipped here: the ceremony refuses it on its own, by name.
+# The batch half: $1 tier, then the review's own argv (for the paste-ready
+# --keep line). The files come in rf_files; per file, rf_ign_stated and
+# rf_cust_stated say whether it states its keys and its custody either way,
+# and rf_typed whether it typed any of those flags at all. A path that does
+# not canonicalize is skipped here: the ceremony refuses it on its own.
+#
+# When no file with a gap typed any of those flags, the refusal ends with
+# the same command plus --keep after each such --file: the one-word way to
+# say "as it is". A file that typed some of them gets only its keep/drop
+# lines, because --keep would ADD the kept keys to the ones it typed.
 restate_floor() {
-  local tier="$1" cust_stated="$2" i=0 p one body=""
+  local tier="$1" i=0 p one body="" gap_idx=" " suggest=1 a fi=-1 line
+  shift
   while [ "$i" -lt "${#rf_files[@]}" ]; do
     if p="$(canon_path "${rf_files[$i]}" 2>/dev/null)"; then
-      one="$(restate_gaps "$(slot_dir_for "$tier" "$p")" "${rf_ign_stated[$i]}" "$cust_stated")"
-      [ -z "$one" ] || body="$body        $p$NL$one$NL"
+      one="$(restate_gaps "$(slot_dir_for "$tier" "$p")" "${rf_ign_stated[$i]}" "${rf_cust_stated[$i]}")"
+      if [ -n "$one" ]; then
+        body="$body        $p$NL$one$NL"
+        gap_idx="$gap_idx$i "
+        [ "${rf_typed[$i]}" -eq 0 ] || suggest=0
+      fi
     fi
     i=$((i + 1))
   done
   [ -n "$body" ] || return 0
-  printf '\n%sREFUSE: this review would drop what a slot keeps today%s\n' "$C2_RED$C2_B" "$C2_OFF" >&2
+  printf '\n%s✗ refused:%s this review would drop what a slot keeps today\n' "$C2_RED$C2_B" "$C2_OFF" >&2
   printf '%s' "$body" >&2
+  if [ "$suggest" -eq 1 ] && [ "$#" -gt 0 ]; then
+    line="pinned review"
+    while [ "$#" -gt 0 ]; do
+      a="$1"; shift
+      line="$line $(elevation_quote "$a")"
+      if [ "$a" = "--file" ] && [ "$#" -gt 0 ]; then
+        fi=$((fi + 1))
+        line="$line $(elevation_quote "$1")"; shift
+        case "$gap_idx" in *" $fi "*) line="$line --keep" ;; esac
+      fi
+    done
+    echo "        to keep everything as it is:" >&2
+    echo "          $line" >&2
+  fi
   echo "        state keep or drop for each, then run the review again; nothing recorded" >&2
   return 1
 }
@@ -2980,14 +3010,14 @@ read_policy_file() {
   path_gone "$f" || gone=$?
   case "$gone" in
     0) return 1 ;;
-    2) echo "REFUSE: cannot tell whether $label $f exists" >&2; return 2 ;;
+    2) refused "cannot tell whether $label $f exists"; return 2 ;;
   esac
-  [ -f "$f" ] || { echo "REFUSE: $label $f is not a regular file" >&2; return 2; }
+  [ -f "$f" ] || { refused "$label $f is not a regular file"; return 2; }
   verify_record_file "$f" || return 2
   verify_ancestry "$f" || return 2
   require_jq "reading $f" || return 2
   jq -e "$POLICY_VALID" <"$f" >/dev/null 2>&1 || {
-    echo "REFUSE: $label $f is not a valid ignorable policy" >&2
+    refused "$label $f is not a valid ignorable policy"
     echo '        (a JSON array of {"path":["a","b"],"under":"/abs/prefix"};' >&2
     echo '        "under" is optional and means everywhere; no other keys)' >&2
     return 2
@@ -3074,11 +3104,11 @@ policy_check_declaration() { # $1 effective policy  $2 declared paths  $3 abs pa
   case "$n" in
     0) return 0 ;;
     ''|*[!0-9]*)
-      echo "REFUSE: the ignorable policy check did not complete; declaring nothing" >&2
+      refused "the ignorable policy check did not complete; declaring nothing"
       return 1 ;;
   esac
   names="$(policy_ungranted "$1" "$2" "$3")"
-  printf '%sREFUSE: the ignorable policy does not grant these keys for%s %s\n' \
+  printf '%s✗ refused:%s the ignorable policy does not grant these keys for %s\n' \
     "$C2_RED$C2_B" "$C2_OFF" "$3" >&2
   while IFS= read -r k; do
     [ -n "$k" ] && printf '          %s\n' "$k" >&2
@@ -3141,7 +3171,7 @@ json_projectable() {
   n_raw="$(jq --stream -c . <"$f" 2>/dev/null | wc -l)"
   n_canon="$(jq -c . <"$f" 2>/dev/null | jq --stream -c . 2>/dev/null | wc -l)"
   if [ "$n_raw" -lt 1 ] || [ "$n_raw" -ne "$n_canon" ]; then
-    echo "REFUSE: $side contains duplicate object keys -- parsers disagree on which one wins," >&2
+    refused "$side contains duplicate object keys -- parsers disagree on which one wins,"
     echo "        so no structural comparison of it can be trusted (byte-exact verdict stands)" >&2
     return 1
   fi
@@ -3641,8 +3671,13 @@ elevation_gate() { # <what-the-root-side-does> <what-stays-unchanged> argv...
     [ "$a" = "--yes" ] && return 0
   done
   if [ ! -t 0 ]; then
-    printf '%serror: no tty for confirmation -- pass --yes to proceed non-interactively%s\n' \
-      "$C2_RED" "$C2_OFF" >&2
+    if [ "$action" = "tombstone" ]; then
+      printf '%serror: no tty for confirmation -- pass --yes to let the sudo dialog confirm%s\n' \
+        "$C2_RED" "$C2_OFF" >&2
+    else
+      printf '%serror: no tty for confirmation -- run it in a terminal%s\n' \
+        "$C2_RED" "$C2_OFF" >&2
+    fi
     exit 2
   fi
   # Bold carries only the decision (through the `;`); the mechanics that
@@ -3670,12 +3705,22 @@ elevation_gate() { # <what-the-root-side-does> <what-stays-unchanged> argv...
 # invoker could have modified. Pre-install (setup from a checkout) falls
 # back to this script's own path. Sits after the helper definitions so the
 # review preview below can reuse them.
+#
+# --yes exists only where it carries a consent: tombstone, whose sudo dialog
+# is the confirmation, and setup, whose plan is confirmed before sudo. Every
+# other root verb asks its own y/N on the terminal, so a --yes there could
+# only skip the gate that announces the authentication. It is refused before
+# sudo, so it costs nothing.
 case "$action" in
   review|setup|tombstone|rekey|declare)
     if [ "$EUID" -ne 0 ]; then
+      case "$action" in
+        review|declare|rekey)
+          for a in "$@"; do [ "$a" = "--yes" ] && usage; done ;;
+      esac
       # tombstone without exactly its <path> can only ever reach usage --
-      # fail here, before authentication costs a sudo prompt. (--yes answers
-      # the elevation gate below and is not the path.)
+      # fail here, before authentication costs a sudo prompt. (--yes lets
+      # the sudo dialog confirm and is not the path.)
       if [ "$action" = "tombstone" ]; then
         ts_paths=0
         for a in "$@"; do [ "$a" = "--yes" ] || ts_paths=$((ts_paths + 1)); done
@@ -3686,10 +3731,9 @@ case "$action" in
       # authentication. The peek below is orientation only; the root side
       # re-reads the slot and stays the authority.
       if [ "$action" = "rekey" ]; then
-        # Two positionals in order; --yes answers the elevation gate below.
+        # Two positionals in order.
         rk_old_arg="" rk_new_arg=""
         for a in "$@"; do
-          [ "$a" = "--yes" ] && continue
           if [ -z "$rk_old_arg" ]; then rk_old_arg="$a"
           elif [ -z "$rk_new_arg" ]; then rk_new_arg="$a"
           else usage; fi
@@ -3698,16 +3742,16 @@ case "$action" in
         rk_old="$(canon_path "$rk_old_arg")" || exit 1
         rk_new="$(canon_path "$rk_new_arg")" || exit 1
         if [ "$rk_old" = "$rk_new" ]; then
-          echo "REFUSE: old and new name the same path: $rk_old" >&2
+          refused "old and new name the same path: $rk_old"
           exit 1
         fi
         rk_gone=0; path_gone "$rk_old" || rk_gone=$?
         if [ "$rk_gone" -eq 2 ]; then
-          echo "REFUSE: cannot tell whether $rk_old still exists -- a rekey follows only a move that happened" >&2
+          refused "cannot tell whether $rk_old still exists -- a rekey follows only a move that happened"
           exit 1
         fi
         if [ "$rk_gone" -eq 1 ]; then
-          echo "REFUSE: $rk_old still exists -- you rekey a record whose content has already moved" >&2
+          refused "$rk_old still exists -- you rekey a record whose content has already moved"
           echo "        (move the content first, or review $rk_new instead)" >&2
           exit 1
         fi
@@ -3741,7 +3785,6 @@ case "$action" in
           case "$a" in
             --release) dc_want=1 ;;
             --no-release) dc_remove=1 ;;
-            --yes) ;;
             -*) usage ;;
             *)
               [ -z "$dc_repo" ] || usage
@@ -3907,23 +3950,58 @@ case "$action" in
         # refuses here before costing the authentication. A slot this side
         # cannot read simply passes; the root side re-checks every file.
         if [ "$file_mode" -eq 1 ]; then
-          rf_files=() rf_ign_stated=() pv_cust=0 skip_next=0 skip_next_file=0
+          rf_files=() rf_ign_stated=() rf_cust_stated=() rf_typed=() rf_keys=() rf_keep=()
+          skip_next=0 skip_next_file=0 want_key=0
           for a in "$@"; do
             if [ "$skip_next" -eq 1 ]; then
-              [ "$skip_next_file" -eq 1 ] && { rf_files+=("$a"); rf_ign_stated+=(0); }
-              skip_next=0; continue
+              if [ "$skip_next_file" -eq 1 ]; then
+                rf_files+=("$a"); rf_ign_stated+=(0); rf_cust_stated+=(0); rf_typed+=(0)
+                rf_keys+=(""); rf_keep+=(0)
+              fi
+              if [ "$want_key" -eq 1 ] && [ "${#rf_files[@]}" -gt 0 ]; then
+                last=$((${#rf_files[@]} - 1))
+                rf_keys[last]="${rf_keys[last]:+${rf_keys[last]} }$a"
+              fi
+              skip_next=0; want_key=0; continue
             fi
             skip_next_file=0
+            last=$((${#rf_files[@]} - 1))
             case "$a" in
               --file) skip_next=1; skip_next_file=1 ;;
               --ignore-json-key|--ignore-none)
-                [ "${#rf_files[@]}" -eq 0 ] || rf_ign_stated[$((${#rf_files[@]} - 1))]=1
-                [ "$a" = "--ignore-none" ] || skip_next=1 ;;
+                [ "$last" -lt 0 ] || { rf_ign_stated[last]=1; rf_typed[last]=1; }
+                [ "$a" = "--ignore-none" ] || { skip_next=1; want_key=1; } ;;
+              --store|--no-store)
+                [ "$last" -lt 0 ] || { rf_cust_stated[last]=1; rf_typed[last]=1; } ;;
+              --keep)
+                [ "$last" -lt 0 ] || { rf_ign_stated[last]=1; rf_cust_stated[last]=1; rf_keep[last]=1; } ;;
               --baseline|--baseline-store|--algo) skip_next=1 ;;
-              --store|--no-store) pv_cust=1 ;;
             esac
           done
-          restate_floor "$(tier_user)" "$pv_cust" || exit 1
+          restate_floor "$(tier_user)" "$@" || exit 1
+          # The ladder rung for kept keys, mirrored the same way: a key the
+          # slot declares but the policy no longer grants would refuse
+          # root-side. Anything this side cannot read passes to the root
+          # side, which checks every file again.
+          pv_tier="$(tier_user)" pv_i=0
+          if command -v jq >/dev/null 2>&1 && load_policy "$pv_tier" 2>/dev/null; then
+            while [ "$pv_i" -lt "${#rf_files[@]}" ]; do
+              if [ "${rf_keep[$pv_i]}" -eq 1 ] \
+                 && pv_p="$(canon_path "${rf_files[$pv_i]}" 2>/dev/null)" \
+                 && pv_slot="$(slot_dir_for "$pv_tier" "$pv_p")" \
+                 && slot_declares_ignore "$pv_slot" \
+                 && read_ignored_paths "$pv_slot" 2>/dev/null; then
+                pv_typed="[]"
+                [ -z "${rf_keys[$pv_i]}" ] || pv_typed="$(ign_paths_json "${rf_keys[$pv_i]}")"
+                if pv_json="$(jq -c -n --argjson a "$IGN_PATHS" --argjson b "$pv_typed" '$a + ($b - $a)' 2>/dev/null)" \
+                   && ! policy_check_declaration "$POL_EFF" "$pv_json" "$pv_p"; then
+                  echo "        a kept key lost its grant: list the keys to keep without --keep, or --ignore-none" >&2
+                  exit 1
+                fi
+              fi
+              pv_i=$((pv_i + 1))
+            done
+          fi
         fi
         if [ "${#preview_repos[@]}" -gt 0 ] && [ "$file_mode" -eq 0 ]; then
           # One preview per repo; sequential root-side ceremonies follow,
@@ -4187,6 +4265,8 @@ case "$action" in
     case "${1:-}" in
       add|remove)
         if [ "$EUID" -ne 0 ]; then
+          # --yes is refused here like review's (see above the review case).
+          for a in "$@"; do [ "$a" = "--yes" ] && usage; done
           # Argv that can only ever reach a root-side argument error fails
           # HERE, before authentication costs a sudo prompt -- the same
           # contract as review's preview. Grammar and content stay
@@ -4274,8 +4354,8 @@ do_approve() {
   # must verify against the allowed signers AND name the same commit, or
   # nothing is pinned. k-of-n is the caller demanding whichever k tags they
   # trust.
-  local trust=0 repo_args sel_tag="" tag_args files file_base file_ign file_ign_none file_algo=sha256 algo_given=0
-  local store=0 no_store=0 ign_given=0 last step=0 decl_class="" baseline_store=""
+  local trust=0 repo_args sel_tag="" tag_args files file_base file_ign file_ign_none file_store file_keep file_algo=sha256 algo_given=0
+  local ign_given=0 keep_given=0 last step=0 decl_class="" baseline_store=""
   # Empty or the word print_commit_range reads, like decl_class: every
   # listing site passes it through untouched, so there is no 0/1 to
   # translate on the way down.
@@ -4283,7 +4363,10 @@ do_approve() {
   # The six words of the commit being approved, hyphen-joined (approve by
   # words, above commit_words). Empty: the review reads, as always.
   local words_arg=""
-  repo_args=(); tag_args=(); files=(); file_base=(); file_ign=(); file_ign_none=()
+  # The argv as given, for the restatement floor's paste-ready line.
+  local review_argv
+  review_argv=("$@")
+  repo_args=(); tag_args=(); files=(); file_base=(); file_ign=(); file_ign_none=(); file_store=(); file_keep=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --signed-tag) tag_args+=("$2"); shift 2 ;;
@@ -4329,7 +4412,7 @@ do_approve() {
         shift ;;
       --file)
         [ $# -ge 2 ] || { echo "--file needs a path" >&2; exit 1; }
-        files+=("$2"); file_base+=(""); file_ign+=(""); file_ign_none+=(0); shift 2 ;;
+        files+=("$2"); file_base+=(""); file_ign+=(""); file_ign_none+=(0); file_store+=(""); file_keep+=(0); shift 2 ;;
       --baseline)
         [ $# -ge 2 ] || { echo "--baseline needs a path" >&2; exit 1; }
         [ "${#files[@]}" -gt 0 ] \
@@ -4366,23 +4449,38 @@ do_approve() {
         last=$((${#files[@]} - 1))
         [ -z "${file_ign[last]}" ] \
           || { echo "--ignore-none and --ignore-json-key state different declarations for one --file; give one" >&2; exit 1; }
+        [ "${file_keep[last]}" -eq 0 ] \
+          || { echo "--ignore-none and --keep state different declarations for one --file; give one" >&2; exit 1; }
         file_ign_none[last]=1; shift ;;
-      # Custody, for the whole ceremony rather than per --file: it is one
-      # disclosure decision the human is confirming, and a ceremony that
-      # stored some of its files and not others would be a decision nobody
-      # could read off the command line. FREELY COMBINABLE -- custody serves
-      # the ignored-key comparison, but also archives exactly what was
-      # approved and feeds the next ceremony's diff, so it means something on
-      # a ceremony that declares nothing.
-      --store)
-        [ "$no_store" -eq 0 ] || { echo "--store and --no-store state different custody; give one" >&2; exit 1; }
-        store=1; shift ;;
-      # Custody's other half, ceremony-wide like --store: keep no copy, said
-      # on purpose. Without it, a review of a slot that keeps a copy today
-      # refuses rather than drop it (see restate_gaps).
-      --no-store)
-        [ "$store" -eq 0 ] || { echo "--store and --no-store state different custody; give one" >&2; exit 1; }
-        no_store=1; shift ;;
+      # Keep what this --file's slot holds today: its ignored keys (any
+      # --ignore-json-key on the same --file ADDS to them) and its stored
+      # copy (unless --store or --no-store says otherwise). Expanded root-side
+      # from the slot about to be written, so nothing can move in between;
+      # the ceremony still shows every key before its y/N, marked as kept.
+      --keep)
+        [ "${#files[@]}" -gt 0 ] \
+          || { echo "--keep must follow the --file it belongs to" >&2; exit 1; }
+        last=$((${#files[@]} - 1))
+        [ "${file_ign_none[last]}" -eq 0 ] \
+          || { echo "--ignore-none and --keep state different declarations for one --file; give one" >&2; exit 1; }
+        file_keep[last]=1; keep_given=1; shift ;;
+      # Custody, per --file like the ignored keys: custody is a fact about
+      # one slot, and the command display draws each --file's flags grouped
+      # under it, so a per-file choice is readable off the command line.
+      # FREELY COMBINABLE -- custody serves the ignored-key comparison, but
+      # also archives exactly what was approved and feeds the next
+      # ceremony's diff, so it means something on a file that declares
+      # nothing. --no-store is its other half: keep no copy, said on purpose
+      # (without one of them, a slot that keeps a copy today refuses; see
+      # restate_gaps).
+      --store|--no-store)
+        [ "${#files[@]}" -gt 0 ] \
+          || { echo "$1 must follow the --file it belongs to" >&2; exit 1; }
+        last=$((${#files[@]} - 1))
+        [ -z "${file_store[last]}" ] \
+          || { echo "--store and --no-store state different custody for one --file; give one" >&2; exit 1; }
+        if [ "$1" = "--store" ]; then file_store[last]=1; else file_store[last]=0; fi
+        shift ;;
       # The ceremony-wide witness directory: a --file that brings no
       # --baseline of its own looks for the approved bytes to diff against
       # at <dir>/<slot name>/<prior digest>. Both name parts are pinned's own
@@ -4396,11 +4494,6 @@ do_approve() {
       --algo)
         [ $# -ge 2 ] || { echo "--algo needs a value" >&2; exit 1; }
         file_algo="$2"; algo_given=1; shift 2 ;;
-      # Answered the unprivileged side's elevation gate and rode through in
-      # the argv that gate displayed (display == the exact argv sudo runs, so
-      # it cannot be stripped on the way). It says nothing about the ceremony
-      # below, whose y/N is a separate decision and stays interactive.
-      --yes)        shift ;;
       -*)           usage ;;
       *)            repo_args+=("$1"); shift ;;
     esac
@@ -4418,8 +4511,6 @@ do_approve() {
     return
   fi
   [ "$algo_given" -eq 0 ] || { echo "--algo applies to the --file ceremony only" >&2; exit 1; }
-  [ "$store" -eq 0 ] && [ "$no_store" -eq 0 ] \
-    || { echo "--store and --no-store apply to the --file ceremony only" >&2; exit 1; }
   [ -z "$baseline_store" ] || { echo "--baseline-store applies to the --file ceremony only" >&2; exit 1; }
   [ "${#repo_args[@]}" -ge 1 ] || usage
   case "$sel_tag" in
@@ -5089,7 +5180,8 @@ do_approve_files() {
   local i=0 n="${#files[@]}" f base path slot line new_digest old_digest old_label
   local base_ok recorded=0 declined=0 failed=0 answer state_note nl
   local ign ign_json old_ign old_bad had_copy copy_bad cur_copy ign_note cust_from cust_to cust_val decl_changed
-  local cust_changed shape gate_shape n_lines gate_line same_bytes ign_from
+  local cust_changed shape gate_shape n_lines gate_line same_bytes
+  local keep store kept_ign cust_src ign_marks ign_new ign_old ign_lead imark ikey itail gr_list
   local keys_block
   local gk gscope gwhere gr_keys gr_pairs gr_scope gr_mixed gr_mach
 
@@ -5098,7 +5190,7 @@ do_approve_files() {
   # cannot be read stops the ceremony rather than approving without one.
   # Only when something is actually declared -- a ceremony that declares
   # nothing has no rung to check.
-  if [ "$ign_given" -eq 1 ]; then
+  if [ "$ign_given" -eq 1 ] || [ "$keep_given" -eq 1 ]; then
     require_jq "--ignore-json-key" || exit 1
     load_policy "$inv" || exit 1
   fi
@@ -5107,20 +5199,31 @@ do_approve_files() {
 
   # THE RESTATEMENT FLOOR (restate_gaps), over the whole batch before any
   # file is shown.
-  rf_files=("${files[@]}"); rf_ign_stated=()
+  rf_files=("${files[@]}"); rf_ign_stated=(); rf_cust_stated=(); rf_typed=()
   while [ "$i" -lt "$n" ]; do
-    if [ -n "${file_ign[$i]}" ] || [ "${file_ign_none[$i]}" -eq 1 ]; then
+    if [ -n "${file_ign[$i]}" ] || [ "${file_ign_none[$i]}" -eq 1 ] || [ "${file_keep[$i]}" -eq 1 ]; then
       rf_ign_stated+=(1)
     else
       rf_ign_stated+=(0)
     fi
+    if [ -n "${file_store[$i]}" ] || [ "${file_keep[$i]}" -eq 1 ]; then
+      rf_cust_stated+=(1)
+    else
+      rf_cust_stated+=(0)
+    fi
+    if [ -n "${file_ign[$i]}" ] || [ "${file_ign_none[$i]}" -eq 1 ] || [ -n "${file_store[$i]}" ]; then
+      rf_typed+=(1)
+    else
+      rf_typed+=(0)
+    fi
     i=$((i + 1))
   done
   i=0
-  restate_floor "$inv" "$(( store || no_store ))" || exit 1
+  restate_floor "$inv" ${review_argv[@]+"${review_argv[@]}"} || exit 1
 
   while [ "$i" -lt "$n" ]; do
-    f="${files[$i]}"; base="${file_base[$i]}"; ign="${file_ign[$i]}"; i=$((i + 1))
+    f="${files[$i]}"; base="${file_base[$i]}"; ign="${file_ign[$i]}"
+    keep="${file_keep[$i]}"; store="${file_store[$i]}"; i=$((i + 1))
     [ "$i" -eq 1 ] || echo
     path="$(canon_path "$f")" || { failed=$((failed + 1)); continue; }
     case "$path" in
@@ -5153,10 +5256,30 @@ do_approve_files() {
     # anything is displayed or recorded, and loudly -- semantics are
     # UNIFORM, because pinned cannot tell a human's argv from a calling
     # tool's, so "the human typed it" can never be the reason to allow it.
-    ign_json=""
+    #
+    # --keep reads the slot's own declaration first and adds the typed keys
+    # to it, so the rung checks exactly the set this approval would record:
+    # a kept key the policy no longer grants refuses here too.
+    ign_json="" kept_ign=""
+    if [ "$keep" -eq 1 ] && slot_declares_ignore "$slot"; then
+      if read_ignored_paths "$slot" 2>/dev/null; then
+        kept_ign="$IGN_PATHS"
+      else
+        refused "--keep cannot keep the ignored keys of $path: the declaration is unreadable"
+        echo "        list the keys to keep without --keep, or drop them with --ignore-none" >&2
+        failed=$((failed + 1)); continue
+      fi
+    fi
     if [ -n "$ign" ]; then
       ign_json="$(ign_paths_json "$ign")"
+    fi
+    if [ -n "$kept_ign" ]; then
+      ign_json="$(jq -c -n --argjson a "$kept_ign" --argjson b "${ign_json:-[]}" '$a + ($b - $a)')" || exit 1
+    fi
+    if [ -n "$ign_json" ]; then
       if ! policy_check_declaration "$POL_EFF" "$ign_json" "$path"; then
+        [ -z "$kept_ign" ] \
+          || echo "        a kept key lost its grant: list the keys to keep without --keep, or --ignore-none" >&2
         failed=$((failed + 1)); continue
       fi
     fi
@@ -5180,6 +5303,11 @@ do_approve_files() {
       fi
     fi
     [ -e "$slot/approved" ] && had_copy=1
+    # Custody for THIS file: what it typed, else what --keep keeps, else none.
+    cust_src="--store"
+    if [ -z "$store" ]; then
+      if [ "$keep" -eq 1 ]; then store="$had_copy"; cust_src="--keep"; else store=0; fi
+    fi
     if ! inspect_slot "$slot" 2>/dev/null; then
       # Malformed is unreadable state, not unapproachable state: the
       # ceremony is exactly the act that may reassert it. Loudly.
@@ -5294,60 +5422,80 @@ do_approve_files() {
     # The declaration, stated before the confirm and not after it: answering
     # y approves the CONTENT and the tolerance in one act, so the tolerance
     # has to be on screen while the question is being asked.
-    # The keys wear the attention color: they are the one row that loosens
-    # the byte-exact pin. A change is drawn `<from> → <to>`, custody's way;
-    # clearing is `<keys> → none`, with no provenance (nothing is granted).
-    ign_from=""
-    if [ "$old_bad" -eq 0 ] && [ "$ign_json" != "$old_ign" ] && [ -n "$old_digest" ]; then
-      ign_from="none"
-      [ -z "$old_ign" ] || ign_from="$(ign_display "$old_ign")"
-      ign_from="$ign_from → "
+    # THE IGNORED KEYS, one per row in the attention color: they are the one
+    # row that loosens the byte-exact pin. Against a prior record, a change
+    # is marked in the gutter the way a diff marks lines -- a green `+` and
+    # bold for a key this approval adds, a red `-` and dim for one it drops,
+    # no mark for one it keeps -- so a long list still reads at a glance.
+    #
+    # GRANT PROVENANCE: the display audits the ladder, so the rung that
+    # permits each key, and how far it reaches, is on screen while the
+    # question is asked. One shared scope is said once below the list; mixed
+    # scopes ride at the end of each row. Every listed key that stays is
+    # granted (an ungranted one never reaches this display).
+    ign_marks=0
+    if [ "$old_bad" -eq 0 ] && [ -n "$old_digest" ] && [ "$ign_json" != "$old_ign" ]; then
+      ign_marks=1
     fi
-    if [ -z "$ign" ] && [ -n "$ign_from" ]; then
-      printf '%signored:%s    %s%snone%s  %s(every key returns to byte-exact)%s\n' \
-        "$C_B" "$C_OFF" "$C_YEL" "$ign_from" "$C_OFF" "$C_DIM" "$C_OFF"
-    fi
-    if [ -n "$ign" ]; then
-      printf '%signored:%s    %s%s%s%s  %s(these keys may drift without re-approval)%s\n' \
-        "$C_B" "$C_OFF" "$C_YEL" "$ign_from" "$(ign_display "$ign_json")" "$C_OFF" "$C_DIM" "$C_OFF"
-      # GRANT PROVENANCE, one line: the display audits the ladder, so the
-      # rung that permits each key -- and how far that permission reaches
-      # -- is on screen while the question is asked. A batch asks this
-      # question once per file, so the provenance is collapsed rather than
-      # laddered: one line per key would be a wall re-read at every
-      # confirm. Keys sharing a scope state it once; a mixed set names the
-      # reach per key. Every key here is granted (an ungranted one never
-      # reaches this display).
-      gr_keys=""; gr_pairs=""; gr_scope=""; gr_mixed=0
-      while IFS="$TAB" read -r gk gscope; do
-        [ -n "$gk" ] || continue
-        case "$gscope" in
-          '*') gwhere="everywhere" ;;
-          *)   gwhere="under $gscope" ;;
-        esac
-        if [ -n "$gr_keys" ]; then
-          gr_keys="$gr_keys, "
-          gr_pairs="$gr_pairs, "
-          [ "$gr_scope" = "$gwhere" ] || gr_mixed=1
-        else
-          gr_scope="$gwhere"
-        fi
-        gr_keys="$gr_keys$gk"
-        gr_pairs="$gr_pairs$gk ($gwhere)"
-      done <<EOF
+    if [ -n "$ign_json" ] || [ "$ign_marks" -eq 1 ]; then
+      ign_new="${ign_json:-[]}" ign_old="${ign_json:-[]}"
+      [ "$ign_marks" -eq 0 ] || ign_old="${old_ign:-[]}"
+      gr_list="" gr_scope="" gr_mixed=0
+      if [ -n "$ign_json" ]; then
+        while IFS="$TAB" read -r gk gscope; do
+          [ -n "$gk" ] || continue
+          case "$gscope" in
+            '*') gwhere="everywhere" ;;
+            *)   gwhere="under $gscope" ;;
+          esac
+          if [ -z "$gr_list" ]; then
+            gr_scope="$gwhere"
+          elif [ "$gr_scope" != "$gwhere" ]; then
+            gr_mixed=1
+          fi
+          gr_list="$gr_list$gk$TAB$gwhere$NL"
+        done <<EOF
 $(policy_grants "$POL_EFF" "$ign_json" "$path")
 EOF
-      # The machine tier is folded into the same line: it constrains the
-      # whole set, so it is one clause, not a line of its own.
-      gr_mach=""
-      [ -z "$POL_MACHINE" ] \
-        || gr_mach="; within the machine policy at $PINNED_MACHINE_POLICY"
-      if [ -n "$gr_keys" ] && [ "$gr_mixed" -eq 0 ]; then
-        printf '            %sgranted by user policy, %s: %s%s%s\n' \
-          "$C_DIM" "$gr_scope" "$gr_keys" "$gr_mach" "$C_OFF"
-      elif [ -n "$gr_keys" ]; then
-        printf '            %sgranted by user policy: %s%s%s\n' \
-          "$C_DIM" "$gr_pairs" "$gr_mach" "$C_OFF"
+      fi
+      ign_lead="${C_B}ignored:${C_OFF}  "
+      while IFS="$TAB" read -r imark ikey; do
+        [ -n "$ikey" ] || continue
+        itail=""
+        if [ "$gr_mixed" -eq 1 ] && [ "$imark" != "-" ]; then
+          gwhere="$(printf '%s' "$gr_list" | awk -F "$TAB" -v k="$ikey" '$1 == k { print $2; exit }')"
+          [ -z "$gwhere" ] || itail="  ${C_DIM}(${gwhere})${C_OFF}"
+        fi
+        case "$imark" in
+          +) printf '%s%s+%s %s%s%s%s\n' "$ign_lead" "$C_GRN" "$C_OFF" "$C_B$C_YEL" "$ikey" "$C_OFF" "$itail" ;;
+          -) printf '%s%s-%s %s%s%s%s\n' "$ign_lead" "$C_RED" "$C_OFF" "$C_DIM" "$ikey" "$C_OFF" "$itail" ;;
+          *) printf '%s  %s%s%s%s\n' "$ign_lead" "$C_YEL" "$ikey" "$C_OFF" "$itail" ;;
+        esac
+        ign_lead="          "
+      done <<EOF
+$(jq -r -n --argjson o "$ign_old" --argjson n "$ign_new" '
+    ($o[] as $k | [(if any($n[]; . == $k) then " " else "-" end), ($k | join("."))]),
+    ($n[] as $k | select(any($o[]; . == $k) | not) | ["+", ($k | join("."))])
+    | @tsv')
+EOF
+      if [ -z "$ign_json" ]; then
+        printf '            %s(every key returns to byte-exact)%s\n' "$C_DIM" "$C_OFF"
+      else
+        if [ -n "$kept_ign" ]; then
+          printf '            %s(--keep · these keys may drift without re-approval)%s\n' "$C_DIM" "$C_OFF"
+        else
+          printf '            %s(these keys may drift without re-approval)%s\n' "$C_DIM" "$C_OFF"
+        fi
+        # The machine tier is folded into the same line: it constrains the
+        # whole set, so it is one clause, not a line of its own.
+        gr_mach=""
+        [ -z "$POL_MACHINE" ] \
+          || gr_mach="; within the machine policy at $PINNED_MACHINE_POLICY"
+        if [ -n "$gr_list" ] && [ "$gr_mixed" -eq 0 ]; then
+          printf '            %sgranted by user policy, %s%s%s\n' "$C_DIM" "$gr_scope" "$gr_mach" "$C_OFF"
+        elif [ -n "$gr_list" ]; then
+          printf '            %sgranted by user policy, scope per key%s%s\n' "$C_DIM" "$gr_mach" "$C_OFF"
+        fi
       fi
     fi
     # CUSTODY, stated in both directions and always -- not only when it is
@@ -5373,8 +5521,8 @@ EOF
       cust_val="$cust_to"
     fi
     if [ "$store" -eq 1 ]; then
-      printf '%scustody:%s    %s  %s(--store · pinned cat serves these bytes)%s\n' \
-        "$C_B" "$C_OFF" "$cust_val" "$C_DIM" "$C_OFF"
+      printf '%scustody:%s    %s  %s(%s · pinned cat serves these bytes)%s\n' \
+        "$C_B" "$C_OFF" "$cust_val" "$C_DIM" "$cust_src" "$C_OFF"
       if [ "$cust_changed" -eq 1 ]; then
         printf '            %sA copy of these bytes is kept beside the record as the%s\n' "$C_DIM" "$C_OFF"
         printf '            %switness: what the ignored-key comparison reads, and what%s\n' "$C_DIM" "$C_OFF"
@@ -5558,7 +5706,7 @@ EOF
         # Clearing first also means a slot never ends up holding two declared
         # formats.
         clear_ignore_decl "$slot"
-        if [ -n "$ign" ]; then
+        if [ -n "$ign_json" ]; then
           write_note "$slot" ignored.json "$ign_json"
           printf '%s✓ ignoring:%s %s%s%s -> %s\n' \
             "$C_GRN$C_B" "$C_OFF" "$C_YEL" "$(ign_display "$ign_json")" "$C_OFF" "$(show_slot "$slot")/ignored.json"
@@ -5608,11 +5756,11 @@ do_tombstone() {
   path="$(canon_path "$path_arg")" || exit 1
   path_gone "$path" || gone=$?
   if [ "$gone" -eq 2 ]; then
-    echo "REFUSE: cannot tell whether $path still exists -- you tombstone only what's gone" >&2
+    refused "cannot tell whether $path still exists -- you tombstone only what's gone"
     exit 1
   fi
   if [ "$gone" -eq 1 ]; then
-    echo "REFUSE: $path still exists -- you tombstone what's gone, not what's live" >&2
+    refused "$path still exists -- you tombstone what's gone, not what's live"
     echo "        (retire the content first, or review the current content instead)" >&2
     exit 1
   fi
@@ -5681,11 +5829,8 @@ rekey_verify_said() { # $1 old  $2 new  $3 captured output
 # a missing slot would merely re-prompt.
 do_rekey() {
   require_root rekey
-  # The elevation gate's answer, riding through in the displayed argv; the
-  # ceremony's own y/N below is untouched by it.
   local a old_arg="" new_arg=""
   for a in "$@"; do
-    [ "$a" = "--yes" ] && continue
     if [ -z "$old_arg" ]; then old_arg="$a"
     elif [ -z "$new_arg" ]; then new_arg="$a"
     else usage; fi
@@ -5697,7 +5842,7 @@ do_rekey() {
   old="$(canon_path "$old_arg")" || exit 1
   new="$(canon_path "$new_arg")" || exit 1
   if [ "$old" = "$new" ]; then
-    echo "REFUSE: old and new name the same path: $old" >&2
+    refused "old and new name the same path: $old"
     exit 1
   fi
   case "$new" in
@@ -5721,7 +5866,7 @@ do_rekey() {
       exit 1 ;;
     tombstone)
       IFS= read -r line <"$slot_file" || line=""
-      echo "REFUSE: $old is tombstoned ($line)" >&2
+      refused "$old is tombstoned ($line)"
       echo "        a tombstone marks the old path's own history; it does not travel --" >&2
       echo "        review $new instead" >&2
       exit 1 ;;
@@ -5735,11 +5880,11 @@ do_rekey() {
   local old_gone=0
   path_gone "$old" || old_gone=$?
   if [ "$old_gone" -eq 2 ]; then
-    echo "REFUSE: cannot tell whether $old still exists -- a rekey follows only a move that happened" >&2
+    refused "cannot tell whether $old still exists -- a rekey follows only a move that happened"
     exit 1
   fi
   if [ "$old_gone" -eq 1 ]; then
-    echo "REFUSE: $old still exists -- you rekey a record whose content has already moved" >&2
+    refused "$old still exists -- you rekey a record whose content has already moved"
     echo "        (move the content first, or review $new instead)" >&2
     exit 1
   fi
@@ -5751,19 +5896,19 @@ do_rekey() {
   if [ -d "$new_slot" ]; then
     inspect_slot "$new_slot" || exit 1
     if [ "$slot_state" != none ]; then
-      echo "REFUSE: $new already has a record ($slot_state); records do not merge" >&2
+      refused "$new already has a record ($slot_state); records do not merge"
       echo "        tombstone or review $new explicitly" >&2
       exit 1
     fi
     if [ -e "$new_slot/signers" ]; then
-      echo "REFUSE: $new_slot holds per-slot signer data (signers/allowed_signers)" >&2
+      refused "$new_slot holds per-slot signer data (signers/allowed_signers)"
       echo "        moving a record onto it would silently place this content under those" >&2
       echo "        signers; reconcile them by hand, then re-run" >&2
       exit 1
     fi
     for e in "$new_slot"/* "$new_slot"/.[!.]*; do
       if [ -e "$e" ]; then
-        echo "REFUSE: $new_slot already holds ${e##*/}; records do not merge" >&2
+        refused "$new_slot already holds ${e##*/}; records do not merge"
         echo "        inspect the slot and clear it by hand, then re-run" >&2
         exit 1
       fi
@@ -5790,7 +5935,7 @@ do_rekey() {
       rev="$(read_rev "$old_slot" "$old")" || exit 1
       [ -n "$rev" ] || { echo "ERROR: $src holds no rev; malformed record" >&2; exit 1; }
       [ -d "$new" ] || {
-        echo "REFUSE: $new is not a directory; a repo record moves to a work tree" >&2
+        refused "$new is not a directory; a repo record moves to a work tree"
         exit 1
       }
       # resolve_repo is the contract every repo verb resolves through: a
@@ -5801,7 +5946,7 @@ do_rekey() {
       # one whose object store HOLDS that commit. A work tree that does not
       # is a different repository wearing the new name.
       sgit cat-file -e "${rev}^{commit}" 2>/dev/null || {
-        echo "REFUSE: $new is a work tree, but its object store does not hold the pinned rev" >&2
+        refused "$new is a work tree, but its object store does not hold the pinned rev"
         echo "        $rev -- this is not the repository the record names" >&2
         exit 1
       }
@@ -5811,7 +5956,7 @@ do_rekey() {
       read_pin_record "$src" "$kind" "$old" || exit 1
       label="$REC_LABEL"; digest="$REC_DIGEST"
       [ -f "$new" ] || {
-        echo "REFUSE: $new is not a regular file; a file record moves to a file" >&2
+        refused "$new is not a regular file; a file record moves to a file"
         exit 1
       }
       freeze_file "$new" || { echo "ERROR: cannot read $new" >&2; exit 1; }
@@ -5837,7 +5982,7 @@ do_rekey() {
           done <"$vout" ;;
         11)
           rekey_verify_said "$old" "$new" "$vout"
-          echo "REFUSE: the content at $new is not what $old's record names" >&2
+          refused "the content at $new is not what $old's record names"
           echo "        a rekey carries the record verbatim; review $new instead" >&2
           exit 1 ;;
         *)
@@ -5999,15 +6144,12 @@ do_rekey() {
 # declaration as a side effect, and a deployer may offer it automatically.
 do_declare() {
   require_root declare
-  # --yes answered the elevation gate and rides through in the displayed
-  # argv; the ceremony's own y/N below is untouched by it.
   local a repo_arg="" name="" remove=0 want=0
   for a in "$@"; do
     if [ "$want" -eq 1 ]; then name="$a"; want=0; continue; fi
     case "$a" in
       --release) want=1 ;;
       --no-release) remove=1 ;;
-      --yes) ;;
       -*) usage ;;
       *)
         [ -z "$repo_arg" ] || usage
@@ -6065,13 +6207,13 @@ do_declare() {
     # hooks): the name must already resolve to the pinned rev.
     t_hash="$(sgit rev-parse -q --verify "refs/tags/${name}"'^{commit}' 2>/dev/null || true)"
     if [ -z "$t_hash" ]; then
-      printf '%sREFUSE: tag %s is missing from this checkout%s\n' \
-        "$C2_RED$C2_B" "$name" "$C2_OFF" >&2
+      printf '%s✗ refused:%s tag %s is missing from this checkout\n' \
+        "$C2_RED$C2_B" "$C2_OFF" "$name" >&2
       exit 1
     fi
     if [ "$t_hash" != "$rev" ]; then
-      printf '%sREFUSE: tag %s names %.10s, not the pinned %.10s%s\n' \
-        "$C2_RED$C2_B" "$name" "$t_hash" "$rev" "$C2_OFF" >&2
+      printf '%s✗ refused:%s tag %s names %.10s, not the pinned %.10s\n' \
+        "$C2_RED$C2_B" "$C2_OFF" "$name" "$t_hash" "$rev" >&2
       exit 1
     fi
     if [ "$old_tag" = "$name" ]; then
@@ -6245,7 +6387,7 @@ do_verify() {
       fi
       if [ "$ts_gone" -eq 1 ]; then
         IFS= read -r line <"$slot_file" || line=""
-        echo "REFUSE: $path is tombstoned ($line) but present -- retired content resurrected" >&2
+        refused "$path is tombstoned ($line) but present -- retired content resurrected"
         exit 13
       fi
       exit 0 ;;
@@ -6311,7 +6453,7 @@ do_verify() {
       exit 1
     fi
     if [ "$gone" -eq 0 ]; then
-      echo "REFUSE: $path is pinned but missing (restore it, or run: pinned tombstone $path)" >&2
+      refused "$path is pinned but missing (restore it, or run: pinned tombstone $path)"
       exit 20
     fi
     [ -f "$path" ] || { echo "ERROR: not a regular file: $path" >&2; exit 1; }
@@ -6342,16 +6484,16 @@ do_verify() {
     o="${owner%%:*}"
     if ! owner_admitted "$o" "$tier"; then
       if [ -n "$PINNED_ROOT_ONLY_OWNERS" ]; then
-        echo "REFUSE: $path is owned by $o, expected $tier, root, or a root-only owner ($PINNED_ROOT_ONLY_OWNERS)" >&2
+        refused "$path is owned by $o, expected $tier, root, or a root-only owner ($PINNED_ROOT_ONLY_OWNERS)"
       else
-        echo "REFUSE: $path is owned by $o, expected $tier (or root)" >&2
+        refused "$path is owned by $o, expected $tier (or root)"
       fi
       exit 30
     fi
     mode="$(stat_mode "$path")"
     case "$mode" in
       *[2367]?|*[2367])
-        echo "REFUSE: $path has mode $mode (group/other-writable); fix: chmod go-w $path" >&2
+        refused "$path has mode $mode (group/other-writable); fix: chmod go-w $path"
         exit 30 ;;
     esac
   fi
@@ -6373,7 +6515,7 @@ do_verify() {
        && ignored_keys_match "$slot" "$label" "$rec_digest" "$subject" "$baseline" "$path"; then
       exit 5
     fi
-    echo "REFUSE: $path does not match its approved record" >&2
+    refused "$path does not match its approved record"
     echo "  approved $label: $rec_digest" >&2
     echo "  live     $label: $live_digest" >&2
     exit 11
@@ -6465,7 +6607,7 @@ do_cat() {
       exit 1 ;;
     tombstone)
       IFS= read -r line <"$slot_file" || line=""
-      echo "REFUSE: $path is tombstoned ($line); there is no approved content to serve" >&2
+      refused "$path is tombstoned ($line); there is no approved content to serve"
       exit 13 ;;
   esac
 
@@ -6479,14 +6621,14 @@ do_cat() {
     exit 1
   fi
   if [ "$gone" -eq 0 ]; then
-    echo "REFUSE: $path is pinned but missing -- custody does not serve a removed file" >&2
+    refused "$path is pinned but missing -- custody does not serve a removed file"
     echo "        (restore it, or run: pinned tombstone $path)" >&2
     exit 20
   fi
   [ -f "$path" ] || { echo "ERROR: not a regular file: $path" >&2; exit 1; }
 
   if [ ! -e "$slot/approved" ]; then
-    echo "REFUSE: $slot keeps no approved copy; there is nothing to serve" >&2
+    refused "$slot keeps no approved copy; there is nothing to serve"
     echo "        (custody is opt-in: pinned review --file $path --store)" >&2
     exit 16
   fi
@@ -6563,7 +6705,7 @@ do_rev() {
       exit 1 ;;
     tombstone)
       IFS= read -r line <"$slot_file" || line=""
-      echo "REFUSE: $path is tombstoned ($line); there is no approved rev to serve" >&2
+      refused "$path is tombstoned ($line); there is no approved rev to serve"
       exit 13 ;;
     rev) ;;
   esac
@@ -6588,7 +6730,7 @@ do_rev() {
   fi
 
   if [ ! -e "$slot/release" ]; then
-    echo "REFUSE: $slot declares no release name; the slot is rev-only" >&2
+    refused "$slot declares no release name; the slot is rev-only"
     echo "        (pinned declare $path --release <name> adds one)" >&2
     exit 16
   fi
@@ -7825,9 +7967,6 @@ do_signer() {
       --principal)
         [ $# -ge 2 ] || { echo "--principal needs an identity" >&2; exit 1; }
         principal="$2"; shift 2 ;;
-      # The elevation gate's answer, riding through in the displayed argv;
-      # the ceremony's own confirmation below is untouched by it.
-      --yes) shift ;;
       *) echo "unknown signer option: $1" >&2; usage ;;
     esac
   done
@@ -8041,9 +8180,6 @@ do_ignorable() {
       --under)
         [ $# -ge 2 ] || { echo "--under needs a directory" >&2; exit 1; }
         under="$2"; shift 2 ;;
-      # The elevation gate's answer, riding through in the displayed argv;
-      # the ceremony's own confirmation below is untouched by it.
-      --yes) shift ;;
       -*) echo "unknown ignorable option: $1" >&2; usage ;;
       *)  [ -z "$key" ] || { echo "ignorable $sub takes one key" >&2; usage; }
           key="$1"; shift ;;
@@ -8098,7 +8234,7 @@ do_ignorable() {
 
   if [ "$sub" = add ]; then
     [ "$dup" -eq 0 ] || {
-      echo "REFUSE: already granted, $scope_disp: $key" >&2
+      refused "already granted, $scope_disp: $key"
       echo "        (a second identical entry would say nothing new; see: pinned ignorable list)" >&2
       exit 1
     }
@@ -8113,7 +8249,7 @@ do_ignorable() {
     fi
   else
     [ "$dup" -gt 0 ] || {
-      echo "REFUSE: no such grant to withdraw: $key, $scope_disp" >&2
+      refused "no such grant to withdraw: $key, $scope_disp"
       echo "        remove takes the exact entry -- same key and same scope; the entries are" >&2
       echo "        listed by: pinned ignorable list" >&2
       exit 1

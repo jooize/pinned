@@ -73,13 +73,12 @@ complete -c pinned -n '__pinned_action_is review' -l baseline-store -x -a '(__fi
 complete -c pinned -n '__pinned_action_is review' -l ignore-json-key -x -d 'Dotted JSON key the preceding --file may drift'
 complete -c pinned -n '__pinned_action_is review' -l algo -x -a "$algos" -d 'Hash algorithm for file pins'
 complete -c pinned -n '__pinned_action_is review' -l ignore-none -d 'Clear the preceding --file\'s ignored keys on purpose'
-complete -c pinned -n '__pinned_action_is review' -l store -d 'Keep the approved bytes in root custody'
-complete -c pinned -n '__pinned_action_is review' -l no-store -d 'Drop the stored copy on purpose'
-complete -c pinned -n '__pinned_action_is review' -l yes -d 'Skip the pre-sudo gate'
+complete -c pinned -n '__pinned_action_is review' -l keep -d 'Keep what the preceding --file\'s slot holds'
+complete -c pinned -n '__pinned_action_is review' -l store -d 'Keep the preceding --file\'s bytes in root custody'
+complete -c pinned -n '__pinned_action_is review' -l no-store -d 'Drop the preceding --file\'s stored copy on purpose'
 
 # --- tombstone, rekey, setup --------------------------------------------------
 complete -c pinned -n '__pinned_action_is tombstone rekey' -F
-complete -c pinned -n '__pinned_action_is rekey' -l yes -d 'Skip the pre-sudo gate'
 complete -c pinned -n '__pinned_action_is tombstone' -l yes -d 'Skip the pre-sudo gate and the root-side confirmation'
 complete -c pinned -n '__pinned_action_is setup' -l yes -d 'Skip the setup confirmation'
 
@@ -87,7 +86,6 @@ complete -c pinned -n '__pinned_action_is setup' -l yes -d 'Skip the setup confi
 complete -c pinned -n '__pinned_action_is declare' -a '(__fish_complete_directories)'
 complete -c pinned -n '__pinned_action_is declare' -l release -x -d 'Release name to declare'
 complete -c pinned -n '__pinned_action_is declare' -l no-release -d 'Clear the declared release name'
-complete -c pinned -n '__pinned_action_is declare' -l yes -d 'Skip the pre-sudo gate'
 
 # --- verify, cat, status, show, slot ------------------------------------------
 complete -c pinned -n '__pinned_action_is verify cat status show slot' -F
@@ -112,14 +110,12 @@ complete -c pinned -n '__pinned_sub_is signer add remove list path' -l repo -x -
 complete -c pinned -n '__pinned_sub_is signer add remove' -l file -r -F -d 'Public key file'
 complete -c pinned -n '__pinned_sub_is signer add remove' -l key -x -d 'Public key line'
 complete -c pinned -n '__pinned_sub_is signer add' -l principal -x -d 'Identity signature verification matches'
-complete -c pinned -n '__pinned_sub_is signer add remove' -l yes -d 'Skip the pre-sudo gate'
 
 # --- ignorable ----------------------------------------------------------------
 complete -c pinned -n '__pinned_needs_sub ignorable' -a add -d '(sudo) Grant a dotted JSON key'
 complete -c pinned -n '__pinned_needs_sub ignorable' -a remove -d '(sudo) Withdraw a grant'
 complete -c pinned -n '__pinned_needs_sub ignorable' -a list -d 'Machine, user and effective tiers'
 complete -c pinned -n '__pinned_sub_is ignorable add remove' -l under -x -a '(__fish_complete_directories)' -d 'Scope the grant to this subtree'
-complete -c pinned -n '__pinned_sub_is ignorable add remove' -l yes -d 'Skip the pre-sudo gate'
 
 # --- list ---------------------------------------------------------------------
 complete -c pinned -n '__pinned_action_is list' -l under -x -a '(__fish_complete_directories)' -d 'Only pins under this directory'

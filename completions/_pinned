@@ -59,9 +59,9 @@ _pinned() {
             '*--ignore-json-key[dotted JSON key the preceding --file may drift]:key: ' \
             "--algo[hash algorithm for file pins]:algorithm:(${algos[*]})" \
             '*--ignore-none[clear the preceding --file'"'"'s ignored keys on purpose]' \
-            '(--no-store)--store[keep the approved bytes in root custody]' \
-            '(--store)--no-store[drop the stored copy on purpose]' \
-            '--yes[skip the pre-sudo gate]' \
+            '*--keep[keep what the preceding --file'"'"'s slot holds; typed keys add to it]' \
+            '*--store[keep the preceding --file'"'"'s approved bytes in root custody]' \
+            '*--no-store[drop the preceding --file'"'"'s stored copy on purpose]' \
             '*:repository:_directories' && ret=0
           ;;
         tombstone)
@@ -71,7 +71,6 @@ _pinned() {
           ;;
         rekey)
           _arguments \
-            '--yes[skip the pre-sudo gate]' \
             '1:old path:_files' \
             '2:new path:_files' && ret=0
           ;;
@@ -79,7 +78,6 @@ _pinned() {
           _arguments \
             '(--no-release)--release[release name to declare]:name: ' \
             '(--release)--no-release[clear the declared release name]' \
-            '--yes[skip the pre-sudo gate]' \
             '1:repository:_directories' && ret=0
           ;;
         verify)
@@ -162,7 +160,6 @@ _pinned_signer() {
       key=(
         '(--key)--file[public key file]:public key:_files'
         '(--file)--key[public key line]:key line: '
-        '--yes[skip the pre-sudo gate]'
       )
       case $words[1] in
         add)
@@ -201,7 +198,6 @@ _pinned_ignorable() {
         add|remove)
           _arguments \
             '--under[scope the grant to this subtree]:directory:_directories' \
-            '--yes[skip the pre-sudo gate]' \
             '1:key: ' && ret=0
           ;;
       esac

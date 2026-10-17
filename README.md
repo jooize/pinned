@@ -63,7 +63,8 @@ the nix module; a manual install copies it onto `fish_complete_path` / `fpath`.
                                       all naming one commit -> pin (--tag:
                                       an unsigned name that must agree)
     pinned review --file <path> [--baseline <copy>] [--ignore-json-key <key> ... | --ignore-none]
-                   [--file <path> ...] [--baseline-store <dir>] [--algo <name>] [--store | --no-store]
+                   [--keep] [--store | --no-store] [--file <path> ...]
+                   [--baseline-store <dir>] [--algo <name>]
                                       file-pin ceremony: freeze, display
                                       root-side, confirm, record the hash;
                                       several --file share one sudo
@@ -71,10 +72,12 @@ the nix module; a manual install copies it onto `fish_complete_path` / `fpath`.
                                       drift verify tolerates, each of which
                                       the ignorable policy must grant for
                                       that path; --store keeps a copy of
-                                      the approved bytes in the slot; a
-                                      slot that keeps either today needs
-                                      it stated: kept, or dropped with
-                                      --ignore-none / --no-store)
+                                      the approved bytes in the slot;
+                                      both follow their --file; a slot
+                                      that keeps either today needs it
+                                      stated: kept, --keep (typed keys
+                                      add to the kept ones), or dropped
+                                      with --ignore-none / --no-store)
     pinned verify <path>              file-pin verdict for gates: 0 ok,
                                       5 differs only in ignored keys,
                                       10 no slot, 11 mismatch,
@@ -348,11 +351,18 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
     extra the slot keeps today unstated refuses before anything is shown:
     a declaring slot needs `--ignore-json-key` (keep) or `--ignore-none`
     (drop) on its `--file`, and a slot holding a copy needs `--store` or
-    `--no-store` on the ceremony. Dropping is the strict direction, but a
+    `--no-store` on its `--file`. Dropping is the strict direction, but a
     missing flag made the decision silently, and it surfaced only at the
     next drift as a review nobody expected. The refusal lists each kept
     extra with both flags, records nothing, and runs pre-sudo too, so it
     costs no authentication.
+  - `--keep` on a `--file` is the one-word "as it is": the slot's keys and
+    its copy stay, read root-side from the slot about to be written, and
+    any `--ignore-json-key` on the same `--file` adds to the kept keys. To
+    remove a key, list the ones to keep without `--keep`. The flag rides
+    to the sudo dialog as typed; the review screen lists every key before
+    the y/N and names `--keep` as the source. A kept key the policy no
+    longer grants refuses, before sudo where the slot is readable.
   - A non-JSON file simply fails the parse step and always gets the
     byte-exact verdict; pinned never restricts which kinds of path may
     carry a declaration, only which keys (below).
