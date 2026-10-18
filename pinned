@@ -727,12 +727,13 @@ gate_answer() { # <rendered gate line>
 # tree and the parents, so any change in the range changes the words.
 #
 # The root side derives the words from the commit it resolved and compares
-# all six. A match approves with no diff and no y/N: the consent is the sudo
-# authentication, whose dialog (sudowhat) shows this argv, words included,
-# for the human to compare with the reply that named them. A mismatch
-# refuses. The pre-sudo half moves to / and names the repo by its full path,
-# so the dialog's directory row costs one character and the command keeps
-# the room. The words exist for a commit the human watched being made; any
+# all six, then counts the range against --commits. A match approves with
+# no diff and no y/N: the words and the count on the command line are the
+# answer, as --yes is elsewhere. Whether sudo also authenticates (and shows
+# this argv in a dialog, as sudowhat does) is the system's policy, never
+# pinned's consent. A mismatch refuses. The pre-sudo half moves to / and
+# names the repo by its full path, so a dialog's directory row costs one
+# character and the command keeps the room. The words exist for a commit the human watched being made; any
 # other time the review reads, as it always did.
 #
 # Words apply only to a forward move from an existing pin (an unsigned
@@ -3604,9 +3605,7 @@ elevation_cmd_disp() { # elev action args...
     esac
   done
 
-  # SUDO_K=1 for the --words exec, which runs `sudo -k --`: the line shown
-  # is the line run, option for option.
-  local out="${C_B}sudo${C_OFF}${SUDO_K:+ -k} -- $(prog_disp "$elev") ${act}${lead:+ $lead}"
+  local out="${C_B}sudo${C_OFF} -- $(prog_disp "$elev") ${act}${lead:+ $lead}"
   # The flag that opens a group for this verb, if any. review is the one verb
   # that takes repeated per-subject groups (--file, then that file's
   # --baseline and --ignore-json-key); every other verb has a flat flag list
@@ -3678,6 +3677,35 @@ elevation_cmd_disp() { # elev action args...
 # same words that verb's own root-side confirm prints, so one decline reads
 # as one event on both sides of the seam. Compound verbs (a review AND a
 # rebuild) claim neither half and say `nothing ran`.
+# 0 when --yes can answer every question this verb asks: the command line
+# holds what they decide. The record verbs always; signer only with --key,
+# since a --file key is content read after the command was approved.
+yes_answers_all() { # argv...
+  local a
+  case "$action" in
+    tombstone|rekey|declare|ignorable) return 0 ;;
+    signer)
+      for a in "$@"; do [ "$a" = "--file" ] && return 1; done
+      return 0 ;;
+  esac
+  return 1
+}
+
+# The contract line before sudo for a record-writing verb: what the root
+# side will show, and whether it asks. $1 = the object (record, key, grant).
+contract_line() { # <object> argv...
+  local obj="$1" a yes=0
+  shift
+  for a in "$@"; do [ "$a" = "--yes" ] && yes=1; done
+  if [ "$yes" -eq 1 ]; then
+    printf '%sAs root, the ceremony shows the %s and writes it: --yes answered its\nconfirmation in advance, so it does not ask.%s\n\n' \
+      "$C_YEL$C_B" "$obj" "$C_OFF"
+  else
+    printf '%sAs root, the ceremony shows the %s and confirms -- nothing is written\nuntil you answer y after it.%s\n\n' \
+      "$C_YEL$C_B" "$obj" "$C_OFF"
+  fi
+}
+
 elevation_gate() { # <what-the-root-side-does> <what-stays-unchanged> argv...
   local what="$1" stays="$2" a line
   shift 2
@@ -3685,8 +3713,8 @@ elevation_gate() { # <what-the-root-side-does> <what-stays-unchanged> argv...
     [ "$a" = "--yes" ] && return 0
   done
   if [ ! -t 0 ]; then
-    if [ "$action" = "tombstone" ]; then
-      printf '%serror: no tty for confirmation -- pass --yes to let the sudo dialog confirm%s\n' \
+    if yes_answers_all "$@"; then
+      printf '%serror: no tty for confirmation -- pass --yes to answer it in advance%s\n' \
         "$C2_RED" "$C2_OFF" >&2
     else
       printf '%serror: no tty for confirmation -- run it in a terminal%s\n' \
@@ -3720,21 +3748,20 @@ elevation_gate() { # <what-the-root-side-does> <what-stays-unchanged> argv...
 # back to this script's own path. Sits after the helper definitions so the
 # review preview below can reuse them.
 #
-# --yes exists only where it carries a consent: tombstone, whose sudo dialog
-# is the confirmation, and setup, whose plan is confirmed before sudo. Every
-# other root verb asks its own y/N on the terminal, so a --yes there could
-# only skip the gate that announces the authentication. It is refused before
-# sudo, so it costs nothing.
+# --yes answers every question a verb asks, so it exists only where the
+# command line holds what those questions decide (yes_answers_all): the
+# record verbs, signer with --key, and setup, whose plan is confirmed before
+# sudo. A review's y/N follows a diff, so review has none (--words is its
+# command-line form). It is refused before sudo, so it costs nothing.
 case "$action" in
   review|setup|tombstone|rekey|declare)
     if [ "$EUID" -ne 0 ]; then
-      case "$action" in
-        review|declare|rekey)
-          for a in "$@"; do [ "$a" = "--yes" ] && usage; done ;;
-      esac
+      if [ "$action" = review ]; then
+        for a in "$@"; do [ "$a" = "--yes" ] && usage; done
+      fi
       # tombstone without exactly its <path> can only ever reach usage --
-      # fail here, before authentication costs a sudo prompt. (--yes lets
-      # the sudo dialog confirm and is not the path.)
+      # fail here, before authentication costs a sudo prompt. (--yes
+      # answers the y/N and is not the path.)
       if [ "$action" = "tombstone" ]; then
         ts_paths=0
         for a in "$@"; do [ "$a" = "--yes" ] || ts_paths=$((ts_paths + 1)); done
@@ -3748,7 +3775,8 @@ case "$action" in
         # Two positionals in order.
         rk_old_arg="" rk_new_arg=""
         for a in "$@"; do
-          if [ -z "$rk_old_arg" ]; then rk_old_arg="$a"
+          if [ "$a" = "--yes" ]; then :
+          elif [ -z "$rk_old_arg" ]; then rk_old_arg="$a"
           elif [ -z "$rk_new_arg" ]; then rk_new_arg="$a"
           else usage; fi
         done
@@ -3799,6 +3827,7 @@ case "$action" in
           case "$a" in
             --release) dc_want=1 ;;
             --no-release) dc_remove=1 ;;
+            --yes) ;;
             -*) usage ;;
             *)
               [ -z "$dc_repo" ] || usage
@@ -3855,7 +3884,7 @@ case "$action" in
           case "$a" in
             --signed-tag) have_ev=1; preview_signed=1; skip_next=1 ;;
             # Evidence, and the one review that runs with no terminal: the
-            # sudo dialog showing this argv is its consent (below).
+            # words on this argv are its answer (below).
             --words) have_ev=1; want_words=1 ;;
             # The size of what --words approves, in the dialog beside them.
             --commits)
@@ -4241,20 +4270,20 @@ case "$action" in
       if [ "$action" = "review" ] && [ "$elev" = "$INSTALL_TARGET" ]; then
         if [ -n "${preview_words:-}" ]; then
           printf '%sThe preview above was orientation only. As root, pinned compares the\n' "$C_DIM"
-          printf 'words with the commit it resolves; the sudo dialog is the confirmation.%s\n\n' "$C_OFF"
+          printf 'words and the count with the commit it resolves and approves on a match.%s\n\n' "$C_OFF"
         elif [ "${file_mode:-0}" -eq 0 ]; then
           printf '%sThe preview above was orientation only. The sudo ceremony re-derives\n' "$C_DIM"
           printf 'everything it displays, and nothing is pinned until you confirm there.%s\n\n' "$C_OFF"
         fi
         if [ -n "${preview_words:-}" ]; then
-          printf '  %s\n\n' "$(SUDO_K=1 elevation_cmd_disp "$elev" "$action" "$@")"
+          printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
         else
           printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
         fi
         # What the gate counts is what the root side will actually do: the
         # files named on the command line, or the repos that survived the
         # preview's already-pinned skip. --words has no gate here: its caller
-        # has no terminal, and the sudo dialog showing this argv is the gate.
+        # has no terminal, and the words on this argv answer in advance.
         if [ -n "${preview_words:-}" ]; then
           :
         elif [ "${file_mode:-0}" -eq 1 ]; then
@@ -4271,19 +4300,11 @@ case "$action" in
       # orientation, like review's).
       if { [ "$action" = "tombstone" ] || [ "$action" = "rekey" ] || [ "$action" = "declare" ]; } \
         && [ "$elev" = "$INSTALL_TARGET" ]; then
-        # tombstone --yes takes no root-side y/N (see do_tombstone), so its
-        # contract line must not promise one: the dialog is the confirmation.
-        ts_yes=0
-        if [ "$action" = "tombstone" ]; then
-          for a in "$@"; do [ "$a" = "--yes" ] && ts_yes=1; done
-        fi
-        if [ "$ts_yes" -eq 1 ]; then
-          printf '%ssudo asks you to authenticate, and that dialog is the confirmation: the\nroot side checks the path is gone and retires its record without asking again.%s\n\n' \
-            "$C_YEL$C_B" "$C_OFF"
-        else
-          printf '%ssudo asks you to authenticate; the root-side ceremony shows the record\nand confirms -- nothing is written until you answer y after it.%s\n\n' \
-            "$C_YEL$C_B" "$C_OFF"
-        fi
+        # Under --yes the root side asks nothing (see do_tombstone), so the
+        # contract line must not promise a y/N. Neither line names sudo's
+        # authentication as the consent: whether sudo asks is the system's
+        # policy, and a cached credential asks nothing.
+        contract_line record "$@"
         printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
         if [ "$action" = "tombstone" ]; then
           elevation_gate "tombstone the record" "slot unchanged" "$@"
@@ -4295,11 +4316,11 @@ case "$action" in
           elevation_gate "declare the release name" "record unchanged" "$@"
         fi
       fi
-      # --words: from /, and with -k so a cached credential never stands in
-      # for the authentication that is this review's only consent.
+      # --words: from /, so the directory sudo reports is not one the root
+      # side would ever read. Whether sudo asks is the system's policy.
       if [ -n "${preview_words:-}" ]; then
         cd /
-        exec sudo -k -- "$elev" "$action" "$@"
+        exec sudo -- "$elev" "$action" "$@"
       fi
       exec sudo -- "$elev" "$action" "$@"
     fi
@@ -4311,8 +4332,12 @@ case "$action" in
     case "${1:-}" in
       add|remove)
         if [ "$EUID" -ne 0 ]; then
-          # --yes is refused here like review's (see above the review case).
-          for a in "$@"; do [ "$a" = "--yes" ] && usage; done
+          # --yes with a --file key is refused here like the root side does.
+          if [ "$action" = signer ] && ! yes_answers_all "$@"; then
+            for a in "$@"; do
+              [ "$a" = "--yes" ] && { echo "--yes takes the key on the command line: --key '<line>', not --file" >&2; exit 1; }
+            done
+          fi
           # Argv that can only ever reach a root-side argument error fails
           # HERE, before authentication costs a sudo prompt -- the same
           # contract as review's preview. Grammar and content stay
@@ -4369,8 +4394,7 @@ case "$action" in
           # side stays authoritative -- it displays the object and
           # confirms before writing.
           if [ "$elev" = "$INSTALL_TARGET" ]; then
-            printf '%ssudo asks you to authenticate; the root-side ceremony shows the %s\nand confirms -- nothing is written until you answer y after it.%s\n\n' \
-              "$C_YEL$C_B" "$([ "$action" = signer ] && echo "key" || echo "grant")" "$C_OFF"
+            contract_line "$([ "$action" = signer ] && echo "key" || echo "grant")" "$@"
             printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
             # The verb reads off the sub-verb: what root does with the key or
             # the grant, in the words the ceremony itself uses.
@@ -5004,10 +5028,10 @@ do_approve() {
         print_end_rule diff "$totals"
       fi
     fi
-    # Approved by words: the sudo authentication was the answer, given
-    # against a dialog that showed the words this ceremony just matched. There
-    # is no terminal to ask (the caller runs without one), and a y/N here
-    # would only repeat that consent.
+    # Approved by words: the words and the count on the command line were
+    # the answer, and this ceremony just matched both. There is no terminal
+    # to ask (the caller runs without one), and a y/N here would only repeat
+    # that consent.
     if [ "${by_words:-0}" -eq 0 ]; then
       echo
       local answer
@@ -5813,12 +5837,10 @@ EOF
 # semantics, the line is forensics.
 do_tombstone() {
   require_root tombstone
-  # --yes answers BOTH gates here, the one verb where it does. Every other
-  # ceremony shows the root side something the elevation dialog cannot (a
-  # diff, a record), so its y/N stays. A tombstone's whole decision is one
-  # path, which the elevation dialog already shows in the argv, and what
-  # the y/N would add is checked here by machine: the path must be gone
-  # (path_gone, so a hidden one refuses) and the slot must hold a record.
+  # --yes answers both gates (see yes_answers_all). A tombstone's whole
+  # decision is one path, on the command line, and what the y/N would add
+  # is checked here by machine: the path must be gone (path_gone, so a
+  # hidden one refuses) and the slot must hold a record.
   local a path_arg="" yes=0
   for a in "$@"; do
     [ "$a" = "--yes" ] && { yes=1; continue; }
@@ -5903,9 +5925,12 @@ rekey_verify_said() { # $1 old  $2 new  $3 captured output
 # a missing slot would merely re-prompt.
 do_rekey() {
   require_root rekey
-  local a old_arg="" new_arg=""
+  # --yes answers the y/N below: both paths are on the command line, and
+  # the content at the new one is matched to the record by machine.
+  local a old_arg="" new_arg="" yes=0
   for a in "$@"; do
-    if [ -z "$old_arg" ]; then old_arg="$a"
+    if [ "$a" = "--yes" ]; then yes=1
+    elif [ -z "$old_arg" ]; then old_arg="$a"
     elif [ -z "$new_arg" ]; then new_arg="$a"
     else usage; fi
   done
@@ -6128,15 +6153,17 @@ do_rekey() {
   printf 'path it answers to does. The old path above is tombstoned by this move, so\n'
   printf 'anything reappearing there refuses until it is approved on its own.%s\n' "$C_OFF"
   echo
-  printf '%srekey %s%s%s -> %s%s%s? [%sy%s/%sN%s]%s ' \
-    "$C_B" "$C_CYN" "$old" "$C_OFF$C_B" "$C_CYN" "$new" "$C_OFF$C_B" \
-    "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
-  drain_tty
-  read -r answer </dev/tty
-  case "$answer" in
-    y|Y|yes) ;;
-    *) echo "aborted; both slots unchanged"; log_action mv "$old" "$new" abort; exit 2 ;;
-  esac
+  if [ "$yes" -eq 0 ]; then
+    printf '%srekey %s%s%s -> %s%s%s? [%sy%s/%sN%s]%s ' \
+      "$C_B" "$C_CYN" "$old" "$C_OFF$C_B" "$C_CYN" "$new" "$C_OFF$C_B" \
+      "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+    drain_tty
+    read -r answer </dev/tty
+    case "$answer" in
+      y|Y|yes) ;;
+      *) echo "aborted; both slots unchanged"; log_action mv "$old" "$new" abort; exit 2 ;;
+    esac
+  fi
 
   # WRITE ORDER: the new record first, so there is never a moment when this
   # content has no live record at all. A crash between the two writes leaves
@@ -6218,12 +6245,15 @@ do_rekey() {
 # declaration as a side effect, and a deployer may offer it automatically.
 do_declare() {
   require_root declare
-  local a repo_arg="" name="" remove=0 want=0
+  # --yes answers the y/N below: the repo and the name are on the command
+  # line, and that the name resolves to the pinned rev is checked by machine.
+  local a repo_arg="" name="" remove=0 want=0 yes=0
   for a in "$@"; do
     if [ "$want" -eq 1 ]; then name="$a"; want=0; continue; fi
     case "$a" in
       --release) want=1 ;;
       --no-release) remove=1 ;;
+      --yes) yes=1 ;;
       -*) usage ;;
       *)
         [ -z "$repo_arg" ] || usage
@@ -6306,7 +6336,7 @@ do_declare() {
     printf "%sdeploy:%s     %sthe input's ref= stops being managed; it keeps whatever it says now%s\n" \
       "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
     echo
-    printf '%sclear this declaration? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+    [ "$yes" -eq 1 ] || printf '%sclear this declaration? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
   else
     printf '%srelease:%s    %s -> %s%.10s%s  %s✓ names the pinned rev%s\n' \
       "$C_B" "$C_OFF" "$name" "$C_CYN" "$t_hash" "$C_OFF" "$C_GRN" "$C_OFF"
@@ -6325,17 +6355,19 @@ do_declare() {
       "$C_DIM" "$C_OFF"
     printf '            %slive tag ever stops naming the pinned rev%s\n' "$C_DIM" "$C_OFF"
     echo
-    printf '%sdeclare this release name? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+    [ "$yes" -eq 1 ] || printf '%sdeclare this release name? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
   fi
-  drain_tty
-  read -r answer </dev/tty
-  case "$answer" in
-    y|Y|yes) ;;
-    *)
-      printf '%saborted; record unchanged%s\n' "$C_YEL" "$C_OFF"
-      log_action declare "$repo" "${name:-$old_tag}" abort
-      exit 2 ;;
-  esac
+  if [ "$yes" -eq 0 ]; then
+    drain_tty
+    read -r answer </dev/tty
+    case "$answer" in
+      y|Y|yes) ;;
+      *)
+        printf '%saborted; record unchanged%s\n' "$C_YEL" "$C_OFF"
+        log_action declare "$repo" "${name:-$old_tag}" abort
+        exit 2 ;;
+    esac
+  fi
 
   if [ "$remove" -eq 1 ]; then
     rm -f "$slot/release"
@@ -8027,12 +8059,16 @@ do_signer() {
   [ "$sub" = "path" ] || command -v ssh-keygen >/dev/null 2>&1 \
     || { echo "ERROR: no ssh-keygen in the trusted PATH ($PATH)" >&2; exit 1; }
 
-  local repo_arg="" keyfile="" keyline="" principal=""
+  # --yes answers add/remove's y/N, and only with --key: the key line is
+  # then on the command line. A --file key is content read after the
+  # command was approved, so it keeps its y/N.
+  local repo_arg="" keyfile="" keyline="" principal="" yes=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo)
         [ $# -ge 2 ] || { echo "--repo needs a path" >&2; exit 1; }
         repo_arg="$2"; shift 2 ;;
+      --yes) yes=1; shift ;;
       --file)
         [ $# -ge 2 ] || { echo "--file needs a path" >&2; exit 1; }
         keyfile="$2"; shift 2 ;;
@@ -8058,7 +8094,8 @@ do_signer() {
   fi
 
   if [ "$sub" = "list" ]; then
-    [ -z "$keyfile$keyline$principal" ] || { echo "signer list takes only --repo" >&2; exit 1; }
+    [ -z "$keyfile$keyline$principal" ] && [ "$yes" -eq 0 ] \
+      || { echo "signer list takes only --repo" >&2; exit 1; }
     do_signer_list "$target"
     return
   fi
@@ -8070,7 +8107,8 @@ do_signer() {
   # exit 1: no signers is "nothing verifies", which the consumer reads as
   # no offer, and never as an error. Unprivileged, like list.
   if [ "$sub" = "path" ]; then
-    [ -z "$keyfile$keyline$principal" ] || { echo "signer path takes only --repo" >&2; exit 1; }
+    [ -z "$keyfile$keyline$principal" ] && [ "$yes" -eq 0 ] \
+      || { echo "signer path takes only --repo" >&2; exit 1; }
     if [ -n "$repo_arg" ] && [ ! -f "$target" ]; then
       target="$(policy_dir_for "$tier")/allowed_signers"
     fi
@@ -8089,6 +8127,10 @@ do_signer() {
   fi
   [ -n "$keyfile" ] || [ -n "$keyline" ] \
     || { echo "signer $sub needs --file <pubkey> or --key '<line>'" >&2; exit 1; }
+  if [ "$yes" -eq 1 ] && [ -n "$keyfile" ]; then
+    echo "--yes takes the key on the command line: --key '<line>', not --file" >&2
+    exit 1
+  fi
   local line
   if [ -n "$keyfile" ]; then
     [ -f "$keyfile" ] || { echo "not a readable file: $keyfile" >&2; exit 1; }
@@ -8161,13 +8203,15 @@ EOF
     printf '%sentry:%s       %s\n' "$C_B" "$C_OFF" "$entry"
     printf '%sfingerprint:%s %s\n' "$C_B" "$C_OFF" "$fp"
     printf '%s(obtain the key out of band -- printed card, password manager, existing\ntrusted machine -- never from the repo it will vouch for.)%s\n' "$C_DIM" "$C_OFF"
-    printf '%strust this key to vouch? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
-    drain_tty
-    read -r answer </dev/tty
-    case "$answer" in
-      y|Y|yes) ;;
-      *) echo "aborted; signers unchanged"; log_action signer-add "$target" "" abort; exit 2 ;;
-    esac
+    if [ "$yes" -eq 0 ]; then
+      printf '%strust this key to vouch? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+      drain_tty
+      read -r answer </dev/tty
+      case "$answer" in
+        y|Y|yes) ;;
+        *) echo "aborted; signers unchanged"; log_action signer-add "$target" "" abort; exit 2 ;;
+      esac
+    fi
     tmp="$(mktemp "$tdir/.stage.XXXXXX")"
     { [ -f "$target" ] && cat "$target"; printf '%s\n' "$entry"; } >"$tmp"
     chown "root:$TREE_GRP" "$tmp"
@@ -8186,13 +8230,15 @@ EOF
     printf '%sremoving:%s\n' "$C_B" "$C_OFF"
     grep -F "$keyblob" "$target" | sed 's/^/  /'
     printf '%sfingerprint:%s %s\n' "$C_B" "$C_OFF" "$fp"
-    printf "%sremove this key's entries? [%sy%s/%sN%s]%s " "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
-    drain_tty
-    read -r answer </dev/tty
-    case "$answer" in
-      y|Y|yes) ;;
-      *) echo "aborted; signers unchanged"; log_action signer-remove "$target" "" abort; exit 2 ;;
-    esac
+    if [ "$yes" -eq 0 ]; then
+      printf "%sremove this key's entries? [%sy%s/%sN%s]%s " "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+      drain_tty
+      read -r answer </dev/tty
+      case "$answer" in
+        y|Y|yes) ;;
+        *) echo "aborted; signers unchanged"; log_action signer-remove "$target" "" abort; exit 2 ;;
+      esac
+    fi
     tmp="$(mktemp "$tdir/.stage.XXXXXX")"
     grep -vF "$keyblob" "$target" >"$tmp" || true   # empty result is fine: verifies nothing, fail closed
     chown "root:$TREE_GRP" "$tmp"
@@ -8249,12 +8295,16 @@ do_ignorable() {
   local sub="$1"; shift
   case "$sub" in add|remove|list) ;; *) usage ;; esac
 
-  local key="" under=""
+  # --yes answers add/remove's y/N: the key and the scope are on the
+  # command line. A grant the machine policy would not let take effect
+  # refuses under --yes, since its note is then read by nobody.
+  local key="" under="" yes=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --under)
         [ $# -ge 2 ] || { echo "--under needs a directory" >&2; exit 1; }
         under="$2"; shift 2 ;;
+      --yes) yes=1; shift ;;
       -*) echo "unknown ignorable option: $1" >&2; usage ;;
       *)  [ -z "$key" ] || { echo "ignorable $sub takes one key" >&2; usage; }
           key="$1"; shift ;;
@@ -8265,7 +8315,7 @@ do_ignorable() {
   local tier
   tier="$(tier_user)"
   if [ "$sub" = list ]; then
-    [ -z "$key$under" ] \
+    [ -z "$key$under" ] && [ "$yes" -eq 0 ] \
       || { echo "ignorable list takes no arguments (it shows every entry of both tiers)" >&2; exit 1; }
     do_ignorable_list "$tier"
     return
@@ -8340,6 +8390,12 @@ do_ignorable() {
   if [ "$sub" = add ]; then
     printf '            %sreview --file may then declare this key ignored for paths in%s\n' "$C_DIM" "$C_OFF"
     printf '            %sscope; verify answers 5 instead of 11 when only it drifts%s\n' "$C_DIM" "$C_OFF"
+    if [ "$covered" -eq 0 ] && [ "$yes" -eq 1 ]; then
+      refused "the machine policy ($PINNED_MACHINE_POLICY) does not cover this scope: $key, $scope_disp"
+      echo "        the grant would be recorded but not effective; widen the machine policy first," >&2
+      echo "        or run it without --yes to record it anyway (see: pinned ignorable list)" >&2
+      exit 1
+    fi
     if [ "$covered" -eq 0 ]; then
       printf '%snote:%s        %sthe machine policy (%s) does not cover this scope --\n' \
         "$C_B" "$C_OFF" "$C_YEL" "$PINNED_MACHINE_POLICY"
@@ -8349,17 +8405,19 @@ do_ignorable() {
     printf '            %sany slot that records this key falls back to a byte-exact%s\n' "$C_DIM" "$C_OFF"
     printf '            %sverdict (11) at the very next verify -- no re-ceremony needed%s\n' "$C_DIM" "$C_OFF"
   fi
-  if [ "$sub" = add ]; then
-    printf '%sgrant this key? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
-  else
-    printf '%swithdraw this grant? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+  if [ "$yes" -eq 0 ]; then
+    if [ "$sub" = add ]; then
+      printf '%sgrant this key? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+    else
+      printf '%swithdraw this grant? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+    fi
+    drain_tty
+    read -r answer </dev/tty
+    case "$answer" in
+      y|Y|yes) ;;
+      *) echo "aborted; policy unchanged"; log_action "ignorable-$sub" "$key" "" abort; exit 2 ;;
+    esac
   fi
-  drain_tty
-  read -r answer </dev/tty
-  case "$answer" in
-    y|Y|yes) ;;
-    *) echo "aborted; policy unchanged"; log_action "ignorable-$sub" "$key" "" abort; exit 2 ;;
-  esac
   write_note "$(policy_dir_for "$inv")" ignorable.json "$new_json"
   if [ "$sub" = add ]; then
     printf '%s✓ granted:%s %s%s%s %s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$key" "$C_OFF" "$scope_disp" "$pf"

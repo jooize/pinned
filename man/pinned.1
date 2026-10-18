@@ -76,14 +76,32 @@ Continuing still decides nothing on its own \(em the ceremony's own
 comes later, as root, and nothing is recorded until it is answered.
 Off a tty, the gate refuses with exit 2 rather than elevate unasked.
 .B \-\-yes
-exists only where it carries a consent:
-.B tombstone
-(the sudo dialog confirms) and
+answers in advance every question a verb asks, so it exists only where
+the command line holds what those questions decide:
+.BR tombstone ,
+.BR rekey ,
+.BR declare ,
+.B ignorable add
+and
+.BR remove ,
+.B signer add
+and
+.B remove
+with
+.BR \-\-key ,
+and
 .B setup
 (its plan is confirmed before sudo).
-Every other verb asks its own y/N as root, on the terminal, so it has
-no
+Under
+.B \-\-yes
+the root side shows what it writes and does not ask.
+A review asks after a diff, and a
+.B signer \-\-file
+key is read after the command was approved, so neither takes
 .BR \-\-yes .
+Whether sudo itself asks for authentication is the system's policy (a
+cached credential or NOPASSWD asks nothing), and pinned never counts it
+as the confirmation.
 The gate applies to
 .BR review ,
 .BR tombstone ,
@@ -199,19 +217,18 @@ is required with
 and only with it: the number of commits since the pin that the words
 approve, counted as the commits listing counts them.
 The words bind the commit and with it the whole history behind it, so
-the count puts the size of that range in the dialog as well, to check
-against the list of commits you were given.
+the count puts the size of that range on the command line as well, to
+check against the list of commits you were given.
 .IP
 The review runs without a terminal.
 Before sudo, the preview and the command are printed as always, with
 no gate; the repo is named by its full path, and sudo runs from
-.I /
-with
-.B \-k
-(no cached credential), so the authentication dialog shows the whole
-command, words and count included, and is the only consent.
-Compare the words and the count in the dialog with the copy you were
-given, then authenticate.
+.IR / .
+The words and the count on the command line are the answer, as
+.B \-\-yes
+is elsewhere; whether sudo also authenticates is the system's policy.
+Where sudo shows the command in a dialog (sudowhat does), compare the
+words and the count there with the copy you were given.
 A count that does not match the range since the pin refuses before
 sudo, at no authentication.
 As root, pinned derives the six words from the commit it resolves (HEAD,
@@ -401,7 +418,7 @@ may add an unsigned name (a clean release name) that must name the
 same commit.
 .SS Declaring a release name
 .TP
-.B declare \fIrepo\fP (\fB\-\-release\fP \fIname\fP | \fB\-\-no\-release\fP)
+.B declare \fIrepo\fP (\fB\-\-release\fP \fIname\fP | \fB\-\-no\-release\fP) [\fB\-\-yes\fP]
 (sudo) Name the release a pinned rev already is \(em or clear that
 name.
 The declaration is the slot's
@@ -628,12 +645,12 @@ refuses until it is re-approved.
 The pre-sudo gate reads
 .RB \(dq "tombstone the record as root" \(dq;
 .B \-\-yes
-skips it and, here alone, the root-side confirmation too: the path is the
-whole decision, and the elevation dialog shows it.
+answers it and the root-side confirmation: the path is the whole
+decision.
 The root side still refuses a path that exists or that it cannot stat,
 and a slot with no record.
 .TP
-.B rekey \fIold\fP \fInew\fP
+.B rekey \fIold\fP \fInew\fP [\-\-yes]
 (sudo) Re-key an existing record to the path its content has moved to.
 The record travels verbatim \(em same commit hash or digest, same
 declarations \(em so this is a rename, never a re-approval, and it
@@ -739,7 +756,7 @@ Create signed tag
 .I tag
 at the pinned hash \(em no sudo (needs your SSH agent, e.g. 1Password).
 .TP
-.B signer add [\-\-repo \fIpath\fP] (\-\-file \fIpubkey\fP | \-\-key \fIline\fP) [\-\-principal \fIid\fP]
+.B signer add [\-\-repo \fIpath\fP] (\-\-file \fIpubkey\fP | \-\-key \fIline\fP [\-\-yes]) [\-\-principal \fIid\fP]
 (sudo) Allowed-signers ceremony: fingerprint, confirm, root-owned
 write.
 A bare public key needs
@@ -750,7 +767,7 @@ targets the per-repo override.
 The pre-sudo gate reads
 .RB \(dq "record the key as root" \(dq.
 .TP
-.B signer remove [\-\-repo \fIpath\fP] (\-\-file \fIpubkey\fP | \-\-key \fIline\fP)
+.B signer remove [\-\-repo \fIpath\fP] (\-\-file \fIpubkey\fP | \-\-key \fIline\fP [\-\-yes])
 (sudo) Remove that key's entries (key compromise must not be the
 hand-edited path).
 Its gate reads
@@ -775,17 +792,21 @@ Unprivileged, like
 .BR "signer list" .
 .SS Ignorable-key policy
 .TP
-.B ignorable add \fIkey\fP [\-\-under \fIdir\fP]
+.B ignorable add \fIkey\fP [\-\-under \fIdir\fP] [\-\-yes]
 (sudo) Grant a dotted JSON key that
 .B review \-\-file
 may then declare ignored.
 .B \-\-under
 scopes the grant to that directory's subtree; omitted means
 everywhere.
+A grant the machine policy does not cover is recorded with a note, or
+under
+.B \-\-yes
+refused, since nobody would read the note.
 The pre-sudo gate reads
 .RB \(dq "record the grant as root" \(dq.
 .TP
-.B ignorable remove \fIkey\fP [\-\-under \fIdir\fP]
+.B ignorable remove \fIkey\fP [\-\-under \fIdir\fP] [\-\-yes]
 (sudo) Withdraw exactly that grant (same key, same scope).
 Slots recording it fall back to byte-exact.
 Its gate reads

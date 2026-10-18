@@ -243,8 +243,8 @@ need '^  saved="\$(stty -g </dev/tty 2>/dev/null)" || return 0$' 1 'drain_tty en
 need '^# ---- setup ---'                                    1 'library cut marker'
 need '^#!/bin/bash$'                                        1 'pinned shebang'
 # The preview stub's own anchors (see its construction below).
-need 'exec sudo -- "\$elev" "\$action" "\$@"'               2 'self-elevation exec sites'
-need '^        exec sudo -k -- "\$elev" "\$action" "\$@"$'     1 'the --words exec site'
+need 'exec sudo -- "\$elev" "\$action" "\$@"'               3 'self-elevation exec sites'
+need '^        exec sudo -- "\$elev" "\$action" "\$@"$'        1 'the --words exec site'
 need 'verify_ancestry "\$elev" || exit 1'                   2 'elevation-target ancestry walks'
 need '^  verify_ancestry "\$INSTALL_TARGET" || exit 1$'     1 'install-target ancestry walk'
 need 'if \[ ! -t 0 \]; then'                                1 'no-tty refusal'
@@ -336,9 +336,10 @@ fi
 # "reached the elevation" is an assertion and no root command can run.
 #
 # Seams beyond the shared list:
-#   7. exec sudo -> exit 97, at both call sites; the --words exec (sudo -k)
-#      -> a `words-exec:` line naming the directory and the argv, then
-#      exit 98, so the directory and the rewritten repo path are assertable
+#   7. exec sudo -> exit 97, at both plain call sites; the --words exec (the
+#      one indented eight spaces, rewritten first) -> a `words-exec:` line
+#      naming the directory and the argv, then exit 98, so the directory and
+#      the rewritten repo path are assertable
 #   8. verify_ancestry on the elevation target -> no-op. INSTALL_TARGET is
 #      this stub, in the scratch dir, whose ancestry is nobody's root-owned tree;
 #      the owner/mode check on the target ITSELF stays live (allowlist seam)
@@ -346,8 +347,8 @@ fi
 #      are drivable from one stub
 PREVIEW="$FIX/pinned-preview"
 sed "${STUB_SED[@]}" \
+    -e 's/^        exec sudo -- "\$elev" "\$action" "\$@"$/        printf "words-exec:%s\\n" "$PWD" "$@"; exit 98/' \
     -e 's/exec sudo -- "\$elev" "\$action" "\$@"/exit 97/' \
-    -e 's/exec sudo -k -- "\$elev" "\$action" "\$@"/printf "words-exec:%s\\n" "$PWD" "$@"; exit 98/' \
     -e 's/verify_ancestry "\$elev" || exit 1/:/' \
     -e 's/^  verify_ancestry "\$INSTALL_TARGET" || exit 1$/  :/' \
     -e 's/if \[ ! -t 0 \]; then/if [ -n "${PINNED_TEST_NOTTY:-}" ]; then/' \
@@ -360,7 +361,7 @@ fi
 if [ "$(grep -c '^ *exit 97$' "$PREVIEW")" != 2 ]; then
   bail "PREVIEW SED FAILED: sudo markers"
 fi
-if grep -q 'exec sudo -k' "$PREVIEW" || [ "$(grep -c '; exit 98$' "$PREVIEW")" != 1 ]; then
+if [ "$(grep -c '; exit 98$' "$PREVIEW")" != 1 ]; then
   bail "PREVIEW SED FAILED: the --words sudo marker"
 fi
 if grep -q 'if false; then' "$PREVIEW"; then
@@ -2621,8 +2622,9 @@ n
     "signer's argv stays on screen"
   assert_contains "$OUT" "record the key as root; Enter run" \
     "the gate names what root does with the key"
-  assert_contains "$OUT" "sudo asks you to authenticate" "the site's contract line survives"
-  assert_before "$OUT" "sudo asks you to authenticate" "sudo -- $PREVIEW signer" \
+  assert_contains "$OUT" "As root, the ceremony shows the key and confirms" "the site's contract line survives"
+  assert_missing "$OUT" "authenticate" "and it never names sudo's authentication as the consent"
+  assert_before "$OUT" "As root, the ceremony shows the key" "sudo -- $PREVIEW signer" \
     "the contract sentence sits above the command"
   assert_before "$OUT" "sudo -- $PREVIEW signer" "record the key" \
     "and the gate comes last here too"
@@ -2657,9 +2659,19 @@ n
     "with the same refusal every gate uses"
   ANS=""
   run_preview ignorable add model --yes
-  assert_exit "$RC" 1 "ignorable refuses --yes before sudo"
-  assert_contains "$OUT" "usage: pinned" "as a usage error"
-  NOTTY=""
+  assert_exit "$RC" 97 "ignorable --yes elevates with no terminal and no gate"
+  assert_missing "$OUT" "Enter run" "no gate is printed under --yes"
+  assert_contains "$OUT" "--yes answered its" "the contract line says the y/N is answered"
+  assert_missing "$OUT" "until you answer y" "and promises no y/N"
+  ANS=""
+  run_preview signer add alice --file "$SUB/alice.pub" --yes
+  assert_exit "$RC" 1 "signer --yes with --file refuses before sudo"
+  assert_contains "$OUT" "--yes takes the key on the command line" "and names --key"
+  ANS=""
+  run_preview signer add --key "ssh-ed25519 AAAAexample" --principal a@b --yes
+  assert_exit "$RC" 97 "signer --yes with --key elevates with no gate"
+  assert_missing "$OUT" "Enter run" "no gate under --yes"
+  NOTTY=""""
 
   # --- tombstone / rekey ------------------------------------------------------
   # The record verbs share signer/ignorable's handoff shape: contract line,
@@ -2674,7 +2686,7 @@ n
     "tombstone's argv stays on screen"
   assert_contains "$OUT" "tombstone the record as root; Enter run" \
     "the gate names the retirement in the verb's own word"
-  assert_before "$OUT" "sudo asks you to authenticate" "sudo -- $PREVIEW tombstone" \
+  assert_before "$OUT" "As root, the ceremony shows the record" "sudo -- $PREVIEW tombstone" \
     "the contract sentence sits above the command"
   assert_before "$OUT" "sudo -- $PREVIEW tombstone" "tombstone the record" \
     "and the gate comes last"
@@ -2687,7 +2699,7 @@ n
     "rekey's argv stays on screen"
   assert_contains "$OUT" "re-key the record as root; Enter run" \
     "the gate names the re-key"
-  assert_before "$OUT" "old:" "sudo asks you to authenticate" \
+  assert_before "$OUT" "old:" "As root, the ceremony shows the record" \
     "rekey's own preview stays above the handoff"
 
   ANS=""
@@ -2696,8 +2708,9 @@ n
   assert_missing "$OUT" "Enter run" "no gate is printed under --yes"
   assert_shows_cmd "$OUT" "sudo -- $PREVIEW tombstone $FIX/ts-gone --yes" \
     "the flag is shown where it will really be passed"
-  assert_contains "$OUT" "that dialog is the confirmation" \
-    "the contract line says the dialog confirms a tombstone --yes"
+  assert_contains "$OUT" "--yes answered its" \
+    "the contract line says --yes answered the confirmation"
+  assert_missing "$OUT" "dialog" "and never names a sudo dialog as the consent"
   assert_missing "$OUT" "until you answer y" "and promises no y/N the root side will not ask"
 
   # --yes answers the gate; it is not the path and not a second path.
@@ -2707,46 +2720,48 @@ n
   assert_contains "$OUT" "usage: pinned" "and says so as a usage error"
   ANS=""
   run_preview rekey "$FIX/mv-old-gone" "$FIX/mv-new" --yes
-  assert_exit "$RC" 1 "rekey refuses --yes before sudo"
-  assert_contains "$OUT" "usage: pinned" "as a usage error too"
+  assert_exit "$RC" 97 "--yes elevates rekey without a gate"
+  assert_missing "$OUT" "Enter run" "no gate under --yes"
+  assert_shows_cmd "$OUT" "sudo -- $PREVIEW rekey $FIX/mv-old-gone $FIX/mv-new --yes" \
+    "--yes is not taken for a third path"
 
   NOTTY=1
   ANS=""
   run_preview rekey "$FIX/mv-old-gone" "$FIX/mv-new"
   assert_exit "$RC" 2 "off-tty rekey refuses"
-  assert_contains "$OUT" "no tty for confirmation -- run it in a terminal" \
-    "with the shared refusal"
+  assert_contains "$OUT" "no tty for confirmation -- pass --yes to answer it in advance" \
+    "and names the flag that answers it"
   ANS=""
   run_preview tombstone "$FIX/ts-gone"
   assert_exit "$RC" 2 "off-tty tombstone without --yes refuses"
-  assert_contains "$OUT" "pass --yes to let the sudo dialog confirm" \
-    "and names the flag that is its consent"
+  assert_contains "$OUT" "pass --yes to answer it in advance" \
+    "and names the flag that answers it"
   NOTTY=""
 
-  # --- the root side has no --yes either -----------------------------------
+  # --- the root side, reached directly ------------------------------------
   # A direct `sudo pinned <verb> --yes` reaches the root parsers without the
-  # pre-sudo check; each refuses it as a usage error, before any ceremony.
+  # pre-sudo check. review and signer --file refuse it before any ceremony;
+  # the record verbs take it.
   ANS=""
   run_pinned review "$EV_STALE2" --yes
   assert_exit "$RC" 1 "the root side refuses review --yes"
   assert_contains "$OUT" "usage: pinned" "as a usage error"
   if command -v ssh-keygen >/dev/null 2>&1; then
     run_pinned signer add --file "$FIX/no-such-key.pub" --yes
-    assert_exit "$RC" 1 "the root side refuses signer --yes"
-    assert_contains "$OUT" "unknown signer option: --yes" "by name"
+    assert_exit "$RC" 1 "the root side refuses signer --file --yes"
+    assert_contains "$OUT" "--yes takes the key on the command line" "and names --key"
   else
     skip "S8i signer --yes" "no ssh-keygen"
   fi
   if command -v jq >/dev/null 2>&1; then
-    run_pinned ignorable add model --yes
-    assert_exit "$RC" 1 "the root side refuses ignorable --yes"
-    assert_contains "$OUT" "unknown ignorable option: --yes" "by name"
+    run_pinned ignorable list --yes
+    assert_exit "$RC" 1 "ignorable list takes no --yes"
   else
     skip "S8i ignorable --yes" "no jq"
   fi
 
   # Far enough into do_tombstone to prove its parser took --yes (the refusal
-  # comes from the slot, not from the grammar); rekey has no --yes.
+  # comes from the slot, not from the grammar); rekey likewise.
   ANS=""
   run_pinned tombstone "$FIX/ts-gone" --yes
   assert_exit "$RC" 1 "tombstone with --yes reaches its own checks"
@@ -2754,8 +2769,8 @@ n
   assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there"
   ANS=""
   run_pinned rekey "$FIX/mv-old-gone" "$FIX/mv-new" --yes
-  assert_exit "$RC" 1 "the root side refuses rekey --yes"
-  assert_contains "$OUT" "usage: pinned" "as a usage error"
+  assert_exit "$RC" 1 "rekey with --yes reaches its own checks"
+  assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there"
 else
   skip "S8i" "no git fixture"
 fi
@@ -2927,7 +2942,7 @@ if [ "$GIT_OK" -eq 1 ]; then
     "the exact argv stays on screen"
   assert_contains "$OUT" "declare the release name as root; Enter run" \
     "the gate names the declaration"
-  assert_contains "$OUT" "sudo asks you to authenticate" "the record-verb contract line survives"
+  assert_contains "$OUT" "As root, the ceremony shows the record and confirms" "the record-verb contract line survives"
   ANS='
 '
   run_preview declare "$REPO_DC" --no-release
@@ -2935,11 +2950,18 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_contains "$OUT" "clear the declaration as root" \
     "its gate names the clearing"
 
-  # declare has no --yes; the root side refuses it, and the plain form lands.
+  # --yes answers the y/N: no answer is read, and the record lands. The
+  # plain form then lands the same way through its y/N.
   ANS=""
   run_pinned declare "$REPO_DC" --release v1 --yes
-  assert_exit "$RC" 1 "the root side refuses declare --yes"
-  assert_contains "$OUT" "usage: pinned" "as a usage error"
+  assert_exit "$RC" 0 "declare --yes records with no answer on the terminal"
+  assert_missing "$OUT" "[y/N]" "and asks nothing"
+  assert_contains "$OUT" "✓ declared:" "the result is confirmed as always"
+  assert_eq "$(cat "$DC_SLOT/release")" "v1" "the --yes declaration landed"
+  ANS=""
+  run_pinned declare "$REPO_DC" --no-release --yes
+  assert_exit "$RC" 0 "declare --no-release --yes clears with no answer"
+  assert_absent "$DC_SLOT/release" "and the declaration is gone"
   ANS='y
 '
   run_pinned declare "$REPO_DC" --release v1
@@ -3496,6 +3518,23 @@ ANS=""
 run_pinned ignorable list
 assert_exit "$RC" 0 "list exits 0 with both tiers"
 assert_contains "$OUT" "everywhere" "the user tier's unscoped entry is shown"
+
+# --yes answers the grant's y/N, and refuses a grant the machine tier does
+# not cover, since its note would then be read by nobody.
+ANS=""
+run_pinned ignorable add effortLevel --yes
+assert_exit "$RC" 1 "an uncovered grant under --yes refuses"
+assert_contains "$OUT" "does not cover this scope" "naming the machine policy"
+assert_eq "$(jq -c . "$POLICY_USER")" '[{"path":["model"]}]' "and the user tier is unchanged"
+ANS=""
+run_pinned ignorable add model --under "$SUB/pol/in" --yes
+assert_exit "$RC" 0 "a covered grant under --yes is recorded with no answer"
+assert_missing "$OUT" "[y/N]" "and asks nothing"
+assert_contains "$OUT" "✓ granted:" "the result is confirmed as always"
+ANS=""
+run_pinned ignorable remove model --under "$SUB/pol/in" --yes
+assert_exit "$RC" 0 "remove --yes withdraws with no answer"
+assert_eq "$(jq -c . "$POLICY_USER")" '[{"path":["model"]}]' "the user tier is back as it was"
 printf '%s\n' "$JSON_IN" > "$SUB/pol/in/s.json"
 ANS='
 y
@@ -5009,7 +5048,7 @@ say "S23: approve by words"
 # `review --words`: six words, compared as root against the commit the
 # ceremony resolves; a match approves with no diff and no y/N, everything
 # else refuses. The pre-sudo half runs with no terminal, names the repo by
-# its full path and execs `sudo -k` from /. `pinned words` prints the words
+# its full path and execs sudo from /. `pinned words` prints the words
 # and the command. The plain review shows no words at all.
 
 # The embedded list is BIP39 English, byte for byte.
@@ -5185,7 +5224,7 @@ n
   assert_contains "$OUT" "not an answer" "...and is named as one"
 
   # --- before sudo ----------------------------------------------------------
-  # No terminal, no gate: the exec is reached, from /, with sudo -k, and the
+  # No terminal, no gate: the exec is reached, from /, and the
   # repo named by its full path even when given relative.
   seed_rev "$REPO_W" "$W_BASE"
   NOTTY=1
@@ -5199,9 +5238,10 @@ n
   assert_missing "$OUT" "words-exec:wordsfix" "...never the relative spelling"
   assert_missing "$OUT" "no tty for confirmation" "no terminal is not an error here"
   assert_missing "$OUT" "Enter run" "no pre-sudo gate"
-  assert_contains "$OUT" "the sudo dialog is the confirmation" "the contract line names the dialog as the consent"
-  assert_shows_cmd "$OUT" "sudo -k -- $PREVIEW review $W_REAL --words $W_ARG --commits 1" \
-    "the printed command is the one sudo runs, -k included"
+  assert_contains "$OUT" "and approves on a match" "the contract line says the words are the answer"
+  assert_missing "$OUT" "dialog" "and never names a sudo dialog as the consent"
+  assert_shows_cmd "$OUT" "sudo -- $PREVIEW review $W_REAL --words $W_ARG --commits 1" \
+    "the printed command is the one sudo runs"
   # Without --words nothing changed: off-tty still refuses.
   run_preview review "$REPO_W"
   assert_exit "$RC" 2 "a plain review off-tty still refuses"
@@ -5266,6 +5306,37 @@ n
   assert_exit "$RC" 1 "words needs the rev; it never defaults to HEAD"
   run_pinned words "$REPO_W" no-such-rev
   assert_exit "$RC" 1 "an unknown rev is refused"
+fi
+
+# ---------------------------------------------------------------------------
+say "S24: signer --key --yes"
+# ---------------------------------------------------------------------------
+# --yes answers signer's y/N only when the key is on the command line. The
+# user tier's allowed_signers is saved and put back, so later readers of
+# the fixture see what they saw before.
+if command -v ssh-keygen >/dev/null 2>&1; then
+  SK_FILE="$PINNED_ROOT/$USERNAME/policy/allowed_signers"
+  SK_SAVED=""
+  [ -f "$SK_FILE" ] && cp -p "$SK_FILE" "$FIX/allowed_signers.saved" && SK_SAVED=1
+  ssh-keygen -q -t ed25519 -N '' -C yes-test -f "$FIX/yes-key" </dev/null
+  SK_LINE="$(cat "$FIX/yes-key.pub")"
+  ANS=""
+  run_pinned signer add --key "$SK_LINE" --principal yes@test --yes
+  assert_exit "$RC" 0 "signer add --key --yes records with no answer"
+  assert_missing "$OUT" "[y/N]" "and asks nothing"
+  assert_contains "$OUT" "fingerprint:" "the fingerprint is still shown"
+  assert_contains "$OUT" "✓ added:" "the result is confirmed as always"
+  ANS=""
+  run_pinned signer remove --key "$SK_LINE" --yes
+  assert_exit "$RC" 0 "signer remove --key --yes removes with no answer"
+  assert_missing "$OUT" "[y/N]" "and asks nothing"
+  if [ -n "$SK_SAVED" ]; then
+    cp -p "$FIX/allowed_signers.saved" "$SK_FILE"
+  else
+    mv "$SK_FILE" "$FIX/allowed_signers.after-s24"
+  fi
+else
+  skip "S24" "no ssh-keygen"
 fi
 
 # ---------------------------------------------------------------------------

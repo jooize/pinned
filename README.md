@@ -56,9 +56,8 @@ the nix module; a manual install copies it onto `fish_complete_path` / `fpath`.
                                       diff when the commit's six words
                                       match and <n> commits arrived since
                                       the pin; no terminal, no y/N: the
-                                      sudo dialog shows both and is the
-                                      consent (man pinned, "Approving by
-                                      words")
+                                      words and the count are the answer
+                                      (man pinned, "Approving by words")
     pinned review <repo> --signed-tag <tag> [--signed-tag <tag> ...] [--tag <tag>]
                                       signature gate: verify each signed tag,
                                       all naming one commit -> pin (--tag:
@@ -106,8 +105,8 @@ the nix module; a manual install copies it onto `fish_complete_path` / `fpath`.
                                       13 tombstoned, 16 no declaration,
                                       17 record names another path,
                                       30 record mode, 1 error)
-    pinned tombstone <path>           retire a pinned file that is gone
-    pinned rekey <old> <new>          re-key a record to the path its
+    pinned tombstone <path> [--yes]   retire a pinned file that is gone
+    pinned rekey <old> <new> [--yes]  re-key a record to the path its
                                       content has moved to: the rev or
                                       digest and every annotation travel
                                       verbatim, the content at <new>
@@ -118,7 +117,7 @@ the nix module; a manual install copies it onto `fish_complete_path` / `fpath`.
                                       recorded digest, or drift confined
                                       to the keys the slot already
                                       ignores), and <old> is tombstoned
-    pinned declare <repo> --release <name> | --no-release
+    pinned declare <repo> --release <name> | --no-release [--yes]
                                       name the release a pinned rev
                                       already is: the tag must already
                                       resolve to the pinned rev (checked,
@@ -129,7 +128,7 @@ the nix module; a manual install copies it onto `fish_complete_path` / `fpath`.
                                       rev-only; both state an end state
                                       and are idempotent
     pinned sign <repo> <tag>          signed release tag at the pinned hash
-    pinned signer add|list|remove [--repo <path>] (--file <pubkey> | --key '<line>')
+    pinned signer add|list|remove [--repo <path>] (--file <pubkey> | --key '<line>' [--yes])
                                       allowed-signers ceremony:
                                       fingerprint, confirm, write
     pinned signer path [--repo <path>]
@@ -138,11 +137,16 @@ the nix module; a manual install copies it onto `fish_complete_path` / `fpath`.
                                       override if it exists, else the
                                       user tier); nothing and exit 1
                                       when neither exists
-    pinned ignorable add|remove <key> [--under <dir>]
+    pinned ignorable add|remove <key> [--under <dir>] [--yes]
                                       grant/withdraw a key that a ceremony
                                       may declare ignored; --under scopes
                                       the grant to a directory's subtree,
                                       omitted means everywhere
+    --yes                             (on tombstone, rekey, declare,
+                                      ignorable, signer --key) answers
+                                      the root-side y/N in advance; whether
+                                      sudo authenticates is your system's
+                                      policy, never the confirmation
     pinned ignorable list             machine tier, user tier, and the
                                       effective intersection, with scopes
     pinned status <repo|file>         record vs live state
