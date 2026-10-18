@@ -2671,7 +2671,7 @@ n
   run_preview signer add --key "ssh-ed25519 AAAAexample" --principal a@b --yes
   assert_exit "$RC" 97 "signer --yes with --key elevates with no gate"
   assert_missing "$OUT" "Enter run" "no gate under --yes"
-  NOTTY=""""
+  NOTTY=""
 
   # --- tombstone / rekey ------------------------------------------------------
   # The record verbs share signer/ignorable's handoff shape: contract line,

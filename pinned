@@ -4275,11 +4275,7 @@ case "$action" in
           printf '%sThe preview above was orientation only. The sudo ceremony re-derives\n' "$C_DIM"
           printf 'everything it displays, and nothing is pinned until you confirm there.%s\n\n' "$C_OFF"
         fi
-        if [ -n "${preview_words:-}" ]; then
-          printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
-        else
-          printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
-        fi
+        printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
         # What the gate counts is what the root side will actually do: the
         # files named on the command line, or the repos that survived the
         # preview's already-pinned skip. --words has no gate here: its caller
