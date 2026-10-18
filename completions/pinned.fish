@@ -63,6 +63,7 @@ complete -c pinned -n '__pinned_action_is review' -l tag -x -d 'Review and pin t
 complete -c pinned -n '__pinned_action_is review' -l signed-tag -x -d 'Tag that must verify against allowed signers (repeatable)'
 complete -c pinned -n '__pinned_action_is review' -l trust -d 'Skip a first approval'\''s full-tree review, loudly'
 complete -c pinned -n '__pinned_action_is review' -l words -x -d 'Approve a forward move by the commit'\''s six words'
+complete -c pinned -n '__pinned_action_is review' -l commits -x -d 'How many commits since the pin the words approve'
 complete -c pinned -n '__pinned_action_is review' -l step -d 'Walk the commits since the pin one at a time'
 complete -c pinned -n '__pinned_action_is review' -l messages -d 'Print each commit message whole in the listing'
 complete -c pinned -n '__pinned_action_is review' -l backward -d 'Declare the candidate an ancestor of the pin'

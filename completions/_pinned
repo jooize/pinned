@@ -49,6 +49,7 @@ _pinned() {
             '*--signed-tag[tag that must verify against allowed signers]:tag: ' \
             "--trust[skip a first approval's full-tree review, loudly]" \
             "--words[approve a forward move by the commit's six words]:words: " \
+            '--commits[how many commits since the pin the words approve]:count: ' \
             '--step[walk the commits since the pin one at a time]' \
             '--messages[print each commit message whole in the listing]' \
             '(--diverged)--backward[declare the candidate an ancestor of the pin]' \

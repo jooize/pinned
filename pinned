@@ -954,6 +954,20 @@ valid_words_arg() {
   done
 }
 
+# <--commits argument> -> 0 when it is a count of one or more in plain
+# decimal, no leading zero: the spelling the sudo dialog shows is the number
+# the root side compares. Shape only, like valid_words_arg.
+valid_commits_arg() {
+  case "$1" in ''|0*|*[!0-9]*) return 1 ;; esac
+  [ "${#1}" -le 6 ]
+}
+
+# The --commits refusal, one sentence for both sides of the seam.
+# $1 = commits since the pin, $2 = the count --commits stated.
+refuse_commits_count() {
+  refused "the range since the pin holds $1 commit$(plural_s "$1"), not the $2 --commits states; pin unchanged"
+}
+
 # The root-side ceremony announces itself: everything below this line is
 # pinned's own authoritative display, not a caller's orientation preview.
 # Printed only after the self-elevation, never in the pre-sudo handoff, and
@@ -3825,7 +3839,7 @@ case "$action" in
       if [ "$action" = "review" ]; then
         preview_repos=() preview_tag="" skip_next=0 want_tag=0 file_mode=0 have_ev=0
         preview_step=0 preview_trust=0 preview_signed=0 preview_decl=""
-        preview_words="" want_words=0
+        preview_words="" want_words=0 preview_commits="" want_commits=0
         # Empty or the word the listing reads, like preview_decl's class.
         preview_msg=""
         # Counted here rather than re-derived at the gate: the gate promises a
@@ -3836,12 +3850,17 @@ case "$action" in
         for a in "$@"; do
           if [ "$want_tag" -eq 1 ]; then preview_tag="$a"; want_tag=0; continue; fi
           if [ "$want_words" -eq 1 ]; then preview_words="$a"; want_words=0; continue; fi
+          if [ "$want_commits" -eq 1 ]; then preview_commits="$a"; want_commits=0; continue; fi
           if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
           case "$a" in
             --signed-tag) have_ev=1; preview_signed=1; skip_next=1 ;;
             # Evidence, and the one review that runs with no terminal: the
             # sudo dialog showing this argv is its consent (below).
             --words) have_ev=1; want_words=1 ;;
+            # The size of what --words approves, in the dialog beside them.
+            --commits)
+              [ -z "$preview_commits" ] || { echo "--commits may be given once" >&2; exit 1; }
+              want_commits=1 ;;
             --file) file_mode=1; preview_files=$((preview_files + 1)); skip_next=1 ;;
             --baseline|--baseline-store|--algo) skip_next=1 ;;
             --tag) have_ev=1; want_tag=1 ;;
@@ -3923,9 +3942,25 @@ case "$action" in
           echo "--words needs the six words, joined by hyphens" >&2
           exit 1
         fi
+        if [ "$want_commits" -eq 1 ]; then
+          echo "--commits needs the number of commits the words approve" >&2
+          exit 1
+        fi
+        if [ -n "$preview_commits" ] && [ -z "$preview_words" ]; then
+          echo "--commits goes with --words: it states how many commits the words approve" >&2
+          exit 1
+        fi
         if [ -n "$preview_words" ]; then
           if ! valid_words_arg "$preview_words"; then
             echo "--words takes six words from the list, joined by hyphens: w1-w2-w3-w4-w5-w6" >&2
+            exit 1
+          fi
+          if [ -z "$preview_commits" ]; then
+            echo "--words needs --commits N, the number of commits since the pin it approves" >&2
+            exit 1
+          fi
+          if ! valid_commits_arg "$preview_commits"; then
+            echo "--commits takes a count of one or more, e.g. --commits 3" >&2
             exit 1
           fi
           if [ "$file_mode" -eq 1 ]; then
@@ -4095,6 +4130,17 @@ case "$action" in
                 echo
                 print_ancestry_listing "$ancestry_cls" "$preview_pin" "$preview_head" \
                   "$ancestry_mb" label '  ' "$preview_msg"
+                # --commits, mirrored: the count is free to take here, over
+                # the same range the listing just printed. The root side
+                # counts again against its own read of the pin.
+                if [ -n "$preview_words" ]; then
+                  preview_n="$(sgit rev-list --count "${preview_pin}..${preview_head}")"
+                  if [ "$preview_n" != "$preview_commits" ]; then
+                    echo
+                    refuse_commits_count "$preview_n" "$preview_commits"
+                    exit 1
+                  fi
+                fi
                 if [ "$preview_step" -eq 1 ]; then
                   # Counted with the walk's OWN enumeration, so the number
                   # promised here is the number of confirmations that arrive.
@@ -4125,7 +4171,7 @@ case "$action" in
           for a in "$@"; do
             if [ "$skip_next" -eq 1 ]; then words_argv+=("$a"); skip_next=0; continue; fi
             case "$a" in
-              --tag|--words) words_argv+=("$a"); skip_next=1 ;;
+              --tag|--words|--commits) words_argv+=("$a"); skip_next=1 ;;
               -*) words_argv+=("$a") ;;
               *) words_argv+=("$repo") ;;
             esac
@@ -4362,7 +4408,7 @@ do_approve() {
   local msg_mode=""
   # The six words of the commit being approved, hyphen-joined (approve by
   # words, above commit_words). Empty: the review reads, as always.
-  local words_arg=""
+  local words_arg="" commits_arg=""
   # The argv as given, for the restatement floor's paste-ready line.
   local review_argv
   review_argv=("$@")
@@ -4399,6 +4445,14 @@ do_approve() {
         valid_words_arg "$2" \
           || { echo "--words takes six words from the list, joined by hyphens: w1-w2-w3-w4-w5-w6" >&2; exit 1; }
         words_arg="$2"; shift 2 ;;
+      # How many commits the words approve, stated where the sudo dialog
+      # shows it beside them. Required with --words, and only with it.
+      --commits)
+        [ $# -ge 2 ] || { echo "--commits needs the number of commits the words approve" >&2; exit 1; }
+        [ -z "$commits_arg" ] || { echo "--commits may be given once" >&2; exit 1; }
+        valid_commits_arg "$2" \
+          || { echo "--commits takes a count of one or more, e.g. --commits 3" >&2; exit 1; }
+        commits_arg="$2"; shift 2 ;;
       # The ancestry DECLARATIONS: what the human believes they are
       # approving. Reality must conform (ancestry_gate) or the ceremony
       # refuses -- these widen nothing on their own, they only unlock a
@@ -4503,7 +4557,7 @@ do_approve() {
   if [ "${#files[@]}" -gt 0 ]; then
     if [ "${#repo_args[@]}" -gt 0 ] || [ -n "$sel_tag" ] || [ "$trust" -eq 1 ] \
       || [ "${#tag_args[@]}" -gt 0 ] || [ "$step" -eq 1 ] || [ -n "$decl_class" ] \
-      || [ -n "$msg_mode" ] || [ -n "$words_arg" ]; then
+      || [ -n "$msg_mode" ] || [ -n "$words_arg" ] || [ -n "$commits_arg" ]; then
       echo "--file is its own ceremony; repo arguments, evidence flags, --step, --messages and the ancestry declarations do not combine with it" >&2
       exit 1
     fi
@@ -4556,7 +4610,15 @@ do_approve() {
   # walk, or a declared move that is not forward. (The pre-sudo half
   # refuses the same set; these are the authoritative re-checks. The move's
   # direction itself is checked per repo, once the pin is read.)
+  if [ -n "$commits_arg" ] && [ -z "$words_arg" ]; then
+    echo "--commits goes with --words: it states how many commits the words approve" >&2
+    exit 1
+  fi
   if [ -n "$words_arg" ]; then
+    if [ -z "$commits_arg" ]; then
+      echo "--words needs --commits N, the number of commits since the pin it approves" >&2
+      exit 1
+    fi
     if [ "$trust" -eq 1 ] || [ "${#tag_args[@]}" -gt 0 ]; then
       echo "--words is its own evidence; it does not combine with --trust or --signed-tag" >&2
       exit 1
@@ -4845,6 +4907,18 @@ do_approve() {
             exit 1
           fi
           print_words_row "$want"
+          # The count the dialog showed beside the words, against the range
+          # this ceremony just listed. The words bind the commit; the count
+          # binds how much of the history behind it the approval covers.
+          local n_since
+          n_since="$(sgit rev-list --count "${old_hash}..${hash}")"
+          if [ "$n_since" != "$commits_arg" ]; then
+            refuse_commits_count "$n_since" "$commits_arg"
+            printf '  review it the usual way: pinned review %s\n' "$repo" >&2
+            log_action approve "$repo" "$hash" commits-mismatch
+            exit 1
+          fi
+          printf '%scommits:%s    %s since the pin\n' "$C_DIM" "$C_OFF" "$n_since"
           by_words=1
         else
           # The gate before the pager: in a batch the next repo's diff would
@@ -6796,7 +6870,8 @@ do_words() {
       w="$(commit_words "$hash")"
       print_words_row "$w"
       if [ -n "$tag_opt" ] || [ "$head_hash" = "$hash" ]; then
-        printf '%sapprove:%s    pinned review %s%s --words %s\n' "$C_DIM" "$C_OFF" "$repo" "$tag_opt" "${w// /-}"
+        printf '%sapprove:%s    pinned review %s%s --words %s --commits %s\n' "$C_DIM" "$C_OFF" \
+          "$repo" "$tag_opt" "${w// /-}" "$(sgit rev-list --count "${old_hash}..${hash}")"
       fi
       ;;
     '')       printf '%swords:%s      (none: a first approval reads the full tree)\n' "$C_DIM" "$C_OFF" ;;

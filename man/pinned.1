@@ -99,7 +99,7 @@ takes its own confirmation instead, before any authentication.
 .SH COMMANDS
 .SS Repository approval
 .TP
-.B review \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP | \fB\-\-words\fP \fIwords\fP] [\fB\-\-step\fP] [\fB\-\-messages\fP] [\fB\-\-backward\fP|\fB\-\-diverged\fP]
+.B review \fIrepo\fP... [\fB\-\-tag\fP \fItag\fP] [\fB\-\-trust\fP | \fB\-\-words\fP \fIwords\fP \fB\-\-commits\fP \fIn\fP] [\fB\-\-step\fP] [\fB\-\-messages\fP] [\fB\-\-backward\fP|\fB\-\-diverged\fP]
 (sudo) Review the diff since the last pin (the full tree on a first
 approval), approve, write the pin.
 .I repo
@@ -192,6 +192,16 @@ in the range changes the words.
 .B "pinned words"
 prints them, with the exact command.
 .IP
+.B \-\-commits
+.I n
+is required with
+.BR \-\-words ,
+and only with it: the number of commits since the pin that the words
+approve, counted as the commits listing counts them.
+The words bind the commit and with it the whole history behind it, so
+the count puts the size of that range in the dialog as well, to check
+against the list of commits you were given.
+.IP
 The review runs without a terminal.
 Before sudo, the preview and the command are printed as always, with
 no gate; the repo is named by its full path, and sudo runs from
@@ -199,9 +209,11 @@ no gate; the repo is named by its full path, and sudo runs from
 with
 .B \-k
 (no cached credential), so the authentication dialog shows the whole
-command, words included, and is the only consent.
-Compare the words in the dialog with the copy you were given, then
-authenticate.
+command, words and count included, and is the only consent.
+Compare the words and the count in the dialog with the copy you were
+given, then authenticate.
+A count that does not match the range since the pin refuses before
+sudo, at no authentication.
 As root, pinned derives the six words from the commit it resolves (HEAD,
 or the
 .B \-\-tag
@@ -211,6 +223,11 @@ y/N, logged with result
 a mismatch refuses with exit 1, logged as
 .BR words\-mismatch ,
 and never says which words differ.
+After a match it counts the commits from the pin to that commit; a count
+other than
+.B \-\-commits
+refuses with exit 1, logged as
+.BR commits\-mismatch .
 Review that repo the usual way then.
 .IP
 .B \-\-words

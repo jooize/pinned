@@ -5065,7 +5065,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   # A match approves: no diff, no y/N (end of input stands for "no terminal").
   seed_rev "$REPO_W" "$W_BASE"
   ANS=""
-  run_pinned review "$REPO_W" --words "$W_ARG"
+  run_pinned review "$REPO_W" --words "$W_ARG" --commits 1
   assert_exit "$RC" 0 "the right six words approve"
   assert_eq "$(rev_in "$W_SLOT/rev.git")" "$W_C1" "the pin moved to the commit the words name"
   assert_contains "$OUT" "words:      $W1 $W2 $W3  $W4 $W5 $W6" "the matched words are shown in two groups of three"
@@ -5074,18 +5074,41 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_missing "$OUT" "[y/N]" "no y/N: the authentication was the answer"
   assert_missing "$OUT" "Enter open" "no review gate"
   assert_contains "$OUT" "✓ approved: $W_C1" "the approval is confirmed as always"
+  assert_contains "$OUT" "commits:    1 since the pin" "the count is shown beside the words"
+
+  # --commits: the size of the range, required with --words and only with
+  # it, compared against the range the ceremony lists.
+  seed_rev "$REPO_W" "$W_BASE"
+  run_pinned review "$REPO_W" --words "$W_ARG" --commits 2
+  assert_exit "$RC" 1 "a count other than the range refuses"
+  assert_eq "$(rev_in "$W_SLOT/rev.git")" "$W_BASE" "...and leaves the pin"
+  assert_contains "$OUT" "the range since the pin holds 1 commit, not the 2 --commits states; pin unchanged" \
+    "...and states both numbers"
+  run_pinned review "$REPO_W" --words "$W_ARG"
+  assert_exit "$RC" 1 "--words without --commits refuses"
+  assert_contains "$OUT" "--words needs --commits N" "...and names the missing count"
+  run_pinned review "$REPO_W" --commits 1
+  assert_exit "$RC" 1 "--commits without --words refuses"
+  assert_contains "$OUT" "--commits goes with --words" "...and says what it belongs to"
+  for bad in 0 01 -1 x 1x ""; do
+    run_pinned review "$REPO_W" --words "$W_ARG" --commits "$bad"
+    assert_exit "$RC" 1 "malformed --commits refused: '$bad'"
+  done
+  run_pinned review "$REPO_W" --words "$W_ARG" --commits 1 --commits 1
+  assert_exit "$RC" 1 "--commits twice refuses"
+  assert_eq "$(rev_in "$W_SLOT/rev.git")" "$W_BASE" "no --commits refusal moved the pin"
 
   # One word off, two swapped: refused, the pin unchanged, the right words
   # never printed.
   seed_rev "$REPO_W" "$W_BASE"
-  run_pinned review "$REPO_W" --words "$W1-$W2-$W3-$WRONG-$W5-$W6"
+  run_pinned review "$REPO_W" --words "$W1-$W2-$W3-$WRONG-$W5-$W6" --commits 1
   assert_exit "$RC" 1 "one wrong word refuses"
   assert_eq "$(rev_in "$W_SLOT/rev.git")" "$W_BASE" "a refusal leaves the pin"
   assert_contains "$OUT" "the words do not match $W_C1; pin unchanged" "the refusal names the commit"
   assert_contains "$OUT" "review it the usual way: pinned review " "...and the way forward"
   assert_missing "$OUT" "words:" "the right words are never shown on a mismatch"
   if [ "$W1" != "$W2" ]; then
-    run_pinned review "$REPO_W" --words "$W2-$W1-$W3-$W4-$W5-$W6"
+    run_pinned review "$REPO_W" --words "$W2-$W1-$W3-$W4-$W5-$W6" --commits 1
     assert_exit "$RC" 1 "the right words in the wrong order refuse"
   fi
 
@@ -5094,24 +5117,24 @@ if [ "$GIT_OK" -eq 1 ]; then
   printf 'w2\n' > "$REPO_W/w.txt"
   bgit "$REPO_W" commit -q -am "w2 planted"
   seed_rev "$REPO_W" "$W_BASE"
-  run_pinned review "$REPO_W" --words "$W_ARG"
+  run_pinned review "$REPO_W" --words "$W_ARG" --commits 1
   assert_exit "$RC" 1 "words for the commit under a planted one refuse"
   assert_eq "$(rev_in "$W_SLOT/rev.git")" "$W_BASE" "...and leave the pin"
   bgit "$REPO_W" reset -q --hard "$W_C1"
 
   # Shape and combinations, refused before anything is read.
-  run_pinned review "$REPO_W" --words "$W1-$W2-$W3-$W4-$W5"
+  run_pinned review "$REPO_W" --words "$W1-$W2-$W3-$W4-$W5" --commits 1
   assert_exit "$RC" 1 "five words refuse"
-  run_pinned review "$REPO_W" --words "$W_ARG" --words "$W_ARG"
+  run_pinned review "$REPO_W" --words "$W_ARG" --words "$W_ARG" --commits 1
   assert_exit "$RC" 1 "--words twice refuses"
-  run_pinned review "$REPO_W" --words "$W_ARG" --step
+  run_pinned review "$REPO_W" --words "$W_ARG" --step --commits 1
   assert_exit "$RC" 1 "--words with --step refuses"
-  run_pinned review "$REPO_W" --words "$W_ARG" --backward
+  run_pinned review "$REPO_W" --words "$W_ARG" --backward --commits 1
   assert_exit "$RC" 1 "--words with an ancestry declaration refuses"
-  run_pinned review "$REPO_W" "$REPO_W" --words "$W_ARG"
+  run_pinned review "$REPO_W" "$REPO_W" --words "$W_ARG" --commits 1
   assert_exit "$RC" 1 "--words binds to one repo"
   assert_contains "$OUT" "bind to one repo" "...and says so"
-  run_pinned review --file "$REPO_W/w.txt" --words "$W_ARG"
+  run_pinned review --file "$REPO_W/w.txt" --words "$W_ARG" --commits 1
   assert_exit "$RC" 1 "--words does not combine with --file"
   assert_eq "$(rev_in "$W_SLOT/rev.git")" "$W_BASE" "no refusal moved the pin"
 
@@ -5119,14 +5142,14 @@ if [ "$GIT_OK" -eq 1 ]; then
   seed_rev "$REPO_W" "$W_C1"
   bgit "$REPO_W" reset -q --hard "$W_BASE"
   read -r B1 B2 B3 B4 B5 B6 <<<"$("$PROBE" commit_words "$W_BASE")"
-  run_pinned review "$REPO_W" --words "$B1-$B2-$B3-$B4-$B5-$B6"
+  run_pinned review "$REPO_W" --words "$B1-$B2-$B3-$B4-$B5-$B6" --commits 1
   assert_exit "$RC" 1 "a backward move is never approved by words"
   assert_eq "$(rev_in "$W_SLOT/rev.git")" "$W_C1" "...the pin stays"
   bgit "$REPO_W" reset -q --hard "$W_C1"
 
   # A first approval reads the full tree.
   mv "$W_SLOT" "$FIX/wordsfix-slot.aside"
-  run_pinned review "$REPO_W" --words "$W_ARG"
+  run_pinned review "$REPO_W" --words "$W_ARG" --commits 1
   assert_exit "$RC" 1 "a first approval is never approved by words"
   assert_contains "$OUT" "a first approval reads the full tree" "...and says why"
   assert_absent "$W_SLOT/rev.git" "...and writes no record"
@@ -5137,7 +5160,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   bgit "$REPO_W" tag w-v1 "$W_C1"
   printf 'w3\n' > "$REPO_W/w.txt"
   bgit "$REPO_W" commit -q -am "w3 after the tag"
-  run_pinned review "$REPO_W" --tag w-v1 --words "$W_ARG"
+  run_pinned review "$REPO_W" --tag w-v1 --words "$W_ARG" --commits 1
   assert_exit "$RC" 0 "the tag's commit is approved by its words"
   assert_eq "$(rev_in "$W_SLOT/rev.git")" "$W_C1" "the pin is the tag's commit, not HEAD"
   assert_contains "$OUT" "✓ declared:" "the release name is declared"
@@ -5168,7 +5191,7 @@ n
   NOTTY=1
   ANS=""
   cd "$FIX"
-  run_preview review wordsfix --words "$W_ARG"
+  run_preview review wordsfix --words "$W_ARG" --commits 1
   cd - >/dev/null
   assert_exit "$RC" 98 "--words reaches its own exec with no terminal"
   assert_contains "$OUT" "words-exec:/" "the exec runs from /"
@@ -5177,20 +5200,31 @@ n
   assert_missing "$OUT" "no tty for confirmation" "no terminal is not an error here"
   assert_missing "$OUT" "Enter run" "no pre-sudo gate"
   assert_contains "$OUT" "the sudo dialog is the confirmation" "the contract line names the dialog as the consent"
-  assert_shows_cmd "$OUT" "sudo -k -- $PREVIEW review $W_REAL --words $W_ARG" \
+  assert_shows_cmd "$OUT" "sudo -k -- $PREVIEW review $W_REAL --words $W_ARG --commits 1" \
     "the printed command is the one sudo runs, -k included"
   # Without --words nothing changed: off-tty still refuses.
   run_preview review "$REPO_W"
   assert_exit "$RC" 2 "a plain review off-tty still refuses"
   # Refusals cost no authentication.
-  run_preview review "$REPO_W" --words "$W1-$W2"
+  run_preview review "$REPO_W" --words "$W1-$W2" --commits 1
   assert_exit "$RC" 1 "malformed words refuse before sudo"
-  run_preview review "$REPO_W" --words "$W_ARG" --trust
+  run_preview review "$REPO_W" --words "$W_ARG" --trust --commits 1
   assert_exit "$RC" 1 "--words with --trust refuses before sudo"
   run_preview review "$REPO_W" --words
   assert_exit "$RC" 1 "--words with no value refuses before sudo"
-  mv "$W_SLOT" "$FIX/wordsfix-slot.aside2"
+  run_preview review "$REPO_W" --words "$W_ARG" --commits 2
+  assert_exit "$RC" 1 "a wrong count refuses before sudo"
+  assert_contains "$OUT" "holds 1 commit, not the 2 --commits states" "...in the root side's words"
   run_preview review "$REPO_W" --words "$W_ARG"
+  assert_exit "$RC" 1 "--words without --commits refuses before sudo"
+  run_preview review "$REPO_W" --commits 1
+  assert_exit "$RC" 1 "--commits without --words refuses before sudo"
+  run_preview review "$REPO_W" --words "$W_ARG" --commits 0
+  assert_exit "$RC" 1 "a zero count refuses before sudo"
+  run_preview review "$REPO_W" --words "$W_ARG" --commits
+  assert_exit "$RC" 1 "--commits with no value refuses before sudo"
+  mv "$W_SLOT" "$FIX/wordsfix-slot.aside2"
+  run_preview review "$REPO_W" --words "$W_ARG" --commits 1
   assert_exit "$RC" 1 "a first approval refuses --words before sudo"
   NOTTY=""
 
@@ -5201,12 +5235,12 @@ n
   assert_exit "$RC" 0 "words on a forward commit exits 0"
   assert_contains "$OUT" "commit:     $W_C1" "a short rev is shown as the full id"
   assert_contains "$OUT" "words:      $W1 $W2 $W3  $W4 $W5 $W6" "the six words, two groups of three"
-  assert_contains "$OUT" "approve:    pinned review $W_REAL --words $W_ARG" "the command that approves it"
+  assert_contains "$OUT" "approve:    pinned review $W_REAL --words $W_ARG --commits 1" "the command that approves it"
   assert_contains "$OUT" "--- commits since last approval ---" "the listing since the pin"
   assert_missing "$OUT" "git HEAD:" "no HEAD row while HEAD is this commit"
 
   run_pinned words "$REPO_W" w-v1
-  assert_contains "$OUT" "approve:    pinned review $W_REAL --tag w-v1 --words $W_ARG" \
+  assert_contains "$OUT" "approve:    pinned review $W_REAL --tag w-v1 --words $W_ARG --commits 1" \
     "a release tag gets --tag in the command"
 
   printf 'w2\n' > "$REPO_W/w.txt"
@@ -5217,7 +5251,7 @@ n
   assert_missing "$OUT" "approve:" "...and no command is offered"
   run_pinned words "$REPO_W" w-v1
   assert_missing "$OUT" "git HEAD:" "a tag is reviewed by --tag, so HEAD is not a warning"
-  assert_contains "$OUT" "--tag w-v1 --words $W_ARG" "...and its command stands"
+  assert_contains "$OUT" "--tag w-v1 --words $W_ARG --commits 1" "...and its command stands"
   bgit "$REPO_W" reset -q --hard "$W_C1"
 
   seed_rev "$REPO_W" "$W_C1"

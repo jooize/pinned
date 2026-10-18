@@ -51,11 +51,12 @@ the nix module; a manual install copies it onto `fish_complete_path` / `fpath`.
                                       message under its subject in the
                                       commits listing; the default is the
                                       subject only)
-    pinned review <repo> [--tag <tag>] --words <w1-w2-w3-w4-w5-w6>
+    pinned review <repo> [--tag <tag>] --words <w1-w2-w3-w4-w5-w6> --commits <n>
                                       approve a forward move without the
                                       diff when the commit's six words
-                                      match; no terminal, no y/N: the sudo
-                                      dialog shows the words and is the
+                                      match and <n> commits arrived since
+                                      the pin; no terminal, no y/N: the
+                                      sudo dialog shows both and is the
                                       consent (man pinned, "Approving by
                                       words")
     pinned review <repo> --signed-tag <tag> [--signed-tag <tag> ...] [--tag <tag>]
