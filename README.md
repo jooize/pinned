@@ -241,12 +241,13 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   being abandoned). Forward proceeds; the other two refuse unless the
   human declares them (`--backward`, `--diverged`), and a declaration
   reality contradicts refuses too, naming the class that actually holds
-  -- declared, never inferred. A declared move opens with a full-caps
-  alarm and shows its commits in the direction that makes them
-  readable: the reversed range for backward, and the merge base plus
-  both sides for diverged (an empty `pin..candidate` listing would say
-  nothing about what is being withdrawn, which is the one thing a
-  review may never do). The floor holds for signature evidence too: a
+  -- declared, never inferred. A declared move shows its commits in the
+  direction that makes them readable: the reversed range for backward,
+  and the merge base plus both sides for diverged (an empty
+  `pin..candidate` listing would say nothing about what is being
+  withdrawn, which is the one thing a review may never do). Its
+  full-caps alarm is a verdict, so it prints below the diff's closing
+  rule, directly above the question. The floor holds for signature evidence too: a
   signature says who vouched, never which way the pin is moving, so a
   replayed signed release of an older version is exactly what it
   catches. It governs ceremonies only -- `verify`, `status` and
@@ -618,13 +619,49 @@ one.
   emphasis.
 - **Color roles** are fixed: red = failure, green = success, yellow =
   attention, cyan = identifiers (paths, hashes, keys, tags), dim =
-  secondary detail, bold = structure and authority. Color is decoration
-  only: with a non-tty stdout (or `NO_COLOR` for the content highlighters
-  and diffs) every display degrades to byte-identical plain text.
+  secondary detail, bold = structure and authority, reverse red = a
+  hidden character shown escaped (and nothing else). Color is
+  decoration only: with a non-tty stdout (or `NO_COLOR` for the content
+  highlighters, diffs and escapes) every display degrades to plain
+  text, and no fact rides on color alone.
+- **Third-party text shows the characters that are there.** Commit
+  subjects and bodies, diffs and the paths in them, file content, JSON
+  key names, repo and file names: every character that draws nothing,
+  draws as something else or reorders what follows it (the control
+  characters, bidi controls, zero-width and invisible spaces, variation
+  selectors, tag characters) prints as an escape -- `\uXXXX`,
+  `\UXXXXXXXX` above the BMP, and `\xHH` for each byte that is not valid
+  UTF-8 -- never raw and never dropped. Tab and CR escape, LF is the line
+  break, a plain space is itself. A literal backslash that would read as
+  an escape (before `u`, `U` or `x` and a hex digit) is escaped too, so
+  an escape on screen can only be one. One escaper, run on the raw bytes
+  before any color, so no byte of the content can act on the terminal; if
+  it fails, the review stops and nothing raw is shown in its place. The
+  records keep their bytes. The full list is in `man pinned`, "Third-party
+  text".
+- **Verdicts come last.** pinned never wraps third-party text, and a line
+  the terminal soft-wraps restarts at column 0, where it could pose as a
+  row. So every listing and displayed body closes with a rule
+  (`--- end of listing: 3 commits ---`, `--- end of diff: ... ---`,
+  `--- end of file: ... ---`), and pinned's judgments -- the backward or
+  diverged alarm, signature verdicts, notes on a slot's state -- print
+  below the last rule, directly above the question.
+- **A value whose length pinned does not choose ends its line.** A
+  subject, path or name comes last on its row, section markers included
+  (`--- exactly the bytes being approved: <path>`); nothing is padded to
+  its width and pinned reads no terminal width.
+- **`pinned list` rows** read state first, padded to the longest state in
+  the section, then a repo's short hash and declared release, and the
+  name last:
+
+      ✓ current                 d526136  claude-code-hardening
+      ∂ 2 commits past the pin  f565991  pinned
+
+  The text view promises no format; programs read `list --format json`.
 - **Content highlighters** are routed by suffix alone (`.json`, `.bash`
-  and `.sh`, `.md`) and insert escapes only between the original bytes;
-  anything else, and any content awk could not carry through unchanged
-  (no trailing newline, a NUL, malformed JSON), is shown raw.
+  and `.sh`, `.md`) and insert escapes only between the bytes of the
+  escaped text they are handed; anything else, and malformed JSON, shows
+  with only its escapes styled.
 - **Diffs** are colored by pinned, never by git, so every diff a review
   shows reads the same way. When a run of removed lines is followed
   directly by as many added lines, each pair gets a darker background on
