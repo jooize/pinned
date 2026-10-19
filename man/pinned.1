@@ -966,14 +966,25 @@ section grouped under their folders, then the counts of each state and,
 when a repo's HEAD has moved past its pin, the
 .B pinned review
 line that approves it.
-Every row reads in the order it is scanned: the live state first, padded
-to the longest state in its section, then (for a repo) the short pinned
-hash, and the name last, never padded:
+Every row reads in the order it is scanned: the live state first, as one
+word padded to the widest word in its section, then (for a repo) the short
+pinned hash, and the name last, never padded.
+A state that says more than its word says it on a dim line of its own
+under the row, starting where the row's second field starts:
 .RS
 .IP
 .EX
-  \[u2713] current                 d526136  claude\-code\-hardening
-  \[u2202] 2 commits past the pin  f565991  pinned
+repos  2
+  \[u2713] current  d221ac6  locked
+  \[u2202] changed  d526136  claude\-code\-hardening
+             2 commits past the pin
+
+files  2 in 2 folders
+  ~/Projects/claude\-code\-hardening
+    \[u2713] current  .claude\-lane
+  ~/.config/agents/claude/settings
+    \[u2717] broken   settings.json
+               owner or mode not trusted
 .EE
 .RE
 .IP
@@ -985,18 +996,19 @@ Paths and names show their hidden characters escaped (see
 Live state is
 .B \[u2713] current
 when the file or HEAD matches the record;
-.B \[u2202]
+.B \[u2202] changed
 for a file changed since approval (or only in its ignored keys), a repo
 some commits past its pin, behind it, diverged from it, or a pin missing
 from the checkout;
 .B \[u2205] gone
 for a path that no longer exists; and
-.B \[u2717]
+.B \[u2717] broken
 for a slot or record that cannot be read, a path this process cannot
 stat (\(lqcannot read\(rq: a sandbox can hide a file that exists), or a
 file whose owner or mode
 .B verify
 refuses.
+These are the counts line's words; the reason line says which case it is.
 A file's state is
 .BR verify 's
 own verdict, so the listing never disagrees with a gate; it is display,

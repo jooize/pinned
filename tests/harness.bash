@@ -168,6 +168,11 @@ assert_before() { # file first-needle second-needle label -- ORDER on the page
     fail "$4" "line of '$2' = ${a:-none}, of '$3' = ${b:-none}"
   fi
 }
+# The line directly under the first line that is exactly $2: a list row's
+# reason line belongs under that row and no other.
+next_line() { # file exact-line
+  ROW="$2" awk 'f { print; exit } $0 == ENVIRON["ROW"] { f = 1 }' "$1"
+}
 assert_file() { # path label
   if [ -f "$1" ]; then ok "$2"; else fail "$2" "no such file: $1"; fi
 }
@@ -610,7 +615,9 @@ if [ "$(id -u)" -ne 0 ]; then
   run_pinned verify "$SUB/v/hidden/risen.txt"
   assert_exit "$RC" 1 "an unstattable tombstoned path -> 1, not a pass"
   run_pinned list --under "$SUB/v/hidden"
-  assert_contains "$OUT" "✗ cannot read" "list reads an unstattable file as cannot read"
+  assert_contains "$OUT" "    ✗ broken  pin.txt" "list reads an unstattable file as broken, padded to that word alone"
+  assert_eq "$(next_line "$OUT" "    ✗ broken  pin.txt")" "              cannot read" \
+    "and says why on the line under it: cannot read"
   assert_missing "$OUT" "∅ gone" "and never as gone"
   run_pinned tombstone "$SUB/v/hidden/pin.txt"
   assert_exit "$RC" 1 "tombstone refuses a path it cannot stat"
@@ -1361,6 +1368,7 @@ assert_contains "$OUT" "files  4 in 1 folder" "the files section counts its pins
 assert_eq "$(grep -cxF "  $SUB/l" "$OUT" || true)" 1 "the folder heads its files on a line of its own"
 assert_contains "$OUT" "    ✓ current  sub/plain.txt" "a file row reads its state first, then its name relative to its folder"
 assert_eq "$(grep -c ' $' "$OUT" || true)" 0 "no row ends in padding: the name is last and never padded"
+assert_eq "$(grep -cE '^ {5,}[^ ]' "$OUT" || true)" 0 "a current row gets no reason line"
 assert_contains "$OUT" "4 current" "the counts line tallies the live states"
 assert_missing  "$OUT" "sha256:" "the default view leaves digests to status and json"
 assert_missing  "$OUT" "never-again.txt" "the default view omits tombstoned slots"
@@ -1370,20 +1378,27 @@ assert_missing  "$OUT" "repos  " "a tier with no repo pins prints no repos secti
 printf 'listed one, edited\n' > "$SUB/l/sub/plain.txt"
 mv "$SUB/l/subx/nearmiss.txt" "$SUB/l/subx/nearmiss.moved"
 run_pinned list --under "$SUB/l"
-assert_contains "$OUT" "∂ changed since approval" "an edited file reads as changed"
+assert_contains "$OUT" "    ∂ changed  sub/plain.txt" "an edited file reads as changed"
 assert_contains "$OUT" "∅ gone" "a removed file reads as gone"
 assert_contains "$OUT" "2 current · 1 changed · 1 gone" "and the counts line names each state once"
-# The state column is as wide as the longest state the section shows, so
-# every name starts in one column, whatever its row's state.
-assert_contains "$OUT" "    ∂ changed since approval  sub/plain.txt" "the longest state sets the column"
-assert_contains "$OUT" "    ∅ gone                    subx/nearmiss.txt" "a shorter state is padded to it"
+# The state column holds the counts line's word for the state, as wide as
+# the widest word the section shows, so every name starts in one column. A
+# state that says more than its word says it on a dim line under its row,
+# starting where the name does.
+assert_eq "$(next_line "$OUT" "    ∂ changed  sub/plain.txt")" "               changed since approval" \
+  "a changed row says why on the line under it, starting where the name does"
+assert_contains "$OUT" "    ∅ gone     subx/nearmiss.txt" "a shorter word is padded to the widest one shown"
+assert_eq "$(grep -cE '^ {5,}[^ ]' "$OUT" || true)" 1 "a state its word says in full (current, gone) gets no reason line"
+assert_eq "$(grep -c ' $' "$OUT" || true)" 0 "no line ends in spaces, a reason line included"
 L_COLS="$(LC_ALL=C awk '/^    (\342\234\223|\342\210\202|\342\210\205|\342\234\227) / {
-  t = $0; gsub(/[\200-\277]/, "", t); match(t, /^    . [^ ]+( [^ ]+)* +/); print RLENGTH }' "$OUT" | sort -u)"
-assert_eq "$L_COLS" "30" "every file name starts in the same column"
+  t = $0; gsub(/[\200-\277]/, "", t); match(t, /^    . [a-z]+ +/); print RLENGTH }' "$OUT" | sort -u)"
+assert_eq "$L_COLS" "15" "every file name starts in the same column, past the widest word"
 run_pinned list --stale --under "$SUB/l"
 assert_contains "$OUT" "plain.txt" "--stale keeps the changed file"
 assert_contains "$OUT" "nearmiss.txt" "and the gone one"
 assert_missing  "$OUT" "x.json" "and drops what is current"
+run_pinned list --stale --under "$SUB/l/subx"
+assert_contains "$OUT" "    ∅ gone  nearmiss.txt" "a section of gone rows is as wide as gone, the widest word it shows"
 printf 'listed one\n' > "$SUB/l/sub/plain.txt"
 mv "$SUB/l/subx/nearmiss.moved" "$SUB/l/subx/nearmiss.txt"
 run_pinned list --stale --under "$SUB/l"
@@ -1588,11 +1603,14 @@ y
   run_pinned list --repos
   assert_contains "$OUT" "repos  " "the default view heads a repos section"
   assert_contains "$OUT" "${REPO_FIX##*/}" "and names the repo by its folder"
-  assert_contains "$OUT" "∂ 1 commit past the pin" "with the live state"
-  # THE ROW GRAMMAR: the state first, padded to the longest state in the
-  # section, then the short hash, and the name LAST, never padded.
-  assert_eq "$(grep -cE "^  ∂ 1 commit past the pin  [0-9a-f]{7}  ${REPO_FIX##*/}\$" "$OUT" || true)" 1 \
+  # THE ROW GRAMMAR: the state's word first, padded to the widest word in
+  # the section, then the short hash, and the name LAST, never padded. What
+  # the word leaves out goes on the line under the row, where the hash starts.
+  assert_eq "$(grep -cE "^  ∂ changed  [0-9a-f]{7}  ${REPO_FIX##*/}\$" "$OUT" || true)" 1 \
     "a repo row reads state, short hash, then the name, last"
+  assert_eq "$(next_line "$OUT" "$(grep -m1 -E "^  ∂ changed  [0-9a-f]{7}  ${REPO_FIX##*/}\$" "$OUT")")" \
+    "             1 commit past the pin" "and the commits past the pin under it, where the hash starts"
+  assert_eq "$(grep -c ' $' "$OUT" || true)" 0 "no repo row or reason line ends in spaces"
   assert_contains "$OUT" "Review the repos past their pin:" "a repo past its pin gets the review line"
   assert_contains "$OUT" "pinned review $REPO_FIX" "naming the command that approves it"
   assert_missing  "$OUT" "plain.txt" "--repos leaves out the file pins"
@@ -1617,7 +1635,8 @@ seed_rev "$SUB/corruptrev.conf" "nothex"
 ANS=""
 run_pinned list
 assert_exit "$RC" 0 "list survives a corrupt rev slot"
-assert_contains "$OUT" "✗ corrupt record" "list flags a corrupt rev slot instead of printing a digest"
+assert_eq "$(grep -A1 -E '^ +✗ broken +.*corruptrev\.conf$' "$OUT" | tail -n1 | sed 's/^ *//')" "corrupt record" \
+  "list flags a corrupt rev slot as broken, the reason under its row, instead of printing a digest"
 assert_contains "$OUT" "broken" "and counts it as broken"
 if command -v jq >/dev/null 2>&1; then
   run_pinned_split list --format json

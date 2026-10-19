@@ -7579,16 +7579,35 @@ list_mark() { # class  message
   esac
 }
 
-# A live state padded to the width of the longest message in its section
-# ($3), so whatever follows starts in one column. The padding is counted on
-# the bare message, outside the color, with the glyph as one column: true of
-# the check, cross and empty-set glyphs everywhere and of the partial glyph
-# in Ghostty; where that one draws two columns (East Asian
-# widths), its row's later fields sit one column right, and nothing is cut.
-list_mark_pad() { # class  message  width
+# A live state padded to the width of the widest word in its section ($3),
+# so whatever follows starts in one column. The padding is counted on the
+# bare word, outside the color, with the glyph as one column: true of the
+# check, cross and empty-set glyphs everywhere and of the partial glyph in
+# Ghostty; where that one draws two columns (East Asian widths), its row's
+# later fields sit one column right of its reason line, and nothing is cut.
+list_mark_pad() { # class  word  width
   local n=$(( $3 - ${#2} ))
   list_mark "$1" "$2"
   [ "$n" -le 0 ] || printf '%*s' "$n" ''
+}
+
+# The word a row shows for a live state's class, into the variable $1: the
+# counts line's own vocabulary, so a row and the tally below it agree.
+list_word() { # var  class
+  case "$2" in
+    ok)   printf -v "$1" '%s' current ;;
+    part) printf -v "$1" '%s' changed ;;
+    gone) printf -v "$1" '%s' gone ;;
+    *)    printf -v "$1" '%s' broken ;;
+  esac
+}
+
+# A row's reason, dim on a line of its own directly under it, starting in
+# the column of the row's second field ($3): only when the state says more
+# than its word, so a current or gone row stays one line.
+list_reason() { # message  word  column
+  [ "$1" != "$2" ] || return 0
+  printf '%*s%s%s%s\n' "$3" '' "$C_DIM" "$1" "$C_OFF"
 }
 
 # Pad by characters, not bytes: printf's %-Ns counts bytes, so a name with
@@ -7626,17 +7645,20 @@ list_order() { # count  array-name
 
 # The default view, from the arrays list_walk filled: repos, files grouped
 # under their folders, counts, and the review line. Each row reads in the
-# order a reader scans it -- the live state first, padded to the longest
-# state the section shows (the states are a fixed set of phrases, the
-# commit count in "N commits past the pin" aside), then a repo's short hash
-# and declared release, and the name LAST, never padded: a name is as long
-# as whoever chose it made it, so it ends its row and soft-wraps there
-# rather than pushing a column out.
+# order a reader scans it -- the live state first, as the counts line's word
+# for it (current, changed, gone, broken) padded to the widest word the
+# section shows, then a repo's short hash, and the name LAST, never padded:
+# a name is as long as whoever chose it made it, so it ends its row and
+# soft-wraps there rather than pushing a column out. A state that says more
+# than its word ("2 commits past the pin", "owner or mode not trusted") says
+# it on a reason line under its row, so one long state widens no column.
 #
-#   <check> current                 d526136  claude-code-hardening
-#   <part>  2 commits past the pin  f565991  pinned
+#   <check> current  d221ac6  locked
+#   <part>  changed  d526136  claude-code-hardening
+#                    2 commits past the pin
 list_short() {
-  local i j n vw b name top rel dirs tops k nm
+  local i j n vw b name top rel dirs tops k nm w
+  local -a rw=() fw=()
   local n_ok=0 n_part=0 n_gone=0 n_bad=0 past="" sep="" word
   local -a names=() tdirs=() ro=() fo=()
   while IFS= read -r i; do ro[${#ro[@]}]="$i"; done < <(list_order "$RP_N" RP_DISP)
@@ -7661,14 +7683,16 @@ list_short() {
         fi
       done
       names[$i]="$b"
-      [ "${#RP_MSG[$i]}" -le "$vw" ] || vw="${#RP_MSG[$i]}"
+      list_word w "${RP_CLASS[$i]}"; rw[$i]="$w"
+      [ "${#w}" -le "$vw" ] || vw="${#w}"
     done
     printf '%srepos%s  %s%d%s\n' "$C_B" "$C_OFF" "$C_DIM" "$RP_N" "$C_OFF"
     for i in "${ro[@]}"; do
       untrusted_var nm "${names[$i]}" "$C_CYN"
-      printf '  %s  %s%s%s  ' "$(list_mark_pad "${RP_CLASS[$i]}" "${RP_MSG[$i]}" "$vw")" \
+      printf '  %s  %s%s%s  ' "$(list_mark_pad "${RP_CLASS[$i]}" "${rw[$i]}" "$vw")" \
         "$C_DIM" "$(list_pad "${RP_HASH[$i]:0:7}" 7)" "$C_OFF"
       printf '%s%s%s\n' "$C_CYN" "$nm" "$C_OFF"
+      list_reason "${RP_MSG[$i]}" "${rw[$i]}" $(( vw + 6 ))
       if [ "${RP_PAST[$i]}" -ne 0 ]; then
         list_cmd_word word "${RP_PATH[$i]}"
         past="$past $word"
@@ -7699,7 +7723,8 @@ list_short() {
       "${#tdirs[@]}" "$(plural_s "${#tdirs[@]}")" "$C_OFF"
     vw=0
     for (( i = 0; i < FP_N; i++ )); do
-      [ "${#FP_MSG[$i]}" -le "$vw" ] || vw="${#FP_MSG[$i]}"
+      list_word w "${FP_CLASS[$i]}"; fw[$i]="$w"
+      [ "${#w}" -le "$vw" ] || vw="${#w}"
     done
     for top in "${tdirs[@]}"; do
       untrusted_var nm "$top" "$C_B$C_CYN"
@@ -7708,7 +7733,8 @@ list_short() {
         case "${FP_DISP[$i]}" in "$top"/*) ;; *) continue ;; esac
         rel="${FP_DISP[$i]#"$top"/}"
         untrusted_var nm "$rel"
-        printf '    %s  %s\n' "$(list_mark_pad "${FP_CLASS[$i]}" "${FP_MSG[$i]}" "$vw")" "$nm"
+        printf '    %s  %s\n' "$(list_mark_pad "${FP_CLASS[$i]}" "${fw[$i]}" "$vw")" "$nm"
+        list_reason "${FP_MSG[$i]}" "${fw[$i]}" $(( vw + 8 ))
       done
     done
     sep=1

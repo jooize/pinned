@@ -651,12 +651,15 @@ one.
   subject, path or name comes last on its row, section markers included
   (`--- exactly the bytes being approved: <path>`); nothing is padded to
   its width and pinned reads no terminal width.
-- **`pinned list` rows** read state first, padded to the longest state in
-  the section, then a repo's short hash and declared release, and the
-  name last:
+- **`pinned list` rows** read state first, as one word (`current`,
+  `changed`, `gone`, `broken`) padded to the widest word in the section,
+  then a repo's short hash, and the name last. A state that says more
+  than its word says it on a dim line under its row, so one long reason
+  widens no column:
 
-      ✓ current                 d526136  claude-code-hardening
-      ∂ 2 commits past the pin  f565991  pinned
+      ✓ current  d221ac6  locked
+      ∂ changed  d526136  claude-code-hardening
+                 2 commits past the pin
 
   The text view promises no format; programs read `list --format json`.
 - **Content highlighters** are routed by suffix alone (`.json`, `.bash`
