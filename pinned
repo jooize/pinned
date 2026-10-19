@@ -1949,18 +1949,24 @@ print_repo_row() { # <label-SGR>
 # A GATE OR A QUESTION HOLDS NO VALUE whose length this script does not
 # choose: a repo's name would push the keys off the line and soft-wrap the
 # decision, and the reader would have to find what is being decided inside
-# the sentence that asks. So the question names its object with a noun
-# (`approve this commit?`, `review the diff;`), and every value it decides
-# about stands on a labeled row directly above it. The rows repeat what the
-# listing and the diff have scrolled away; a verdict (the lattice's alarm,
-# the signature rows) sits between them and the question.
+# the sentence that asks. So the question names its object with a noun that
+# matches a row's label (`approve this candidate?` under `candidate:`,
+# `review this range;` under `range:`), and every value it decides about
+# stands on a labeled row above it. A question block reads top to bottom:
+# the content and its closing rule, the program's advice, the rows, the
+# alarm or verdict and any consequence line, the question.
 #
-# print_commit_rows: the `repo:` row and the commit the question approves.
+# The rows repeat a value only when a listing, a diff or a pager stands
+# between its first mention and the question -- what has scrolled away.
+# Rows already on screen just above (the identity block of a first
+# approval, say) are not printed again.
+#
+# print_candidate_rows: the `repo:` row and the commit the question approves.
 # print_range_rows: the `repo:` row and the range a gate opens, with its
 # size ($3, already spelled; it may color its own parts).
-print_commit_rows() { # <rev>
+print_candidate_rows() { # <rev>
   print_repo_row "$C_DIM"
-  printf '%scommit:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$1" "$C_OFF"
+  printf '%scandidate:%s  %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$1" "$C_OFF"
 }
 print_range_rows() { # <from rev> <to rev> <size>
   print_repo_row "$C_DIM"
@@ -5069,18 +5075,24 @@ do_approve() {
       # THE VERDICTS, below the listing's closing rule and directly above
       # the question, under the rows it decides about: the lattice's alarm,
       # then each signature with git's own words under it, then the
-      # agreement. Nothing third-party follows.
-      echo
-      print_commit_rows "$hash"
+      # agreement. Nothing third-party follows. The rows repeat only over
+      # a listing; a first approval's identity block is still on screen,
+      # its `candidate:` row the one the question names.
+      if [ -n "$old_hash" ]; then
+        echo
+        print_candidate_rows "$hash"
+      fi
       ancestry_verdict "$old_hash" "$hash"
       local vi=0
       for t in "${tag_args[@]}"; do
         untrusted_var t_disp "$t"
         printf '%s✓ signature verified:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$t_disp"
+        # git's words are a sentence about the verdict: a dim line under it,
+        # in its value column.
         while IFS= read -r vt_line; do
           [ -n "$vt_line" ] || continue
           untrusted_var vt_disp "$vt_line" "$C_DIM"
-          printf '            %s%s%s\n' "$C_DIM" "$vt_disp" "$C_OFF"
+          printf '                      %s%s%s\n' "$C_DIM" "$vt_disp" "$C_OFF"
         done <<<"${vt_said[$vi]}"
         vi=$((vi + 1))
       done
@@ -5176,10 +5188,11 @@ do_approve() {
             log_action approve "$repo" "$hash" words-mismatch
             exit 1
           fi
-          print_words_row "$want"
           # The count the dialog showed beside the words, against the range
           # this ceremony just listed. The words bind the commit; the count
           # binds how much of the history behind it the approval covers.
+          # Both are checked before either row prints: rows are the record
+          # of an action that goes ahead, and a refusal prints none.
           local n_since
           n_since="$(sgit rev-list --count "${old_hash}..${hash}")"
           if [ "$n_since" != "$commits_arg" ]; then
@@ -5188,6 +5201,10 @@ do_approve() {
             log_action approve "$repo" "$hash" commits-mismatch
             exit 1
           fi
+          # The rows the y/N would have stood under, as the record of what
+          # the words on the command line answered.
+          print_candidate_rows "$hash"
+          print_words_row "$want"
           printf '%scommits:%s    %s since the pin\n' "$C_DIM" "$C_OFF" "$n_since"
           by_words=1
         else
@@ -5225,7 +5242,7 @@ do_approve() {
             gate_size="$n_range commit$(plural_s "$n_range")"
           fi
           print_range_rows "$old_hash" "$hash" "$gate_size"
-          printf -v gate_line '%sreview the diff;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
+          printf -v gate_line '%sreview this range;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
             "$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
             "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
           if ! gate_answer "$gate_line"; then
@@ -5234,7 +5251,8 @@ do_approve() {
             if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
             exit 2
           fi
-          printf '%s--- diff %.10s..%.10s (from object store) ---%s\n' "$C_B" "$old_hash" "$hash" "$C_OFF"
+          # The section rule holds no value: the range is on its row above.
+          printf '%s--- diff (from object store) ---%s\n' "$C_B" "$C_OFF"
           # Capture first so a git failure aborts (set -e) BEFORE anything is
           # shown as reviewable; then page. Early pager quit (SIGPIPE) is the
           # reviewer's own act -- the diff itself already succeeded.
@@ -5244,23 +5262,22 @@ do_approve() {
           # The rows the question decides about, then the lattice's alarm
           # (nothing for a forward move), directly above the question.
           echo
-          print_commit_rows "$hash"
+          print_candidate_rows "$hash"
           ancestry_verdict "$old_hash" "$hash"
         fi
       elif [ "$trust" -eq 1 ]; then
+        # The identity block above is the question's rows (nothing stands
+        # between them), so the alarm follows it flush.
         printf '%spinned:%s     (none)\n' "$C_DIM" "$C_OFF"
-        echo
-        print_commit_rows "$hash"
         printf '%s!!! FIRST APPROVAL WITH --trust !!!%s\n' "$C_RED$C_B" "$C_OFF"
         printf '%s!!! The full tree at %s is being approved without review. !!!%s\n' "$C_RED$C_B" "$hash" "$C_OFF"
         printf '%s!!! Everything already in this repo becomes trusted as-is. !!!%s\n' "$C_RED$C_B" "$C_OFF"
       else
         printf '%spinned:%s     (none -- first approval: full tree review)\n' "$C_DIM" "$C_OFF"
-        echo
         # Same gate as the whole-delta pager (skip included); no range
-        # exists yet.
+        # exists yet. It stands directly under the identity block, which
+        # holds what it decides about.
         local gate_line
-        print_commit_rows "$hash"
         printf -v gate_line '%sreview the full tree;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
           "$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
           "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
@@ -5270,7 +5287,7 @@ do_approve() {
           if [ "$multi" -eq 1 ]; then n_declined=$((n_declined + 1)); continue; fi
           exit 2
         fi
-        printf '%s--- full tree at %.10s (diff from empty) ---%s\n' "$C_B" "$hash" "$C_OFF"
+        printf '%s--- full tree (diff from empty) ---%s\n' "$C_B" "$C_OFF"
         # 4b825d... is git's well-known empty tree; this shows every approved byte.
         local totals
         diff_out="$(sgit_diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
@@ -5278,7 +5295,7 @@ do_approve() {
         untrusted_page color_diff <<<"$diff_out"
         print_end_rule diff "$totals"
         echo
-        print_commit_rows "$hash"
+        print_candidate_rows "$hash"
       fi
     fi
     # Approved by words: the words and the count on the command line were
@@ -5288,7 +5305,7 @@ do_approve() {
     # decides about, and on its verdicts.
     if [ "${by_words:-0}" -eq 0 ]; then
       local answer
-      printf '%sapprove this commit? [%sy%s/%sN%s]%s ' "$C_B" \
+      printf '%sapprove this candidate? [%sy%s/%sN%s]%s ' "$C_B" \
         "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
       drain_tty
       read -r answer </dev/tty
@@ -5430,7 +5447,7 @@ EOF
     # commits advance linearly, so there is no "skip this one and review
     # the next" -- the pin can never move past an unreviewed commit.
     print_range_rows "$prev" "$c" "1 commit"
-    printf -v gate_line '%sreview the diff;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
+    printf -v gate_line '%sreview this range;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
       "$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
       "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
     if ! gate_answer "$gate_line"; then
@@ -5446,8 +5463,8 @@ EOF
     untrusted_page color_diff <<<"$diff_out"
     print_end_rule diff "$totals"
     echo
-    print_commit_rows "$c"
-    printf '%sapprove this commit? [%sy%s/%sN%s]%s ' "$C_B" \
+    print_candidate_rows "$c"
+    printf '%sapprove this candidate? [%sy%s/%sN%s]%s ' "$C_B" \
       "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     drain_tty
     read -r answer </dev/tty
@@ -6162,7 +6179,7 @@ do_tombstone() {
       exit 0 ;;
   esac
   # The path last, directly above the consequence and the question: it is
-  # the value the question decides about (see print_commit_rows).
+  # the value the question decides about (see print_candidate_rows).
   printf '%sslot:%s       %s\n' "$C_B" "$C_OFF" "$(show_slot "$slot")"
   printf '%sstate:%s      %s %s(the path is gone)%s\n' "$C_B" "$C_OFF" "$slot_state" "$C_DIM" "$C_OFF"
   printf '%spath:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$path_disp" "$C_OFF"
@@ -6455,7 +6472,7 @@ do_rekey() {
   printf 'so anything reappearing there refuses until it is approved on its own.%s\n' "$C_OFF"
   echo
   # The two paths again, directly above the question that decides them
-  # (see print_commit_rows): the paragraph above has pushed the first rows up.
+  # (see print_candidate_rows): the paragraph above has pushed the first rows up.
   printf '%sfrom:%s       %s\n' "$C_B" "$C_OFF" "$old_disp"
   printf '%sto:%s         %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$new_disp" "$C_OFF"
   if [ "$yes" -eq 0 ]; then
@@ -8280,7 +8297,8 @@ do_show_repo() {
   # changes cannot alter a byte of it and saying otherwise would be noise.
 
   echo
-  printf '%s--- full tree at %.10s (from object store) ---%s\n' "$C_B" "$hash" "$C_OFF"
+  # The section rule holds no value: the rev is on the pinned: row above.
+  printf '%s--- full tree (from object store) ---%s\n' "$C_B" "$C_OFF"
   # 4b825d... is git's well-known empty tree: the diff from it is every byte
   # the pin names, exactly what a first approval displays. Capture first so a
   # git failure aborts (set -e) BEFORE anything is shown as reviewable; then
@@ -8695,7 +8713,7 @@ do_ignorable() {
   fi
 
   # The key and the scope are the caller's own bytes: escaped, each on a
-  # row it ends (see print_commit_rows).
+  # row it ends (see print_candidate_rows).
   local key_disp json_disp scope_row
   untrusted_var key_disp "$key" "$C_CYN"
   untrusted_var json_disp "$path_json" "$C_DIM"

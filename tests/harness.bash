@@ -1597,7 +1597,16 @@ y
 '
   run_pinned review "$REPO_FIX"
   assert_exit "$RC" 0 "first-ever repo approval succeeds (no slot dir pre-created)"
-  assert_contains "$OUT" "full tree at" "first approval shows the full tree"
+  assert_contains "$OUT" "--- full tree (diff from empty) ---" "first approval shows the full tree"
+  # ROWS DO NOT REPEAT WITHOUT A BODY BETWEEN: the gate stands directly
+  # under the identity block, which already holds the repo and the commit.
+  assert_eq "$(lines_before "$OUT" "review the full tree;" 3)" \
+    "repo:       $REPO_FIX|git HEAD:   $HEAD_HASH  fixture commit|pinned:     (none -- first approval: full tree review)|" \
+    "the full-tree gate stands under the identity block, no row repeated"
+  assert_eq "$(grep -c "^repo:" "$OUT")" 2 "the repo row repeats once, over the diff only"
+  assert_eq "$(lines_before "$OUT" "approve this candidate?" 2)" \
+    "repo:       $REPO_FIX|candidate:  $HEAD_HASH|" \
+    "after the diff the question stands under the repo and the candidate"
   assert_contains "$OUT" "--- end of diff: 1 file +1 -0 ---" \
     "the full-tree review leaves a closing rule with its totals"
   assert_contains "$OUT" "rev.git" "ceremony names the record it wrote"
@@ -1695,6 +1704,23 @@ if [ "$GIT_OK" -eq 1 ]; then
   bgit "$REPO_A" init -q; printf 'a1\n' > "$REPO_A/f"; bgit "$REPO_A" add f; bgit "$REPO_A" commit -q -m a1
   bgit "$REPO_B" init -q; printf 'b1\n' > "$REPO_B/f"; bgit "$REPO_B" add f; bgit "$REPO_B" commit -q -m b1
   A_SLOT="$(slot_of "$REPO_A")"; B_SLOT="$(slot_of "$REPO_B")"
+
+  # A first approval under --trust: nothing stands between the identity
+  # block and the question, so no row repeats, and the alarm prints flush
+  # inside the question block.
+  REPO_T="$FIX/trust-first"
+  mkdir -p "$REPO_T"
+  bgit "$REPO_T" init -q; printf 't1\n' > "$REPO_T/f"; bgit "$REPO_T" add f; bgit "$REPO_T" commit -q -m t1
+  T_HASH="$(bgit "$REPO_T" rev-parse 'HEAD^{commit}')"
+  ANS='y
+'
+  run_pinned review "$REPO_T" --trust
+  assert_exit "$RC" 0 "a first approval with --trust records"
+  assert_eq "$(rev_in "$(slot_of "$REPO_T")/rev.git")" "$T_HASH" "and pins the candidate"
+  assert_eq "$(grep -c "^repo:" "$OUT")" 1 "the repo row is not repeated with nothing between"
+  assert_eq "$(lines_before "$OUT" "approve this candidate?" 4 | cut -d'|' -f1-2)" \
+    "pinned:     (none)|!!! FIRST APPROVAL WITH --trust !!!" \
+    "the alarm follows the identity block flush, directly above the question"
 
   # Two first-ever approvals in ONE invocation: sequential ceremonies, two
   # answers on one stdin, one summary line.
@@ -2266,14 +2292,15 @@ y
   assert_missing "$OUT" "!!!" "a forward move raises no alarm"
   assert_contains "$OUT" "range:      ${G_BASE:0:10}..${G_C2:0:10} (2 commits)" \
     "a forward gate sizes the delta in commits, on its range row"
-  assert_eq "$(lines_before "$OUT" "review the diff;" 2)" \
+  assert_eq "$(lines_before "$OUT" "review this range;" 2)" \
     "repo:       $REPO_G|range:      ${G_BASE:0:10}..${G_C2:0:10} (2 commits)|" \
     "the gate stands under the repo: and range: rows"
-  assert_contains "$OUT" "review the diff; Enter open · n skip" "and holds no name of its own"
-  assert_eq "$(lines_before "$OUT" "approve this commit?" 2)" \
-    "repo:       $REPO_G|commit:     $G_C2|" \
-    "the question stands under the repo and the commit it approves"
-  assert_contains "$OUT" "approve this commit? [y/N]" "and names its object with a noun"
+  assert_contains "$OUT" "review this range; Enter open · n skip" "and names its object by the row's label"
+  assert_contains "$OUT" "--- diff (from object store) ---" "the section rule holds no value"
+  assert_eq "$(lines_before "$OUT" "approve this candidate?" 2)" \
+    "repo:       $REPO_G|candidate:  $G_C2|" \
+    "the question stands under the repo and the candidate it approves"
+  assert_contains "$OUT" "approve this candidate? [y/N]" "and names its object by the row's label"
   assert_missing "$OUT" "${REPO_G##*/}? [y/N]" "no name sits in the question"
   assert_contains "$OUT" "repo:       $REPO_G" "the repo row is the path alone, the name last"
   assert_contains "$OUT" "--- end of diff: 2 files +2 -0 ---" "the paged diff leaves a closing rule with its totals"
@@ -2330,10 +2357,11 @@ y
   assert_before "$OUT" "g2 second" "--- end of listing: 1 commit ---" "the listing closes with its rule"
   assert_before "$OUT" "--- end of diff: " "!!! BACKWARD:" "the backward alarm prints below the diff's closing rule"
   assert_before "$OUT" "!!! BACKWARD:" "approve " "and above the question"
-  assert_eq "$(lines_before "$OUT" "approve this commit?" 5 | cut -d'|' -f1-2)" \
-    "repo:       $REPO_G|commit:     $G_C1" \
+  assert_eq "$(lines_before "$OUT" "approve this candidate?" 5 | cut -d'|' -f1-2)" \
+    "repo:       $REPO_G|candidate:  $G_C1" \
     "the rows come first, then the alarm"
-  assert_before "$OUT" "commit:     $G_C1" "!!! BACKWARD:" "the alarm sits between the rows and the question"
+  assert_before "$OUT" "candidate:  $G_C1" "!!! BACKWARD:" "the alarm sits between the rows and the question"
+  assert_contains "$OUT" "!!! BACKWARD: ${G_C2:0:10} → ${G_C1:0:10}" "the alarm draws the move with an arrow"
   G_AL="$(grep -n -m1 '!!! BACKWARD:' "$OUT" | cut -d: -f1)"
   assert_eq "$(tail -n +"$G_AL" "$OUT" | grep -cE '^(--- |[0-9a-f]{7,}  )' || true)" 0 \
     "no listing row or section follows the alarm"
@@ -4022,7 +4050,7 @@ y
   run_pinned show "$REPO_R"
   assert_exit "$RC" 0 "show of a pinned repo exits 0"
   assert_contains "$OUT" "$R_PIN" "show prints the pinned hash"
-  assert_contains "$OUT" "full tree at" "show displays the pinned tree"
+  assert_contains "$OUT" "--- full tree (from object store) ---" "show displays the pinned tree"
   assert_contains "$OUT" "+alpha line" "the display carries the pinned content"
   assert_contains "$OUT" "live HEAD is at the pin" "HEAD == pin reads as such"
   assert_eq "$(slot_snapshot "$R_SLOT")" "$R_SNAP" "show writes nothing into the slot"
@@ -4081,7 +4109,7 @@ y
   else
     fail "unexpected refusal for a non-repo directory" "$(cat "$OUT")"
   fi
-  assert_missing "$OUT" "full tree at" "nothing is displayed for it"
+  assert_missing "$OUT" "--- full tree" "nothing is displayed for it"
 
   # A subdirectory of a real repo: a pin names the whole repo, so a slot
   # keyed on a subdir could only mislead (deploy matches inputs by root; a
@@ -5186,6 +5214,8 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_exit "$RC" 0 "the right six words approve"
   assert_eq "$(rev_in "$W_SLOT/rev.git")" "$W_C1" "the pin moved to the commit the words name"
   assert_contains "$OUT" "words:      $W1 $W2 $W3  $W4 $W5 $W6" "the matched words are shown in two groups of three"
+  assert_eq "$(lines_before "$OUT" "words:" 2)" "repo:       $REPO_W|candidate:  $W_C1|" \
+    "the rows a y/N would have stood under print as the record of the answer"
   assert_before "$OUT" "--- commits since last approval ---" "words:" "...after the commits they cover"
   assert_missing "$OUT" "--- diff " "no diff"
   assert_missing "$OUT" "[y/N]" "no y/N: the authentication was the answer"
@@ -5201,6 +5231,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_eq "$(rev_in "$W_SLOT/rev.git")" "$W_BASE" "...and leaves the pin"
   assert_contains "$OUT" "the range since the pin holds 1 commit, not the 2 --commits states; pin unchanged" \
     "...and states both numbers"
+  assert_missing "$OUT" "words:" "...and prints no rows: a refusal is no record"
   run_pinned review "$REPO_W" --words "$W_ARG"
   assert_exit "$RC" 1 "--words without --commits refuses"
   assert_contains "$OUT" "--words needs --commits N" "...and names the missing count"
