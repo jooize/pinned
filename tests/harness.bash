@@ -123,6 +123,10 @@ skip() { # label reason
 # Setup that cannot continue: the TAP bail-out, then a non-zero exit.
 bail() { local nl=$'\n'; printf 'Bail out! %s\n' "${1//"$nl"/ }"; exit 2; }
 
+# A literal backslash, octal-spelled, for the expected form of pinned's
+# escapes ("${BS}u001B"): no quoting layer can reinterpret it.
+BS="$(printf '\134')"
+
 assert_exit() { # got want label
   if [ "$1" = "$2" ]; then ok "$3"; else fail "$3" "exit $1, want $2"; fi
 }
@@ -234,7 +238,7 @@ need '-o root -g "\$TREE_GRP" '                             4 'slot-tree install
 need '^  chown -R "root:\$TREE_GRP"'                        1 'tree chown sweep'
 need 'chown "root:\$TREE_GRP"'                              5 'record chowns'
 need '^  logger -t pinned '                                 1 'audit-log call'
-need '</dev/tty'                                            19 'tty reads (13 confirms + the shared gate + 4 inside drain_tty + the listing width)'
+need '</dev/tty'                                            18 'tty reads (13 confirms + the shared gate + 4 inside drain_tty)'
 need '^ *read -r answer </dev/tty$'                         13 'ceremony tty reads'
 need '^    if ! read -r answer </dev/tty; then$'             1 'the shared gate tty read'
 need '^gate_answer() { # <rendered gate line>$' 1 'the shared gate helper'
@@ -844,6 +848,19 @@ y
 run_pinned review --file "$SUB/a/reinstated.txt"
 assert_exit "$RC" 0 "approving over a tombstone succeeds"
 assert_contains "$OUT" "approving reinstates this path" "ceremony warns it reinstates"
+# VERDICT POSITION, file ceremony: the note is the ceremony's judgment, so it
+# prints below the content's closing rule, directly above the question --
+# never above the file's own bytes.
+assert_before "$OUT" "reinstate me" "--- end of file: 1 line ---" "the content closes with its rule"
+assert_before "$OUT" "--- end of file: 1 line ---" "approving reinstates this path" "the note prints below the closing rule"
+assert_before "$OUT" "approving reinstates this path" "approve " "and above the question"
+# The section marker ends on the path: nothing follows a value whose length
+# pinned does not choose.
+# (The stub reads its answers from stdin, so the marker follows the gate
+# line it answered on; the line still ends where the path does.)
+assert_eq "$(grep -F -e "--- exactly the bytes being approved: $(ondisk_path "$SUB/a/reinstated.txt")" "$OUT" \
+  | grep -c 'approved: .*/reinstated\.txt$' || true)" 1 \
+  "the content marker ends on the path"
 assert_absent "$REIN_SLOT/tombstone" "tombstone is gone after reinstatement"
 assert_eq "$(count_state "$REIN_SLOT")" 1 "reinstated slot holds exactly one state file"
 
@@ -1015,6 +1032,8 @@ run_pinned review --baseline-store "$WSTORE" --file "$STORED"
 assert_exit "$RC" 0 "a forged store entry still records"
 assert_contains "$OUT" "does not re-hash to the approved record" "the note says the witness failed"
 assert_contains "$OUT" "full content 5 lines; Enter open" "and the whole file is what opens"
+assert_before "$OUT" "--- end of file: 5 lines ---" "does not re-hash to the approved record" \
+  "the witness note prints below the content, above the question"
 # (e) outside the --file ceremony the flag is refused, like --store.
 run_pinned review "$SUB" --baseline-store "$WSTORE"
 assert_exit "$RC" 1 "--baseline-store outside the --file ceremony is refused"
@@ -1356,7 +1375,8 @@ run_pinned list --under "$SUB/l"
 assert_exit "$RC" 0 "list exits 0"
 assert_contains "$OUT" "files  4 in 1 folder" "the files section counts its pins and folders"
 assert_eq "$(grep -cxF "  $SUB/l" "$OUT" || true)" 1 "the folder heads its files on a line of its own"
-assert_contains "$OUT" "    sub/plain.txt" "a file is named relative to its folder"
+assert_contains "$OUT" "    ✓ current  sub/plain.txt" "a file row reads its state first, then its name relative to its folder"
+assert_eq "$(grep -c ' $' "$OUT" || true)" 0 "no row ends in padding: the name is last and never padded"
 assert_contains "$OUT" "4 current" "the counts line tallies the live states"
 assert_missing  "$OUT" "sha256:" "the default view leaves digests to -v"
 assert_missing  "$OUT" "never-again.txt" "the default view omits tombstoned slots"
@@ -1369,6 +1389,13 @@ run_pinned list --under "$SUB/l"
 assert_contains "$OUT" "∂ changed since approval" "an edited file reads as changed"
 assert_contains "$OUT" "∅ gone" "a removed file reads as gone"
 assert_contains "$OUT" "2 current · 1 changed · 1 gone" "and the counts line names each state once"
+# The state column is as wide as the longest state the section shows, so
+# every name starts in one column, whatever its row's state.
+assert_contains "$OUT" "    ∂ changed since approval  sub/plain.txt" "the longest state sets the column"
+assert_contains "$OUT" "    ∅ gone                    subx/nearmiss.txt" "a shorter state is padded to it"
+L_COLS="$(LC_ALL=C awk '/^    (\342\234\223|\342\210\202|\342\210\205|\342\234\227) / {
+  t = $0; gsub(/[\200-\277]/, "", t); match(t, /^    . [^ ]+( [^ ]+)* +/); print RLENGTH }' "$OUT" | sort -u)"
+assert_eq "$L_COLS" "30" "every file name starts in the same column"
 run_pinned list --stale --under "$SUB/l"
 assert_contains "$OUT" "plain.txt" "--stale keeps the changed file"
 assert_contains "$OUT" "nearmiss.txt" "and the gone one"
@@ -1600,6 +1627,10 @@ y
   assert_contains "$OUT" "repos  " "the default view heads a repos section"
   assert_contains "$OUT" "${REPO_FIX##*/}" "and names the repo by its folder"
   assert_contains "$OUT" "∂ 1 commit past the pin" "with the live state"
+  # THE ROW GRAMMAR: the state first, padded to the longest state in the
+  # section, then the short hash, and the name LAST, never padded.
+  assert_eq "$(grep -cE "^  ∂ 1 commit past the pin  [0-9a-f]{7}  ${REPO_FIX##*/}\$" "$OUT" || true)" 1 \
+    "a repo row reads state, short hash, then the name, last"
   assert_contains "$OUT" "Review the repos past their pin:" "a repo past its pin gets the review line"
   assert_contains "$OUT" "pinned review $REPO_FIX" "naming the command that approves it"
   assert_missing  "$OUT" "plain.txt" "--repos leaves out the file pins"
@@ -1785,10 +1816,10 @@ y
   assert_exit "$RC" 0 "review over the diffstat range exits 0"
   assert_eq "$(rev_in "$D_SLOT/rev.git")" "$D_HEAD" "the range was approved"
 
-  # The block is everything between the listing header and the blank line
-  # before the diff; the hash column varies in width, so it is dropped.
+  # The block is everything between the listing header and its closing
+  # rule; the hash column varies in width, so it is dropped.
   D_LINES="$(awk '/^--- commits since last approval ---$/ { f = 1; next }
-                  /^$/ { f = 0 } f' "$OUT" | sed 's/^[0-9a-f]*  //')"
+                  /^--- end of listing: / { f = 0 } f' "$OUT" | sed 's/^[0-9a-f]*  //')"
   assert_eq "$D_LINES" '2 files  +3 -0  d2 two files
 1 file   +4 -0  d3 side
 1 file   +1 -1  d4 main
@@ -1797,6 +1828,9 @@ y
   # The count right-aligns in its own digit column and the noun left-aligns
   # beside it: the singular "file" must not drag its digit out of the column.
   assert_contains "$OUT" ' 1 file   +0' "singular count sits in the digit column, noun flush left"
+  # A closing rule counts the rows, so whatever the ceremony prints next can
+  # never sit beside a subject.
+  assert_contains "$OUT" '--- end of listing: 5 commits ---' "the listing closes with a rule that counts its commits"
 
   # The pre-sudo preview is unreachable from the stub (its elevation gate is
   # sed'd to `if false`), and it differs from the ceremony only by the
@@ -1812,15 +1846,10 @@ y
   assert_eq "$(grep -cE '^ *[0-9a-f]+ +-( +-)+  ' "$OUT")" 1 "exactly one placeholder row (the merge)"
 
   # A commit subject is text the attacker writes, and it prints unpaged, just
-  # below the ancestry alarm the ceremony's y/N is read against: an ESC[1A
-  # ESC[2K inside one erases the line above it. No ESC byte may reach any
-  # display. The helper first, then the two paths that show a subject (the
-  # aligned listing, and the one-line "candidate:" / "pinned:" rows).
+  # above the verdicts the ceremony's y/N is read against: an ESC[1A ESC[2K
+  # inside one erases the line above it. No ESC byte may reach any display,
+  # and none may vanish either: each control byte shows as its escape.
   ESC="$(printf '\033')"
-  assert_eq "$("$PROBE" sanitize_display "$(printf 'a\tb%s[2Kc\177d' "$ESC")")" \
-    'a b[2Kcd' "sanitize_display: tab to space, control bytes dropped"
-  assert_eq "$("$PROBE" sanitize_display 'plain subject')" 'plain subject' \
-    "sanitize_display: ordinary text is untouched"
   printf 'e1\n' > "$REPO_D/e.txt"
   bgit "$REPO_D" add e.txt
   bgit "$REPO_D" commit -q -m "$(printf 'd7 %s[1A%s[2K erased' "$ESC" "$ESC")"
@@ -1834,16 +1863,18 @@ y
   else
     ok "no ESC byte reaches the ceremony display"
   fi
-  assert_contains "$OUT" 'd7 [1A[2K erased' "the subject still reads, minus the control bytes"
+  assert_contains "$OUT" "d7 ${BS}u001B[1A${BS}u001B[2K erased" \
+    "the subject reads with each control byte shown as its escape"
 
-  # A subject is no longer capped, and a multi-byte character in one cannot
-  # move the columns: the aligned block prints BEFORE the subject, so no
-  # variable-width text is ever padded to a byte count. With no width given
-  # -- the harness has no tty, so listing_width yields nothing -- the subject
-  # runs to the end of one line, exactly as it did before wrapping existed.
+  # NO WRAPPING. A subject is never capped, padded or folded by pinned: it
+  # ends its row, and a terminal narrower than it soft-wraps it there. The
+  # aligned block prints BEFORE the subject, so a multi-byte character in one
+  # cannot move the columns. A subject far wider than any terminal still
+  # prints on ONE line, whole.
   D_LONG='d8 a subject that runs well past sixty characters, with an em dash - and a section sign S'
   D_LONG="${D_LONG/- and/$(printf '\342\200\224') and}"
   D_LONG="${D_LONG/sign S/sign $(printf '\302\247')}"
+  D_LONG="$D_LONG $(awk 'BEGIN { s = ""; while (length(s) < 400) s = s "word "; printf "%s", s }')end"
   printf 'f1\n' > "$REPO_D/f.txt"
   bgit "$REPO_D" add f.txt
   bgit "$REPO_D" commit -q -m "$D_LONG"
@@ -1851,67 +1882,13 @@ y
   RC=0
   repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" "$D_LONGC" '' >"$OUT" 2>"$ERRF" || RC=$?
   assert_exit "$RC" 0 "the listing exits 0 over a long multi-byte subject"
-  assert_contains "$OUT" "1 file   +1 -0  $D_LONG" "the subject prints whole, columns intact"
+  assert_contains "$OUT" "1 file   +1 -0  $D_LONG" "a 500-column subject prints whole on its row, columns intact"
+  assert_eq "$(grep -c 'd8 a subject' "$OUT")" 1 "and on exactly one line"
+  assert_eq "$(grep -c '^ ' "$OUT" || true)" 0 "nothing wraps: every line opens a row"
   assert_missing  "$OUT" '...' "no subject is truncated"
-  assert_eq "$(grep -c '^ ' "$OUT" || true)" 0 "with no width, nothing wraps: every line opens a row"
-
-  # WRAPPING. Given a width, a long subject folds under itself with a hanging
-  # indent instead of running off the screen. Nothing may be lost to the fold:
-  # the pieces rejoined with single spaces must be the subject, byte for byte,
-  # multi-byte characters included, and no line may reach the last column (a
-  # line that fills it makes some terminals wrap a second time).
-  D_COLS=60
-  RC=0
-  repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" "$D_LONGC" '' "$D_COLS" \
-    >"$OUT" 2>"$ERRF" || RC=$?
-  assert_exit "$RC" 0 "the listing exits 0 with a terminal width"
-  D_SCOL="$(awk '{ k = index($0, "d8 a subject"); if (k) { print k; exit } }' "$OUT")"
-  D_CCOL="$(awk 'match($0, /[^ ]/) > 1 { print RSTART; exit }' "$OUT")"
-  assert_eq "$D_CCOL" "$((D_SCOL + 2))" "a wrapped line hangs two columns under the subject"
-  # The widest line, in columns: bytes that do not continue a UTF-8 sequence.
-  D_WIDE="$(LC_ALL=C awk '{ t = $0; gsub(/[\200-\277]/, "", t)
-                            if (length(t) > m) m = length(t) }
-                          END { print m + 0 }' "$OUT")"
-  if [ "$D_WIDE" -le $((D_COLS - 1)) ]; then
-    ok "every wrapped line stays inside the terminal width"
-  else
-    fail "every wrapped line stays inside the terminal width" "widest $D_WIDE, want <= $((D_COLS - 1))"
-  fi
-  # The long subject is the last commit in the range, so its row runs to the
-  # end of the output.
-  D_JOIN="$(awk '{ k = index($0, "d8 a subject")
-                   if (k) { out = substr($0, k); f = 1; next }
-                   if (f) { t = $0; sub(/^ +/, "", t); out = out " " t } }
-                 END { print out }' "$OUT")"
-  assert_eq "$D_JOIN" "$D_LONG" "the wrapped pieces rejoin to the subject, byte for byte"
-  assert_contains "$OUT" "$(printf '\342\200\224')" "the em dash survives the wrap"
-  assert_contains "$OUT" "$(printf '\302\247')" "the section sign survives the wrap"
-
-  # A word with no space to break at is cut at the column limit rather than
-  # left to run off, and the pieces still concatenate to the original word.
-  D_SPACELESS="$(awk 'BEGIN { s = ""; while (length(s) < 70) s = s "x"; print s }')"
-  printf 'i1\n' > "$REPO_D/i.txt"
-  bgit "$REPO_D" add i.txt
-  bgit "$REPO_D" commit -q -m "$D_SPACELESS"
-  RC=0
-  repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" \
-    "$(bgit "$REPO_D" rev-parse 'HEAD^{commit}')" '' "$D_COLS" >"$OUT" 2>"$ERRF" || RC=$?
-  assert_exit "$RC" 0 "the listing exits 0 over a subject with no spaces"
-  D_NP="$(grep -c 'xxx' "$OUT" || true)"
-  if [ "$D_NP" -ge 2 ]; then
-    ok "the unbreakable word is cut into pieces"
-  else
-    fail "the unbreakable word is cut into pieces" "got $D_NP line(s)"
-  fi
-  D_CAT="$(awk '{ k = index($0, "xxx"); if (k) out = out substr($0, k) }
-                END { print out }' "$OUT")"
-  assert_eq "$D_CAT" "$D_SPACELESS" "the pieces concatenate to the whole word"
-  D_WIDE="$(LC_ALL=C awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }' "$OUT")"
-  if [ "$D_WIDE" -le $((D_COLS - 1)) ]; then
-    ok "a hard-split line stays inside the terminal width"
-  else
-    fail "a hard-split line stays inside the terminal width" "widest $D_WIDE"
-  fi
+  # Nothing in pinned asks the terminal how wide it is any more.
+  assert_eq "$(grep -cE 'listing_width|stty size|tput cols|COLUMNS' "$SRC")" 0 \
+    "no width is read to wrap or truncate third-party text"
 
   # NO BODIES BY DEFAULT. The counts and the diff below are what the
   # decision rests on; a body is prose its author wrote, and it prints only
@@ -1928,11 +1905,11 @@ y
   assert_eq "$(grep -c '^ ' "$OUT" || true)" 0 "one line per commit, body or not"
 
   # A BODY IS TEXT WHOEVER WROTE THE COMMIT CHOSE, and under --messages it
-  # prints unpaged just above the ceremony's y/N. A body that plants the
+  # prints unpaged above the ceremony's verdicts. A body that plants the
   # block sentinel must not fabricate a row of its own -- a hash, a subject
   # and a file count belonging to no commit. The sentinel carries a per-run
   # nonce, so a planted one can never match, and the planted bytes print as
-  # what they are: body text, its control bytes scrubbed.
+  # what they are: body text, each control byte shown as its escape.
   printf 'h1\n' > "$REPO_D/h.txt"
   bgit "$REPO_D" add h.txt
   bgit "$REPO_D" commit -q -m "d10 forged sentinel" \
@@ -1942,14 +1919,15 @@ y
   # be one more, a swallowed commit one fewer.
   D_ROWS="$(bgit "$REPO_D" rev-list --count "$D_PIN..$D_FORGEC")"
   RC=0
-  repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" "$D_FORGEC" '' '' messages \
+  repo="$REPO_D" "$PROBE" print_commit_range "$D_PIN" "$D_FORGEC" '' messages \
     >"$OUT" 2>"$ERRF" || RC=$?
   assert_exit "$RC" 0 "the listing exits 0 with --messages over a planted sentinel"
   assert_eq "$(grep -cE '^[0-9a-f]+  ' "$OUT")" "$D_ROWS" \
     "the planted sentinel opens no row of its own"
   assert_contains "$OUT" 'FORGED SUBJECT' "the planted text prints as body, where it belongs"
-  assert_eq "$(grep -c '^deadbeefcafecafed00dFORGED SUBJECT$' "$OUT" || true)" 1 \
-    "the planted bytes print as one body line, controls scrubbed"
+  D_FORGED="${BS}u0001deadbeefcafe${BS}u0002cafed00d${BS}u0002FORGED SUBJECT"
+  assert_eq "$(grep -cxF -e "$D_FORGED" "$OUT" || true)" 1 \
+    "the planted bytes print as one body line, control bytes escaped"
   # The body sits at column zero, as its author laid it out, and ONE blank
   # line closes it before the next commit's row.
   D_BLOCK="$(awk '/  d9 subject line$/ { f = 1 }
@@ -1959,9 +1937,12 @@ y
 why this commit exists
 
 1 file   +1 -0  d10 forged sentinel' "the body prints at column zero, closed by one blank line"
-  # The last body in a listing ends it: what follows is the caller's spacing.
-  assert_eq "$(tail -n 1 "$OUT")" 'deadbeefcafecafed00dFORGED SUBJECT' \
-    "the listing never ends on a blank line"
+  # The last body in a listing ends it, right above the closing rule: no
+  # blank line between them.
+  assert_eq "$(tail -n 2 "$OUT" | head -n 1)" "$D_FORGED" \
+    "the listing's last body sits directly above its closing rule"
+  assert_eq "$(tail -n 1 "$OUT")" "--- end of listing: $D_ROWS commits ---" \
+    "and the rule is the listing's last line"
 
   # Subjects only, over the same range: neither body reaches the display,
   # and the rows are the same rows.
@@ -2318,6 +2299,15 @@ y
     "a backward gate sizes what it un-approves"
   assert_contains "$OUT" "g2 second" "the un-approved commit is listed"
   assert_contains "$OUT" "--- diff " "the honest diff of the move still runs"
+  # VERDICT POSITION: third-party text proves nothing by where it sits, so
+  # the alarm prints after the last of it -- below the listing's and the
+  # diff's closing rules -- and directly above the question.
+  assert_before "$OUT" "g2 second" "--- end of listing: 1 commit ---" "the listing closes with its rule"
+  assert_before "$OUT" "--- end of diff: " "!!! BACKWARD:" "the backward alarm prints below the diff's closing rule"
+  assert_before "$OUT" "!!! BACKWARD:" "approve " "and above the question"
+  G_AL="$(grep -n -m1 '!!! BACKWARD:' "$OUT" | cut -d: -f1)"
+  assert_eq "$(tail -n +"$G_AL" "$OUT" | grep -cE '^(--- |[0-9a-f]{7,}  )' || true)" 0 \
+    "no listing row or section follows the alarm"
 
   # A declined backward ceremony is an ordinary decline.
   seed_rev "$REPO_G" "$G_C2"
@@ -2361,6 +2351,10 @@ y
     "a diverged gate sizes both sides of the merge base"
   assert_contains "$OUT" "g2 second" "the abandoned commit is listed"
   assert_contains "$OUT" "gx side" "the arriving commit is listed"
+  assert_before "$OUT" "gx side" "!!! DIVERGED:" "the diverged alarm prints after the last listed subject"
+  assert_before "$OUT" "--- end of diff: " "!!! DIVERGED:" "below the diff's closing rule"
+  assert_before "$OUT" "!!! DIVERGED:" "approve " "and above the question"
+  assert_eq "$(grep -c '^--- end of listing: 1 commit ---$' "$OUT")" 2 "each of the two listings closes with its own rule"
   bgit "$REPO_G" checkout -q main
 
   # --- diverged with no common ancestor: a history rewrite ------------------
@@ -4780,8 +4774,9 @@ if rrgit init -q >/dev/null 2>&1 \
   run_pinned list -v --under "$FIX/rrs"
   assert_exit "$RC" 0 "list survives it"
   assert_contains "$OUT" "git:      $RR_REPO_HASH" "list shows the rev"
-  assert_contains "$OUT" "note:     record names $FIX/rrs/elsewhere  (review re-states it)" \
+  assert_contains "$OUT" "note:     review re-states the record, which names $FIX/rrs/elsewhere" \
     "list notes the stale record on an indented field line"
+  assert_eq "$(grep -c "which names $FIX/rrs/elsewhere\$" "$OUT")" 1 "the path the record names ends the note"
   run_pinned_split list --format json --under "$FIX/rrs"
   assert_eq "$(jq -r '.pins[0] | [.digest, .record_path, (.problems | join(","))] | join(" ")' "$OUT")" \
     "$RR_REPO_HASH $FIX/rrs/elsewhere record-names-other-path" \
@@ -4891,9 +4886,15 @@ say "S21: content highlighters decorate only (routing, guards, byte fidelity)"
 # stripped -- ASCII, UTF-8 and an INVALID multibyte sequence alike -- and put
 # color where the suffix says. The guards refuse what awk would not carry
 # through unchanged.
-for fn in highlighter_for highlight_ok highlight_json highlight_bash highlight_md color_diff; do
-  sed -n "/^$fn() {\$/,/^}\$/p" "$SRC"
-done > "$FIX/hl.bash"
+# The escape-aware half they share (AWK_UNTRUSTED and the reverse-red
+# constants) lifts with them.
+{
+  sed -n "/^AWK_UNTRUSTED='\$/,/^'\$/p" "$SRC"
+  sed -n '/^SGR_RV=/p' "$SRC"
+  for fn in highlighter_for highlight_ok highlight_json highlight_bash highlight_md color_diff untrusted_mark; do
+    sed -n "/^$fn() {\$/,/^}\$/p" "$SRC"
+  done
+} > "$FIX/hl.bash"
 assert_contains "$FIX/hl.bash" "highlight_md() {" "the highlighters lift out of the script"
 hl_run() { # HL_ON-value highlighter-or-shell-snippet infile -> $OUT, $RC
   RC=0
@@ -4971,8 +4972,9 @@ if LC_ALL=C grep -q $'\033' "$OUT"; then fail "HL_ON off: color_diff adds no esc
 # Every reviewed diff reaches the pager through color_diff, and git's own
 # coloring stays off.
 assert_eq "$(grep -c '"\$diff_out" | page' "$SRC")" 0 "no git diff is paged uncolored"
-assert_eq "$(grep -c '| color_diff | page || true$' "$SRC")" 5 \
-  "every reviewed diff (three review paths, the baseline diff, show) goes through color_diff"
+assert_eq "$(grep -c '| color_diff | page' "$SRC")" 0 "no diff reaches the pager without the escaper"
+assert_eq "$(grep -c 'untrusted_page color_diff <<<' "$SRC")" 5 \
+  "every reviewed diff (three review paths, the baseline diff, show) goes through the escaper, then color_diff"
 assert_contains "$SRC" '-c color.diff=never diff --no-ext-diff --no-textconv' "sgit_diff renders without git's coloring"
 
 hl_run "" highlight_bash "$HLD/hook.bash"
@@ -4982,24 +4984,57 @@ hl_run 1 'highlighter_for a.json; echo; highlighter_for b.bash; echo; highlighte
 assert_eq "$(cat "$OUT")" $'highlight_json\nhighlight_bash\nhighlight_bash\nhighlight_md' \
   "routing by suffix: json, bash, sh, md"
 assert_eq "$(wc -l <"$OUT" | tr -d ' ')" "6" "routing: nothing for .claude-lane or a .bak (two empty answers)"
-hl_run 1 'highlight_ok highlight_bash 1' "$HLD/hook.bash"
-assert_exit "$RC" 0 "guard: a newline-terminated hook may be highlighted"
-hl_run 1 'highlight_ok highlight_bash ""' "$HLD/hook.bash"
-assert_exit "$RC" 1 "guard: no trailing newline -> raw"
-printf 'a\0b\n' > "$HLD/nul.bash"
-hl_run 1 'highlight_ok highlight_bash 1' "$HLD/nul.bash"
-assert_exit "$RC" 1 "guard: a NUL byte -> raw"
-hl_run 1 'highlight_ok "" 1' "$HLD/hook.bash"
-assert_exit "$RC" 1 "guard: no highlighter for the suffix -> raw"
-hl_run "" 'highlight_ok highlight_bash 1' "$HLD/hook.bash"
-assert_exit "$RC" 1 "guard: HL_ON off -> raw"
+# The guards. A highlighter reads ESCAPED text now (no NUL, no invalid
+# byte, always a final newline), so those are no longer reasons to refuse:
+# what is left is a suffix, HL_ON, and for JSON a parse.
+hl_run 1 'highlight_ok highlight_bash' "$HLD/hook.bash"
+assert_exit "$RC" 0 "guard: a hook may be highlighted"
+printf 'a\0b' > "$HLD/nul.bash"
+hl_run 1 'highlight_ok highlight_bash' "$HLD/nul.bash"
+assert_exit "$RC" 0 "guard: a NUL byte or a missing newline no longer refuses (the escaper has handled them)"
+hl_run 1 'highlight_ok ""' "$HLD/hook.bash"
+assert_exit "$RC" 1 "guard: no highlighter for the suffix -> escapes only"
+hl_run "" 'highlight_ok highlight_bash' "$HLD/hook.bash"
+assert_exit "$RC" 1 "guard: HL_ON off -> escapes only"
 if command -v jq >/dev/null 2>&1; then
-  hl_run 1 'highlight_ok highlight_json 1' "$HLD/s.json"
+  hl_run 1 'highlight_ok highlight_json' "$HLD/s.json"
   assert_exit "$RC" 0 "guard: valid JSON may be highlighted"
   printf '{"a": \n' > "$HLD/bad.json"
-  hl_run 1 'highlight_ok highlight_json 1' "$HLD/bad.json"
-  assert_exit "$RC" 1 "guard: malformed JSON -> raw"
+  hl_run 1 'highlight_ok highlight_json' "$HLD/bad.json"
+  assert_exit "$RC" 1 "guard: malformed JSON -> escapes only"
 fi
+
+# ESCAPES INSIDE COLOR. Every colorizer finds the escape tokens in the text
+# it is handed and wears reverse red on each, resuming its own color after
+# it; a changed middle never cuts one in half. Fed escaped text here, as
+# untrusted_page feeds them.
+RV=$'\033[7;31m' RO=$'\033[0m'
+printf '%s\n' 'diff --git a/z b/z' '--- a/z' '+++ b/z' '@@ -1,2 +1,2 @@' \
+  "-x${BS}u200By" "+x${BS}u200Cy" " ctx${BS}u0009end" > "$HLD/esc.diff"
+hl_run 1 color_diff "$HLD/esc.diff"
+assert_exit "$RC" 0 "color_diff exits 0 over escaped text"
+hl_exact "$HLD/esc.diff" "diff: escaped text survives byte for byte"
+assert_contains "$OUT" $'\033[31;48;5;52m'"$RV${BS}u200B$RO"$'\033[31;48;5;52m' \
+  "diff: a changed escape is marked whole, in reverse red, inside the removed middle"
+assert_contains "$OUT" $'\033[32;48;5;22m'"$RV${BS}u200C$RO"$'\033[32;48;5;22m' \
+  "diff: and inside the added middle"
+assert_contains "$OUT" "ctx$RV${BS}u0009${RO}end" "diff: an escape on a context line wears reverse red"
+printf '%s\n' "x ${BS}u00A0 y" > "$HLD/esc.txt"
+hl_run 1 untrusted_mark "$HLD/esc.txt"
+assert_contains "$OUT" "x $RV${BS}u00A0$RO y" "untrusted_mark: reverse red around the escape and nothing else"
+hl_run "" untrusted_mark "$HLD/esc.txt"
+hl_exact "$HLD/esc.txt" "untrusted_mark with HL_ON off is a passthrough"
+printf '{"k\\u00e9y": "v%sv"}\n' "${BS}u200B" > "$HLD/esc.json"
+hl_run 1 highlight_json "$HLD/esc.json"
+assert_contains "$OUT" "$RV${BS}u200B$RO"$'\033[0;32m' "json: an escape inside a string resumes the string's green"
+printf '#!/bin/sh\necho "a%sb" # c%sd\n' "${BS}u0009" "${BS}u200B" > "$HLD/esc.bash"
+hl_run 1 highlight_bash "$HLD/esc.bash"
+assert_contains "$OUT" "$RV${BS}u0009$RO"$'\033[0;32m' "bash: an escape inside a string resumes the string's green"
+assert_contains "$OUT" "$RV${BS}u200B$RO"$'\033[2m' "bash: an escape inside a comment resumes the dim"
+printf '# T%sx\n`a%sb`\n' "${BS}u200B" "${BS}u0009" > "$HLD/esc.md"
+hl_run 1 highlight_md "$HLD/esc.md"
+assert_contains "$OUT" "$RV${BS}u200B$RO"$'\033[1;36m' "md: an escape in a heading resumes the cyan"
+assert_contains "$OUT" "$RV${BS}u0009$RO"$'\033[0;32m' "md: an escape in a code span resumes the green"
 
 # ---------------------------------------------------------------------------
 say "S22: shell completions (present, installed, parse, cover every action)"
@@ -5337,6 +5372,150 @@ if command -v ssh-keygen >/dev/null 2>&1; then
   fi
 else
   skip "S24" "no ssh-keygen"
+fi
+
+# ---------------------------------------------------------------------------
+say "S25: third-party text is shown escaped (the shared escaper)"
+# ---------------------------------------------------------------------------
+# One escaper, untrusted_escape, renders every byte of text pinned did not
+# write: a hidden code point as \uXXXX (BMP) or \UXXXXXXXX, an invalid byte
+# as \xHH, a literal backslash-u/U/x-hexdigit as the escape of the
+# backslash, and everything else as itself. Driven through the PROBE, bytes
+# in, bytes out; the expected forms are spelled here, not computed by the
+# code under test.
+U8() { perl -CO -e 'print chr(hex($ARGV[0]))' "$1"; }   # one code point, UTF-8
+esc_want() { # hex -> the escape pinned must print for it
+  if [ $((16#$1)) -gt 65535 ]; then printf '%sU%08X' "$BS" "$((16#$1))"
+  else printf '%su%04X' "$BS" "$((16#$1))"; fi
+}
+# Each range of the hidden list: its first, a middle and its last code
+# point, one per line between markers. LF is the line break itself, so
+# U+000A is the one member of U+0000-001F not on a line of its own.
+ESC_RANGES="0000:001F 007F:009F 00A0:00A0 00AD:00AD 034F:034F 061C:061C 115F:1160
+  17B4:17B5 180B:180E 2000:200F 2028:202F 205F:206F 3000:3000 3164:3164 FE00:FE0F
+  FEFF:FEFF FFA0:FFA0 FFF9:FFFB E0000:E007F E0100:E01EF"
+# And each range's neighbors just outside it, which must print as themselves.
+ESC_PLAIN="0020 007E 00A1 00AC 00AE 034E 0350 061B 061D 115E 1161 17B3 17B6 180A
+  180F 1FFF 2010 2027 2030 205E 2070 2FFF 3001 3163 3165 FDFF FE10 FEFE FF00 FF9F
+  FFA1 FFF8 FFFC DFFFF E0080 E00FF E01F0"
+: >"$FIX/esc-in"; : >"$FIX/esc-want"
+for r in $ESC_RANGES; do
+  lo="${r%:*}" hi="${r#*:}"
+  mid="$(printf '%04X' $(( (16#$lo + 16#$hi) / 2 )))"
+  for cp in "$lo" "$mid" "$hi"; do
+    [ "$cp" != 000A ] || continue
+    { printf '%s <' "$r"; U8 "$cp"; printf '>\n'; } >>"$FIX/esc-in"
+    printf '%s <%s>\n' "$r" "$(esc_want "$cp")" >>"$FIX/esc-want"
+  done
+done
+for cp in $ESC_PLAIN; do
+  { printf 'plain %s <' "$cp"; U8 "$cp"; printf '>\n'; } | tee -a "$FIX/esc-want" >>"$FIX/esc-in"
+done
+RC=0
+"$PROBE" untrusted_escape <"$FIX/esc-in" >"$OUT" 2>"$ERRF" || RC=$?
+assert_exit "$RC" 0 "the escaper exits 0 over every hidden range"
+for r in $ESC_RANGES; do
+  if [ "$(grep -F -e "$r <" "$OUT")" = "$(grep -F -e "$r <" "$FIX/esc-want")" ]; then
+    ok "hidden range U+${r/:/-U+}: first, middle and last code point escaped"
+  else
+    fail "hidden range U+${r/:/-U+}: first, middle and last code point escaped" \
+      "got:  $(grep -F -e "$r <" "$OUT" | tr '\n' ' ')" "want: $(grep -F -e "$r <" "$FIX/esc-want" | tr '\n' ' ')"
+  fi
+done
+if [ "$(grep '^plain ' "$OUT")" = "$(grep '^plain ' "$FIX/esc-want")" ]; then
+  ok "every neighbor just outside a hidden range prints as itself"
+else
+  fail "every neighbor just outside a hidden range prints as itself" \
+    "$(diff <(grep '^plain ' "$FIX/esc-want") <(grep '^plain ' "$OUT") || true)"
+fi
+assert_eq "$(wc -l <"$OUT" | tr -d ' ')" "$(wc -l <"$FIX/esc-want" | tr -d ' ')" \
+  "one output line per input line: no escape invents or drops a line"
+
+# Tab and CR escape; a plain space does not; LF stays the line break.
+RC=0
+ESC_OUT="$(printf 'a\tb\rc d\ne f' | "$PROBE" untrusted_escape)" || RC=$?
+assert_exit "$RC" 0 "the escaper exits 0 over tab, CR and LF"
+assert_eq "$ESC_OUT" "a${BS}u0009b${BS}u000Dc d"$'\n'"e f" \
+  "tab and CR escape, a plain space stays, LF is the line break"
+
+# THE SELF-ESCAPE: a literal backslash that would read as the start of an
+# escape -- followed by u, U or x and a hex digit, either case -- shows as
+# the escape of the backslash, so an escape on screen can only be one. A
+# backslash before anything else prints as itself.
+E5C="${BS}u005C"
+ESC_OUT="$(printf '%s' "${BS}u0041 ${BS}U0001F600 ${BS}x41 ${BS}ua ${BS}xg ${BS}u ${BS}${BS} ${BS}n end" \
+  | "$PROBE" untrusted_escape)"
+assert_eq "$ESC_OUT" "${E5C}u0041 ${E5C}U0001F600 ${E5C}x41 ${E5C}ua ${BS}xg ${BS}u ${BS}${BS} ${BS}n end" \
+  "a literal backslash-u, -U or -x before a hex digit is itself escaped, any other backslash is not"
+
+# A byte that is not part of valid UTF-8 shows as \xHH, one per byte: a lone
+# continuation byte, a truncated sequence, an overlong form, a surrogate, a
+# code point past U+10FFFF, and 0xFF.
+ESC_OUT="$(printf '<\x80> <\xc3(> <\xc0\xaf> <\xed\xa0\x80> <\xf4\x90\x80\x80> <\xff>' \
+  | "$PROBE" untrusted_escape)"
+assert_eq "$ESC_OUT" "<${BS}x80> <${BS}xC3(> <${BS}xC0${BS}xAF> <${BS}xED${BS}xA0${BS}x80> <${BS}xF4${BS}x90${BS}x80${BS}x80> <${BS}xFF>" \
+  "each invalid byte shows as its own \\xHH escape"
+# Valid text outside the list is untouched, NUL included in the list.
+ESC_OUT="$(printf 'caf\303\251 \342\234\223 \346\227\245 \000.' | "$PROBE" untrusted_escape)"
+assert_eq "$ESC_OUT" "$(printf 'caf\303\251 \342\234\223 \346\227\245 ')${BS}u0000." \
+  "valid UTF-8 off the list prints as itself, and NUL shows escaped"
+
+# Color: with the stream's reverse red on, each escape wears it and the
+# row's own color resumes after it; with it off (NO_COLOR, or no tty), the
+# escape text alone. untrusted_var is the one-value form every row uses.
+ESC_ZW="$(printf "a\342\200\213b")"
+export ESC_ZW
+run_probe eval 'C_RV="$SGR_RV" C_DIM="<dim>"; untrusted_var v "$ESC_ZW" "$C_DIM"; printf "%s" "$v"'
+assert_eq "$POUT" "a"$'\033[7;31m'"${BS}u200B"$'\033[0m'"<dim>b" \
+  "color on: reverse red around the escape, then the row's color again"
+run_probe eval 'untrusted_var v "$ESC_ZW" "<dim>"; printf "%s" "$v"'
+assert_eq "$POUT" "a${BS}u200Bb" "color off: the escape text alone, no SGR at all"
+run_probe eval 'untrusted_var v "plain subject (no escapes)"; printf "%s" "$v"'
+assert_eq "$POUT" "plain subject (no escapes)" "printable ASCII is its own escaped form"
+assert_eq "$(grep -c '7;31m' "$SRC")" 1 "reverse red is defined once and worn by nothing else"
+
+if [ "$GIT_OK" -eq 1 ]; then
+  # End to end: a hidden character in a subject and in the diff reaches the
+  # ceremony display only as its escape.
+  REPO_E="$FIX/escfix"
+  mkdir -p "$REPO_E"
+  bgit "$REPO_E" init -q
+  printf 'e0\n' > "$REPO_E/e.txt"
+  bgit "$REPO_E" add e.txt; bgit "$REPO_E" commit -q -m "e0 base"
+  E_BASE="$(bgit "$REPO_E" rev-parse 'HEAD^{commit}')"
+  printf 'e1\342\200\256rtl\n' > "$REPO_E/e.txt"
+  bgit "$REPO_E" commit -q -am "$(printf 'e1 hidden\342\200\213mark')"
+  seed_rev "$REPO_E" "$E_BASE"
+  ANS='
+y
+'
+  run_pinned review "$REPO_E"
+  assert_exit "$RC" 0 "review over hidden characters exits 0"
+  assert_contains "$OUT" "e1 hidden${BS}u200Bmark" "the subject shows its zero-width space as an escape"
+  assert_contains "$OUT" "+e1${BS}u202Ertl" "the diff shows its bidi override as an escape"
+  if LC_ALL=C grep -q -e $'\342\200\213' -e $'\342\200\256' "$OUT"; then
+    fail "no hidden character reaches the display raw"
+  else
+    ok "no hidden character reaches the display raw"
+  fi
+
+  # FAIL CLOSED: an escaper that fails stops the ceremony. Nothing is shown
+  # raw in its place and nothing is recorded.
+  sed 's/^  env -i PATH="\$PATH" perl -e "\$UNTRUSTED_PL" -- "\${1:-}" "\${2:-}"$/  return 3/' \
+    "$STUB" > "$FIX/pinned-noesc"
+  chmod 755 "$FIX/pinned-noesc"
+  assert_eq "$(grep -c '^  return 3$' "$FIX/pinned-noesc")" 1 "the failing-escaper stub took its seam"
+  seed_rev "$REPO_E" "$E_BASE"
+  printf '\ny\n' > "$FIX/stdin"
+  RC=0
+  "$FIX/pinned-noesc" review "$REPO_E" <"$FIX/stdin" >"$OUT" 2>&1 || RC=$?
+  assert_exit "$RC" 1 "a failing escaper stops the review"
+  assert_contains "$OUT" "✗ refused: cannot render third-party text" "and says why"
+  assert_missing "$OUT" "e1 hidden" "no subject is shown raw in its place"
+  assert_missing "$OUT" "approve " "the question is never asked"
+  assert_eq "$(rev_in "$(slot_of "$REPO_E")/rev.git")" "$E_BASE" "and the pin is unchanged"
+else
+  skip "S25 end to end" "no git fixture"
 fi
 
 # ---------------------------------------------------------------------------
