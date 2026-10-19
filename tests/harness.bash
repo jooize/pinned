@@ -1297,9 +1297,9 @@ run_pinned tombstone "$SUB/t/live.txt"
 assert_exit "$RC" 0 "tombstone records once the path is gone"
 assert_contains "$OUT" "tombstone this path? [y/N]" "the question names its object with a noun"
 assert_missing "$OUT" "tombstone $SUB" "and holds no path"
-assert_eq "$(lines_before "$OUT" "tombstone this path?" 2)" \
-  "path:       $SUB/t/live.txt|verify then refuses this path until it is re-approved.|" \
-  "the path row and what the tombstone means sit directly above it"
+assert_eq "$(lines_before "$OUT" "tombstone this path?" 3)" \
+  "path:       gone  $SUB/t/live.txt|slot:       pin   $(slot_of "$SUB/t/live.txt")|verify then refuses this path until it is re-approved.|" \
+  "the rows, each state a column before its path, then what the tombstone means, directly above it"
 assert_contains "$OUT" "tombstoned" "ceremony confirms the tombstone"
 LIVE_SLOT="$(slot_of "$SUB/t/live.txt")"
 assert_file "$LIVE_SLOT/tombstone" "tombstone state file written"
@@ -1327,6 +1327,30 @@ assert_contains "$OUT" "✓ tombstoned:" "and confirms the tombstone"
 assert_file "$(slot_of "$SUB/t/quiet.txt")/tombstone" "the tombstone state file is written"
 run_pinned tombstone "$SUB/t/never-pinned.txt" --yes
 assert_exit "$RC" 1 "tombstone --yes refuses a path with no record"
+
+# The path is the caller's own bytes: a hidden character in it shows as an
+# escape on every row and verdict it is on, never raw.
+ZW="$(printf '\342\200\213')"
+printf 'hidden\n' > "$SUB/t/zw${ZW}.txt"
+ANS='
+y
+'
+run_pinned review --file "$SUB/t/zw${ZW}.txt"
+assert_exit "$RC" 0 "fixture: a path holding a zero-width space is approved"
+rm -f "$SUB/t/zw${ZW}.txt"
+ANS='y
+'
+run_pinned tombstone "$SUB/t/zw${ZW}.txt"
+assert_exit "$RC" 0 "tombstone retires the path holding a zero-width space"
+assert_contains "$OUT" "path:       gone  $SUB/t/zw${BS}u{200B}.txt" \
+  "the path row shows the hidden character as an escape"
+assert_contains "$OUT" "✓ tombstoned: $SUB/t/zw${BS}u{200B}.txt" "and so does the verdict"
+assert_missing "$OUT" "$ZW" "the raw character never reaches the screen"
+ANS=""
+run_pinned tombstone "$SUB/t/zw${ZW}.txt"
+assert_contains "$OUT" "already tombstoned: $SUB/t/zw${BS}u{200B}.txt" \
+  "the already-tombstoned line escapes it too"
+assert_missing "$OUT" "$ZW" "and shows nothing raw"
 
 printf 'resurrected\n' > "$SUB/t/live.txt"
 run_pinned verify "$SUB/t/live.txt"
@@ -2910,9 +2934,9 @@ if [ "$GIT_OK" -eq 1 ]; then
   run_pinned declare "$REPO_DC" --release v1
   assert_exit "$RC" 0 "declaring a valid name on a rev-only slot succeeds"
   assert_contains "$OUT" "names the pinned rev" "the display shows the invariant holding"
-  assert_eq "$(lines_before "$OUT" "declare this release name?" 3)" \
-    "declared:   (none)|          → v1|✓ the tag names the pinned rev|" \
-    "the declared rows show the transition, the verdict between them and the question"
+  assert_eq "$(lines_before "$OUT" "declare this release?" 6)" \
+    "release:    (none)|          → v1|deploy:     ref=refs/tags/v1|✓ the tag names the pinned rev|Deploy then syncs this input's ref= to that name, and refuses if the live|tag ever stops naming the pinned rev.|" \
+    "the rows show the transition and the effect, then the verdict, then the consequence, then the question"
   assert_contains "$OUT" "ref=refs/tags/v1" "the deploy row states the effect on the anchor"
   assert_file "$DC_SLOT/release" "the declaration was written"
   # (The verdict follows the unechoed answer on the question's line.)
@@ -2957,8 +2981,9 @@ if [ "$GIT_OK" -eq 1 ]; then
 '
   run_pinned declare "$REPO_DC" --no-release
   assert_exit "$RC" 0 "--no-release clears the declaration"
-  assert_eq "$(lines_before "$OUT" "clear this declaration?" 2)" \
-    "declared:   v1|          → (none)|" "the display shows the transition directly above the question"
+  assert_eq "$(lines_before "$OUT" "clear this release?" 3)" \
+    "release:    v1|          → (none)|deploy:     the input's ref= stops being managed; it keeps whatever it says now|" \
+    "the display shows the transition and its effect directly above the question"
   assert_contains "$OUT" "stops being managed" "and says what deploy stops doing"
   assert_contains "$OUT" "✓ cleared: v1" "the result line names the declaration it cleared"
   assert_eq "$(grep -A1 -e '✓ cleared: v1$' "$OUT" | sed -n 2p)" "           the slot is rev-only" \
@@ -4172,9 +4197,14 @@ assert_exit "$RC" 0 "a file record moves to the path its content moved to"
 assert_contains "$OUT" "at the new path" "the ceremony states what the y buys"
 assert_contains "$OUT" "rekey this record? [y/N]" "the question names its object with a noun"
 assert_missing "$OUT" "$SUB/mv/deeper/to.txt? [y/N]" "and holds no path"
-assert_eq "$(lines_before "$OUT" "rekey this record?" 2)" \
-  "from:       $SUB/mv/from.txt|to:         $SUB/mv/deeper/to.txt|" \
-  "the from: and to: rows stand directly above it"
+assert_contains "$OUT" "old:        gone  $SUB/mv/from.txt" "the old path's row puts its state in a column before it"
+assert_contains "$OUT" "new:              $SUB/mv/deeper/to.txt" "and the new path's row leaves that column blank"
+assert_contains "$OUT" "record:     pin.sha256  (file record)" "the record row carries the noun the question names"
+assert_eq "$(grep -c -e "^old:" -e "^new:" -e "^from:" -e "^to:" "$OUT")" 2 \
+  "the paths are not repeated: nothing but the consequence stands between them and the question"
+assert_eq "$(lines_before "$OUT" "rekey this record?" 1)" \
+  "so anything reappearing there refuses until it is approved on its own.|" \
+  "the consequence stands directly above the question"
 assert_contains "$OUT" "✓ re-keyed $MV_DIG: $MV_NEW_SLOT/pin.sha256" \
   "the result names what moved, then where its record now lives"
 assert_contains "$OUT" "✓ tombstoned: $SUB/mv/from.txt" "and the old path, last"
@@ -4204,6 +4234,28 @@ printf 'squatter\n' > "$SUB/mv/from.txt"
 run_pinned verify "$SUB/mv/from.txt"
 assert_exit "$RC" 13 "content reappearing at the old path fails closed (13)"
 rm -f "$SUB/mv/from.txt"
+
+# Both paths are the caller's own bytes: hidden characters show as escapes
+# on every row and verdict, before sudo and after it, never raw.
+printf 'hidden move\n' > "$SUB/mv/zw${ZW}from.txt"
+ANS='
+y
+'
+run_pinned review --file "$SUB/mv/zw${ZW}from.txt"
+assert_exit "$RC" 0 "fixture: a record at a path holding a zero-width space"
+mv "$SUB/mv/zw${ZW}from.txt" "$SUB/mv/zw${ZW}to.txt"
+ANS=""
+run_preview rekey "$SUB/mv/zw${ZW}from.txt" "$SUB/mv/zw${ZW}to.txt"
+assert_contains "$OUT" "old:        gone  $SUB/mv/zw${BS}u{200B}from.txt" "the preview escapes the old path"
+assert_contains "$OUT" "new:              $SUB/mv/zw${BS}u{200B}to.txt" "and the new one"
+ANS='y
+'
+run_pinned rekey "$SUB/mv/zw${ZW}from.txt" "$SUB/mv/zw${ZW}to.txt"
+assert_exit "$RC" 0 "rekey moves the record between paths holding zero-width spaces"
+assert_contains "$OUT" "old:        gone  $SUB/mv/zw${BS}u{200B}from.txt" "the old path's row shows the escape"
+assert_contains "$OUT" "new:              $SUB/mv/zw${BS}u{200B}to.txt" "and the new path's row"
+assert_contains "$OUT" "✓ tombstoned: $SUB/mv/zw${BS}u{200B}from.txt" "and the verdict"
+assert_missing "$OUT" "$ZW" "the raw character never reaches the screen"
 
 # --- decline changes nothing ----------------------------------------------
 printf 'declined move\n' > "$SUB/mv/dfrom.txt"

@@ -3995,16 +3995,21 @@ case "$action" in
         fi
         rk_gone=0; path_gone "$rk_old" || rk_gone=$?
         if [ "$rk_gone" -eq 2 ]; then
-          refused "cannot tell whether $rk_old still exists -- a rekey follows only a move that happened"
+          refused "cannot tell whether the old path still exists, and a rekey follows only a move that happened: $rk_old"
           exit 1
         fi
         if [ "$rk_gone" -eq 1 ]; then
-          refused "$rk_old still exists -- you rekey a record whose content has already moved"
-          echo "        (move the content first, or review $rk_new instead)" >&2
+          refused "the old path still exists, and you rekey a record whose content has already moved: $rk_old"
+          echo "        move the content first, or review the new path instead: $rk_new" >&2
           exit 1
         fi
-        printf '%sold:%s        %s %s(gone)%s\n' "$C_B" "$C_OFF" "$rk_old" "$C_DIM" "$C_OFF"
-        printf '%snew:%s        %s\n' "$C_B" "$C_OFF" "$rk_new"
+        # The root side's rows, in its order: each path ends its row, the
+        # old one's state a fixed-set word in a column before it, and the
+        # paths escaped -- they are bytes anyone could have chosen.
+        untrusted_var rk_old_disp "$rk_old"
+        untrusted_var rk_new_disp "$rk_new" "$C_CYN"
+        printf '%sold:%s        gone  %s\n' "$C_B" "$C_OFF" "$rk_old_disp"
+        printf '%snew:%s              %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$rk_new_disp" "$C_OFF"
         rk_slot="$(slot_dir_for "$(tier_user)" "$rk_old")"
         # Nothing is CONCLUDED from what this peek cannot see: the tier is
         # root-only until the group exists, so an absent-looking slot may
@@ -4012,8 +4017,14 @@ case "$action" in
         # both, and no refusal built on it.
         if [ -d "$rk_slot" ] && inspect_slot "$rk_slot" 2>/dev/null \
            && [ "$slot_state" != none ]; then
-          printf '%srecord:%s     %s%s%s %s(%s)%s\n' "$C_B" "$C_OFF" \
-            "$C_CYN" "${slot_file##*/}" "$C_OFF" "$C_DIM" "$rk_slot" "$C_OFF"
+          case "$slot_state" in
+            rev) rk_kind="  ${C_DIM}(repo record)${C_OFF}" ;;
+            pin) rk_kind="  ${C_DIM}(file record)${C_OFF}" ;;
+            *)   rk_kind="" ;;
+          esac
+          printf '%srecord:%s     %s%s%s%s\n' "$C_B" "$C_OFF" \
+            "$C_CYN" "${slot_file##*/}" "$C_OFF" "$rk_kind"
+          printf '%sslot:%s       %s\n' "$C_B" "$C_OFF" "$(show_slot "$rk_slot")"
         else
           printf '%srecord:%s     %s(none visible from here; the root side reads it and answers)%s\n' \
             "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
@@ -6181,11 +6192,13 @@ do_tombstone() {
       printf '%stombstone:%s  %s%s%s\n' "$C_DIM" "$C_OFF" "$C_DIM" "$line_disp" "$C_OFF"
       exit 0 ;;
   esac
-  # The path last, directly above the consequence and the question: it is
-  # the value the question decides about (see print_candidate_rows).
-  printf '%sslot:%s       %s\n' "$C_B" "$C_OFF" "$(show_slot "$slot")"
-  printf '%sstate:%s      %s %s(the path is gone)%s\n' "$C_B" "$C_OFF" "$slot_state" "$C_DIM" "$C_OFF"
-  printf '%spath:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$path_disp" "$C_OFF"
+  # The rows the question decides about (see print_candidate_rows). Each
+  # value is a path, so it ends its row; what state it is in is a word from
+  # a fixed set, a column before it padded to the longest word shown.
+  local qw=4
+  [ "${#slot_state}" -le "$qw" ] || qw="${#slot_state}"
+  printf '%spath:%s       %-*s  %s%s%s\n' "$C_B" "$C_OFF" "$qw" gone "$C_CYN" "$path_disp" "$C_OFF"
+  printf '%sslot:%s       %-*s  %s\n' "$C_B" "$C_OFF" "$qw" "$slot_state" "$(show_slot "$slot")"
   if [ "$yes" -eq 0 ]; then
     printf '%sverify then refuses this path until it is re-approved.%s\n' "$C_DIM" "$C_OFF"
     printf '%stombstone this path? [%sy%s/%sN%s]%s ' "$C_B" \
@@ -6430,54 +6443,66 @@ do_rekey() {
     fi
   fi
 
-  # Both paths are the caller's own bytes, escaped for every row they are on.
-  local old_disp new_disp
+  # THE QUESTION BLOCK: the rows it decides about, the verdict on the new
+  # path's bytes, the consequence, the question (see print_candidate_rows).
+  # Both paths are the caller's own bytes, escaped for every row they are
+  # on; each ends its row, and the old one's state is a fixed-set word in a
+  # column before it.
+  local old_disp new_disp kind_word t_line
   untrusted_var old_disp "$old"
   untrusted_var new_disp "$new" "$C_CYN"
-  printf '%sold:%s        %s\n' "$C_B" "$C_OFF" "$old_disp"
-  printf '%snew:%s        %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$new_disp" "$C_OFF"
+  printf '%sold:%s        gone  %s\n' "$C_B" "$C_OFF" "$old_disp"
+  printf '%snew:%s              %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$new_disp" "$C_OFF"
+  case "$state" in
+    rev) kind_word="repo record" ;;
+    *)   kind_word="file record" ;;
+  esac
+  printf '%srecord:%s     %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$target" "$C_OFF" \
+    "$C_DIM" "$kind_word" "$C_OFF"
   printf '%sslot:%s       %s\n' "$C_B" "$C_OFF" "$old_slot"
   print_row_to "$new_slot"
   case "$state" in
     rev)
-      printf '%skind:%s       repo record %s(%s)%s\n' "$C_B" "$C_OFF" "$C_DIM" "$target" "$C_OFF"
       subject_var subj "$rev" "$C_DIM"
       printf '%srev:%s        %s%s%s  %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$rev" "$C_OFF" \
         "$C_DIM" "$subj" "$C_OFF" ;;
     pin)
-      printf '%skind:%s       file record %s(%s)%s\n' "$C_B" "$C_OFF" "$C_DIM" "$target" "$C_OFF"
       printf '%sdigest:%s     %s%s%s  %s(%s)%s\n' "$C_B" "$C_OFF" "$C_CYN" "$digest" "$C_OFF" \
-        "$C_DIM" "$label" "$C_OFF"
-      if [ -n "$drifted" ]; then
-        printf '%snote:%s       %sthe file at the new path is not byte-identical: %s%s\n' \
-          "$C_B" "$C_OFF" "$C_YEL" "$drifted" "$C_OFF"
-        printf '            %sthe difference is confined to keys this slot already declares%s\n' \
-          "$C_DIM" "$C_OFF"
-        printf '            %signored, so the record still names this content (verify: 5).%s\n' \
-          "$C_DIM" "$C_OFF"
-      fi ;;
+        "$C_DIM" "$label" "$C_OFF" ;;
   esac
+  # What travels with the record: a list whose length this script does not
+  # choose, so one item per line, each ending on its value.
   [ -z "$tag" ] || travels="tag $tag"
-  [ -z "$ign_show" ] || travels="${travels:+$travels; }ignored keys: $ign_show"
-  [ ! -f "$old_slot/approved" ] || travels="${travels:+$travels; }the approved copy"
+  [ -z "$ign_show" ] || travels="${travels:+$travels$NL}ignored keys: $ign_show"
+  [ ! -f "$old_slot/approved" ] || travels="${travels:+$travels$NL}the approved copy"
   [ ! -f "$old_slot/signers/allowed_signers" ] \
-    || travels="${travels:+$travels; }per-slot allowed_signers"
+    || travels="${travels:+$travels$NL}per-slot allowed_signers"
   if [ -n "$travels" ]; then
-    printf '%stravels:%s    %s\n' "$C_B" "$C_OFF" "$travels"
+    local t_lead="${C_B}travels:${C_OFF}    "
+    while IFS= read -r t_line; do
+      untrusted_var t_line "$t_line"
+      printf '%s%s\n' "$t_lead" "$t_line"
+      t_lead="            "
+    done <<<"$travels"
   else
     printf '%stravels:%s    %s(the record only -- no annotations)%s\n' "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
   fi
-  echo
+  # The verdict on the new path's bytes, after the rows it is about.
+  if [ -n "$drifted" ]; then
+    printf '%snote:%s       %sthe file at the new path is not byte-identical: %s%s\n' \
+      "$C_B" "$C_OFF" "$C_YEL" "$drifted" "$C_OFF"
+    printf '            %sthe difference is confined to keys this slot already declares%s\n' \
+      "$C_DIM" "$C_OFF"
+    printf '            %signored, so the record still names this content (verify: 5).%s\n' \
+      "$C_DIM" "$C_OFF"
+  fi
+  # The consequence, directly above the question. The rows are still on
+  # screen just above, so none repeats.
   printf '%sConsumers will now trust this content at the new path.%s\n' "$C_B" "$C_OFF"
   printf '%sThe record itself does not change -- same %s, same declarations; only the\n' \
     "$C_DIM" "$what"
   printf 'path it answers to does. The old path, now gone, is tombstoned by this move,\n'
   printf 'so anything reappearing there refuses until it is approved on its own.%s\n' "$C_OFF"
-  echo
-  # The two paths again, directly above the question that decides them
-  # (see print_candidate_rows): the paragraph above has pushed the first rows up.
-  printf '%sfrom:%s       %s\n' "$C_B" "$C_OFF" "$old_disp"
-  printf '%sto:%s         %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$new_disp" "$C_OFF"
   if [ "$yes" -eq 0 ]; then
     printf '%srekey this record? [%sy%s/%sN%s]%s ' "$C_B" \
       "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
@@ -6662,21 +6687,21 @@ do_declare() {
   subject_var subj "$rev" "$C_DIM" 'commit not in repo!'
   printf '%spinned:%s     %s%s%s  %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$rev" "$C_OFF" \
     "$C_DIM" "$subj" "$C_OFF"
-  # The declaration as it stands and as it would be, each on its own row
-  # (a release name's length is the release's), directly above the question
-  # that decides it; what the question changes is stated above them. The
-  # name on record is re-read from the slot, so it is escaped like any value
-  # this script did not write in this run.
+  # The declaration as it stands and as it would be: a transition of a
+  # release name, whose length is the release's, so the new name continues
+  # on the line under the old one. The release: row's label is the noun
+  # the question names. The name on record is re-read from the slot, so it
+  # is escaped like any value this script did not write in this run.
   local old_disp
   untrusted_var old_disp "${old_tag:-(none)}" "$C_DIM"
+  printf '%srelease:%s    %s%s%s\n' "$C_B" "$C_OFF" "$C_DIM" "$old_disp" "$C_OFF"
   if [ "$remove" -eq 1 ]; then
+    print_row_to "(none)"
     printf "%sdeploy:%s     %sthe input's ref= stops being managed; it keeps whatever it says now%s\n" \
       "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
-    echo
-    printf '%sdeclared:%s   %s%s%s\n' "$C_B" "$C_OFF" "$C_DIM" "$old_disp" "$C_OFF"
-    print_row_to "(none)"
-    [ "$yes" -eq 1 ] || printf '%sclear this declaration? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+    [ "$yes" -eq 1 ] || printf '%sclear this release? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
   else
+    print_row_to "$C_CYN$C_B$name$C_OFF"
     # The deploy: row is the point of the whole ceremony -- the effect on
     # the root anchor, which is the only thing the declaration changes. It
     # prints the ref string and NOTHING about any flake's current contents,
@@ -6685,17 +6710,13 @@ do_declare() {
     # may not be the one edited. declare states what it causes; deploy
     # states what it found.
     printf '%sdeploy:%s     %sref=refs/tags/%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$name" "$C_OFF"
-    echo
-    printf "            %sdeploy syncs this input's ref= to that name, and refuses if the%s\n" \
-      "$C_DIM" "$C_OFF"
-    printf '            %slive tag ever stops naming the pinned rev%s\n' "$C_DIM" "$C_OFF"
-    echo
-    printf '%sdeclared:%s   %s%s%s\n' "$C_B" "$C_OFF" "$C_DIM" "$old_disp" "$C_OFF"
-    print_row_to "$C_CYN$C_B$name$C_OFF"
     # The invariant's verdict, checked above: the tag resolves to exactly
-    # the pinned rev, so the row needs no second hash.
+    # the pinned rev, so the row needs no second hash. Then the consequence,
+    # on its own lines directly above the question.
     printf '%s✓ the tag names the pinned rev%s\n' "$C_GRN" "$C_OFF"
-    [ "$yes" -eq 1 ] || printf '%sdeclare this release name? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+    printf "%sDeploy then syncs this input's ref= to that name, and refuses if the live\n" "$C_DIM"
+    printf 'tag ever stops naming the pinned rev.%s\n' "$C_OFF"
+    [ "$yes" -eq 1 ] || printf '%sdeclare this release? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
   fi
   if [ "$yes" -eq 0 ]; then
     drain_tty
