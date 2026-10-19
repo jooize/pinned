@@ -628,19 +628,20 @@ page() {
 # follows them. Every character on the hidden list shows as an escape, never
 # raw and never dropped:
 #
-#   \uXXXX       a hidden code point in the BMP (uppercase hex, fixed width)
-#   \UXXXXXXXX   a hidden code point above it
-#   \xHH         a byte that is not part of valid UTF-8, one escape per byte
+#   \u{HEX}   a hidden code point, uppercase hex with no leading zeros
+#             (\u{9}, \u{200B}, \u{E0041})
+#   \xHH      a byte that is not part of valid UTF-8, one escape per byte
 #
 # The hidden list: U+0000-001F, U+007F-009F, U+00A0, U+00AD, U+034F, U+061C,
 # U+115F-1160, U+17B4-17B5, U+180B-180E, U+2000-200F, U+2028-202F,
 # U+205F-206F, U+3000, U+3164, U+FE00-FE0F, U+FEFF, U+FFA0, U+FFF9-FFFB,
 # U+E0000-E007F, U+E0100-E01EF. Tab and CR are on it; LF is the line break
-# itself, and a plain space is not on it. A literal backslash followed by u,
-# U or x and a hex digit is escaped too (as \u005C), so a backslash-u on
-# screen can only ever begin an escape: any `\` followed by `u`, `U` or `x`
-# and a hex digit in this output IS one, which is what lets the colorizers
-# find them (escat in AWK_UNTRUSTED) without being told where they are.
+# itself, and a plain space is not on it. A literal backslash followed by
+# u{, or by x and a hex digit, is escaped too (as \u{5C}), so a backslash-u
+# on screen can only ever begin an escape: any `\` followed by `u{`, or by
+# `x` and a hex digit, in this output IS one, which is what lets the
+# colorizers find them (escat in AWK_UNTRUSTED) without being told where
+# they are. The braces delimit the hex, so no escape is a prefix of another.
 #
 # ONE ESCAPER, untrusted_escape, and every display of third-party text goes
 # through it: untrusted_page for a body that is paged (diffs, file content),
@@ -689,7 +690,7 @@ UNTRUSTED_PL='
   }
   sub esc {
     my $p = shift;
-    return $o . ($p > 0xFFFF ? sprintf("\\U%08X", $p) : sprintf("\\u%04X", $p)) . $c;
+    return $o . sprintf("\\u{%X}", $p) . $c;
   }
   sub mb {
     my $s = shift;
@@ -700,7 +701,7 @@ UNTRUSTED_PL='
     return hidden($p) ? esc($p) : $s;
   }
   while (defined(my $l = <STDIN>)) {
-    $l =~ s/([\x20-\x5B\x5D-\x7E\n]+)|(\\(?=[uUx][0-9A-Fa-f]))|(\\)|([\x00-\x09\x0B-\x1F\x7F])|([\xC2-\xDF][\x80-\xBF]|\xE0[\xA0-\xBF][\x80-\xBF]|[\xE1-\xEC\xEE\xEF][\x80-\xBF]{2}|\xED[\x80-\x9F][\x80-\xBF]|\xF0[\x90-\xBF][\x80-\xBF]{2}|[\xF1-\xF3][\x80-\xBF]{3}|\xF4[\x80-\x8F][\x80-\xBF]{2})|([\x80-\xFF])/defined $1 ? $1 : defined $2 ? esc(0x5C) : defined $3 ? "\\" : defined $4 ? esc(ord $4) : defined $5 ? mb($5) : $o . sprintf("\\x%02X", ord $6) . $c/ge;
+    $l =~ s/([\x20-\x5B\x5D-\x7E\n]+)|(\\(?=u\{|x[0-9A-Fa-f]))|(\\)|([\x00-\x09\x0B-\x1F\x7F])|([\xC2-\xDF][\x80-\xBF]|\xE0[\xA0-\xBF][\x80-\xBF]|[\xE1-\xEC\xEE\xEF][\x80-\xBF]{2}|\xED[\x80-\x9F][\x80-\xBF]|\xF0[\x90-\xBF][\x80-\xBF]{2}|[\xF1-\xF3][\x80-\xBF]{3}|\xF4[\x80-\x8F][\x80-\xBF]{2})|([\x80-\xFF])/defined $1 ? $1 : defined $2 ? esc(0x5C) : defined $3 ? "\\" : defined $4 ? esc(ord $4) : defined $5 ? mb($5) : $o . sprintf("\\x%02X", ord $6) . $c/ge;
     print $l or exit 1;
   }
   close STDOUT or exit 1;
@@ -758,16 +759,19 @@ untrusted_page() { # <colorizer or ""> -- raw bytes on stdin
 # style them. escat is the token at byte i, or ""; ex(s, c) is s with each
 # token in reverse red (RV, ended by RO) and the color c resumed after it;
 # escover is the start of the token covering byte p, or 0, so a colorizer
-# that splits a line never splits an escape. With RV empty, ex is identity.
-# The text is ASCII-only around a token, so byte indexing under LC_ALL=C is
-# exact. Interval expressions are spelled out: older awks lack {n}.
+# that splits a line never splits an escape (a token is at most 10 bytes,
+# \u{10FFFF}). With RV empty, ex is identity. The text is ASCII-only around
+# a token, so byte indexing under LC_ALL=C is exact. Braces are bracketed
+# and intervals spelled out: older awks lack {n}.
 AWK_UNTRUSTED='
-  function escat(s, i,   t) {
+  function escat(s, i,   t, j) {
     if (substr(s, i, 1) != "\\") return ""
     t = substr(s, i + 1, 1)
-    if (t == "u") { t = substr(s, i, 6);  return (t ~ /^\\u[0-9A-F][0-9A-F][0-9A-F][0-9A-F]$/) ? t : "" }
-    if (t == "U") { t = substr(s, i, 10); return (t ~ /^\\U[0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F][0-9A-F]$/) ? t : "" }
-    if (t == "x") { t = substr(s, i, 4);  return (t ~ /^\\x[0-9A-F][0-9A-F]$/) ? t : "" }
+    if (t == "u") {
+      if (substr(s, i + 2, 1) != "{" || (j = index(substr(s, i + 3, 7), "}")) < 2) return ""
+      t = substr(s, i, j + 3); return (t ~ /^\\u[{][0-9A-F]+[}]$/) ? t : ""
+    }
+    if (t == "x") { t = substr(s, i, 4); return (t ~ /^\\x[0-9A-F][0-9A-F]$/) ? t : "" }
     return ""
   }
   function ex(s, c,   out, k, t) {
@@ -1406,7 +1410,7 @@ json_keys_changed() { # <old> <new> -> "<added>\t<removed>\t<key>" rows
 # the diff's own green/red; the label is dim.
 #
 # The rows arrive ESCAPED (a key name is the file's own text), so the tab
-# between fields is spelled `\u0009` and is split on as such; a key name
+# between fields is spelled `\u{9}` and is split on as such; a key name
 # holding a tab of its own escapes the same way, makes a fourth field and is
 # dropped, exactly as a raw one was (a missing key, never a false one). Each
 # name's escapes wear reverse red inside the cyan.
@@ -1420,7 +1424,7 @@ render_keys_block() {
       if (d > 0)  s = s (aw > 0 ? "  " : "") pad(dw - length(d) - 1) red "-" d off
       return s
     }
-    BEGIN { T = "\\u0009" }
+    BEGIN { T = "\\u{9}" }
     {
       if ((k1 = index($0, T)) == 0) next
       r = substr($0, k1 + length(T))
@@ -2040,10 +2044,10 @@ print_commit_range() {
   # ESCAPED BEFORE IT IS PARSED. The whole stream goes through the escaper
   # first, so the parser below only ever holds escaped text and nothing it
   # prints can carry a raw control byte. The sentinels survive as their own
-  # escapes (\u0001, \u0002, \u0003, the numstat tab as \u0009), and they
+  # escapes (\u{1}, \u{2}, \u{3}, the numstat tab as \u{9}), and they
   # stay unforgeable: a raw sentinel byte in a message is escaped the same
-  # way but cannot know the nonce, and the TEXT "\u0001" in a message is
-  # escaped to "\u005Cu0001", which no longer contains the sentinel's
+  # way but cannot know the nonce, and the TEXT "\u{1}" in a message is
+  # escaped to "\u{5C}u{1}", which no longer contains the sentinel's
   # spelling. A git failure is tolerated as before (an empty listing); an
   # escaper failure stops the ceremony.
   #
@@ -2085,10 +2089,10 @@ print_commit_range() {
       if (length(hsh[n]) > hw) hw = length(hsh[n])
     }
     BEGIN {
-      sep = "\\u0002"
-      st  = "\\u0001" nonce sep
-      en  = "\\u0001" nonce "\\u0003"
-      tab = "\\u0009"
+      sep = "\\u{2}"
+      st  = "\\u{1}" nonce sep
+      en  = "\\u{1}" nonce "\\u{3}"
+      tab = "\\u{9}"
     }
     {
       line = $0
@@ -2096,7 +2100,7 @@ print_commit_range() {
         if (index(line, st) == 1) {         # a commit block opens here
           inmsg = 1; buf = ""; line = substr(line, length(st) + 1)
         } else {
-          if (n > 0 && line ~ /^[0-9-]+\\u0009/) {   # a numstat row of that commit
+          if (n > 0 && line ~ /^[0-9-]+\\u[{]9[}]/) {   # a numstat row of that commit
             mrg[n] = 0
             nfl[n]++
             k = index(line, tab); f1 = substr(line, 1, k - 1)

@@ -122,10 +122,9 @@ JSON summary, repo and file names \(em shows exactly the characters that
 are there.
 A character that draws nothing, draws as something else or reorders what
 follows it prints as an escape, never raw and never dropped:
-.B \euXXXX
-for a code point in the Basic Multilingual Plane,
-.B \eUXXXXXXXX
-above it (uppercase hex, fixed width), and
+.B \eu{HEX}
+for a code point, in uppercase hex with no leading zeros
+(\fB\eu{9}\fP, \fB\eu{200B}\fP, \fB\eu{E0041}\fP), and
 .B \exHH
 for each byte that is not part of valid UTF\-8.
 The escaped set is U+0000\(enU+001F, U+007F\(enU+009F, U+00A0, U+00AD,
@@ -135,12 +134,11 @@ U+FE00\(enU+FE0F, U+FEFF, U+FFA0, U+FFF9\(enU+FFFB, U+E0000\(enU+E007F and
 U+E0100\(enU+E01EF: tab and carriage return included, line feed excepted
 (it is the line break), and a plain space untouched.
 A literal backslash followed by
-.BR u ,
-.B U
-or
+.BR u{ ,
+or by
 .B x
-and a hex digit is escaped too, as
-.BR \eu005C ,
+and a hex digit, is escaped too, as
+.BR \eu{5C} ,
 so an escape on screen can only ever be one.
 On a terminal each escape is reverse red, a style nothing else in pinned
 wears; under

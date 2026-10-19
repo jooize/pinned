@@ -124,7 +124,7 @@ skip() { # label reason
 bail() { local nl=$'\n'; printf 'Bail out! %s\n' "${1//"$nl"/ }"; exit 2; }
 
 # A literal backslash, octal-spelled, for the expected form of pinned's
-# escapes ("${BS}u001B"): no quoting layer can reinterpret it.
+# escapes ("${BS}u{1B}"): no quoting layer can reinterpret it.
 BS="$(printf '\134')"
 
 assert_exit() { # got want label
@@ -1844,7 +1844,7 @@ y
   else
     ok "no ESC byte reaches the ceremony display"
   fi
-  assert_contains "$OUT" "d7 ${BS}u001B[1A${BS}u001B[2K erased" \
+  assert_contains "$OUT" "d7 ${BS}u{1B}[1A${BS}u{1B}[2K erased" \
     "the subject reads with each control byte shown as its escape"
 
   # NO WRAPPING. A subject is never capped, padded or folded by pinned: it
@@ -1906,7 +1906,7 @@ y
   assert_eq "$(grep -cE '^[0-9a-f]+  ' "$OUT")" "$D_ROWS" \
     "the planted sentinel opens no row of its own"
   assert_contains "$OUT" 'FORGED SUBJECT' "the planted text prints as body, where it belongs"
-  D_FORGED="${BS}u0001deadbeefcafe${BS}u0002cafed00d${BS}u0002FORGED SUBJECT"
+  D_FORGED="${BS}u{1}deadbeefcafe${BS}u{2}cafed00d${BS}u{2}FORGED SUBJECT"
   assert_eq "$(grep -cxF -e "$D_FORGED" "$OUT" || true)" 1 \
     "the planted bytes print as one body line, control bytes escaped"
   # The body sits at column zero, as its author laid it out, and ONE blank
@@ -4981,31 +4981,36 @@ fi
 # untrusted_page feeds them.
 RV=$'\033[7;31m' RO=$'\033[0m'
 printf '%s\n' 'diff --git a/z b/z' '--- a/z' '+++ b/z' '@@ -1,2 +1,2 @@' \
-  "-x${BS}u200By" "+x${BS}u200Cy" " ctx${BS}u0009end" > "$HLD/esc.diff"
+  "-x${BS}u{200B}y" "+x${BS}u{200C}y" " ctx${BS}u{9}end" > "$HLD/esc.diff"
 hl_run 1 color_diff "$HLD/esc.diff"
 assert_exit "$RC" 0 "color_diff exits 0 over escaped text"
 hl_exact "$HLD/esc.diff" "diff: escaped text survives byte for byte"
-assert_contains "$OUT" $'\033[31;48;5;52m'"$RV${BS}u200B$RO"$'\033[31;48;5;52m' \
+assert_contains "$OUT" $'\033[31;48;5;52m'"$RV${BS}u{200B}$RO"$'\033[31;48;5;52m' \
   "diff: a changed escape is marked whole, in reverse red, inside the removed middle"
-assert_contains "$OUT" $'\033[32;48;5;22m'"$RV${BS}u200C$RO"$'\033[32;48;5;22m' \
+assert_contains "$OUT" $'\033[32;48;5;22m'"$RV${BS}u{200C}$RO"$'\033[32;48;5;22m' \
   "diff: and inside the added middle"
-assert_contains "$OUT" "ctx$RV${BS}u0009${RO}end" "diff: an escape on a context line wears reverse red"
-printf '%s\n' "x ${BS}u00A0 y" > "$HLD/esc.txt"
+assert_contains "$OUT" "ctx$RV${BS}u{9}${RO}end" "diff: an escape on a context line wears reverse red"
+printf '%s\n' "x ${BS}u{A0} y" > "$HLD/esc.txt"
 hl_run 1 untrusted_mark "$HLD/esc.txt"
-assert_contains "$OUT" "x $RV${BS}u00A0$RO y" "untrusted_mark: reverse red around the escape and nothing else"
+assert_contains "$OUT" "x $RV${BS}u{A0}$RO y" "untrusted_mark: reverse red around the escape and nothing else"
+# A backslash-u without the brace is text, not an escape: the escaper lets
+# it through as itself, so no colorizer may mark it.
+printf '%s\n' "${BS}u00A0 ${BS}U000000A0 ${BS}u{ ${BS}u{} ${BS}u{a0}" > "$HLD/esc-not.txt"
+hl_run 1 untrusted_mark "$HLD/esc-not.txt"
+assert_missing "$OUT" "$RV" "untrusted_mark: a backslash-u with no brace, or no uppercase hex in one, wears nothing"
 hl_run "" untrusted_mark "$HLD/esc.txt"
 hl_exact "$HLD/esc.txt" "untrusted_mark with HL_ON off is a passthrough"
-printf '{"k\\u00e9y": "v%sv"}\n' "${BS}u200B" > "$HLD/esc.json"
+printf '{"k\\u00e9y": "v%sv"}\n' "${BS}u{200B}" > "$HLD/esc.json"
 hl_run 1 highlight_json "$HLD/esc.json"
-assert_contains "$OUT" "$RV${BS}u200B$RO"$'\033[0;32m' "json: an escape inside a string resumes the string's green"
-printf '#!/bin/sh\necho "a%sb" # c%sd\n' "${BS}u0009" "${BS}u200B" > "$HLD/esc.bash"
+assert_contains "$OUT" "$RV${BS}u{200B}$RO"$'\033[0;32m' "json: an escape inside a string resumes the string's green"
+printf '#!/bin/sh\necho "a%sb" # c%sd\n' "${BS}u{9}" "${BS}u{200B}" > "$HLD/esc.bash"
 hl_run 1 highlight_bash "$HLD/esc.bash"
-assert_contains "$OUT" "$RV${BS}u0009$RO"$'\033[0;32m' "bash: an escape inside a string resumes the string's green"
-assert_contains "$OUT" "$RV${BS}u200B$RO"$'\033[2m' "bash: an escape inside a comment resumes the dim"
-printf '# T%sx\n`a%sb`\n' "${BS}u200B" "${BS}u0009" > "$HLD/esc.md"
+assert_contains "$OUT" "$RV${BS}u{9}$RO"$'\033[0;32m' "bash: an escape inside a string resumes the string's green"
+assert_contains "$OUT" "$RV${BS}u{200B}$RO"$'\033[2m' "bash: an escape inside a comment resumes the dim"
+printf '# T%sx\n`a%sb`\n' "${BS}u{200B}" "${BS}u{9}" > "$HLD/esc.md"
 hl_run 1 highlight_md "$HLD/esc.md"
-assert_contains "$OUT" "$RV${BS}u200B$RO"$'\033[1;36m' "md: an escape in a heading resumes the cyan"
-assert_contains "$OUT" "$RV${BS}u0009$RO"$'\033[0;32m' "md: an escape in a code span resumes the green"
+assert_contains "$OUT" "$RV${BS}u{200B}$RO"$'\033[1;36m' "md: an escape in a heading resumes the cyan"
+assert_contains "$OUT" "$RV${BS}u{9}$RO"$'\033[0;32m' "md: an escape in a code span resumes the green"
 
 # ---------------------------------------------------------------------------
 say "S22: shell completions (present, installed, parse, cover every action)"
@@ -5349,15 +5354,14 @@ fi
 say "S25: third-party text is shown escaped (the shared escaper)"
 # ---------------------------------------------------------------------------
 # One escaper, untrusted_escape, renders every byte of text pinned did not
-# write: a hidden code point as \uXXXX (BMP) or \UXXXXXXXX, an invalid byte
-# as \xHH, a literal backslash-u/U/x-hexdigit as the escape of the
-# backslash, and everything else as itself. Driven through the PROBE, bytes
-# in, bytes out; the expected forms are spelled here, not computed by the
-# code under test.
+# write: a hidden code point as \u{HEX} (uppercase, no leading zeros), an
+# invalid byte as \xHH, a literal backslash before u{ or before x and a hex
+# digit as the escape of the backslash, and everything else as itself.
+# Driven through the PROBE, bytes in, bytes out; the expected forms are
+# spelled here, not computed by the code under test.
 U8() { perl -CO -e 'print chr(hex($ARGV[0]))' "$1"; }   # one code point, UTF-8
 esc_want() { # hex -> the escape pinned must print for it
-  if [ $((16#$1)) -gt 65535 ]; then printf '%sU%08X' "$BS" "$((16#$1))"
-  else printf '%su%04X' "$BS" "$((16#$1))"; fi
+  printf '%su{%X}' "$BS" "$((16#$1))"
 }
 # Each range of the hidden list: its first, a middle and its last code
 # point, one per line between markers. LF is the line break itself, so
@@ -5406,18 +5410,24 @@ assert_eq "$(wc -l <"$OUT" | tr -d ' ')" "$(wc -l <"$FIX/esc-want" | tr -d ' ')"
 RC=0
 ESC_OUT="$(printf 'a\tb\rc d\ne f' | "$PROBE" untrusted_escape)" || RC=$?
 assert_exit "$RC" 0 "the escaper exits 0 over tab, CR and LF"
-assert_eq "$ESC_OUT" "a${BS}u0009b${BS}u000Dc d"$'\n'"e f" \
+assert_eq "$ESC_OUT" "a${BS}u{9}b${BS}u{D}c d"$'\n'"e f" \
   "tab and CR escape, a plain space stays, LF is the line break"
 
 # THE SELF-ESCAPE: a literal backslash that would read as the start of an
-# escape -- followed by u, U or x and a hex digit, either case -- shows as
-# the escape of the backslash, so an escape on screen can only be one. A
-# backslash before anything else prints as itself.
-E5C="${BS}u005C"
-ESC_OUT="$(printf '%s' "${BS}u0041 ${BS}U0001F600 ${BS}x41 ${BS}ua ${BS}xg ${BS}u ${BS}${BS} ${BS}n end" \
+# escape -- followed by u{ (whatever follows the brace), or by x and a hex
+# digit of either case -- shows as the escape of the backslash, so an escape
+# on screen can only be one. A backslash before anything else prints as
+# itself.
+E5C="${BS}u{5C}"
+ESC_OUT="$(printf '%s' "${BS}u{41} ${BS}u{zz ${BS}u{ ${BS}x41 ${BS}xa ${BS}xg ${BS}x ${BS}${BS} ${BS}n end" \
   | "$PROBE" untrusted_escape)"
-assert_eq "$ESC_OUT" "${E5C}u0041 ${E5C}U0001F600 ${E5C}x41 ${E5C}ua ${BS}xg ${BS}u ${BS}${BS} ${BS}n end" \
-  "a literal backslash-u, -U or -x before a hex digit is itself escaped, any other backslash is not"
+assert_eq "$ESC_OUT" "${E5C}u{41} ${E5C}u{zz ${E5C}u{ ${E5C}x41 ${E5C}xa ${BS}xg ${BS}x ${BS}${BS} ${BS}n end" \
+  "a literal backslash before u{, or before x and a hex digit, is itself escaped, any other backslash is not"
+# No escape is spelled without the brace, so a backslash before u and no
+# brace, or before a plain U, cannot read as one and prints as itself.
+ESC_OUT="$(printf '%s' "${BS}u0041 ${BS}ua ${BS}u ${BS}U0001F600 ${BS}U end" | "$PROBE" untrusted_escape)"
+assert_eq "$ESC_OUT" "${BS}u0041 ${BS}ua ${BS}u ${BS}U0001F600 ${BS}U end" \
+  "a literal backslash before u with no brace, or before a plain U, prints as itself"
 
 # A byte that is not part of valid UTF-8 shows as \xHH, one per byte: a lone
 # continuation byte, a truncated sequence, an overlong form, a surrogate, a
@@ -5428,7 +5438,7 @@ assert_eq "$ESC_OUT" "<${BS}x80> <${BS}xC3(> <${BS}xC0${BS}xAF> <${BS}xED${BS}xA
   "each invalid byte shows as its own \\xHH escape"
 # Valid text outside the list is untouched, NUL included in the list.
 ESC_OUT="$(printf 'caf\303\251 \342\234\223 \346\227\245 \000.' | "$PROBE" untrusted_escape)"
-assert_eq "$ESC_OUT" "$(printf 'caf\303\251 \342\234\223 \346\227\245 ')${BS}u0000." \
+assert_eq "$ESC_OUT" "$(printf 'caf\303\251 \342\234\223 \346\227\245 ')${BS}u{0}." \
   "valid UTF-8 off the list prints as itself, and NUL shows escaped"
 
 # Color: with the stream's reverse red on, each escape wears it and the
@@ -5437,10 +5447,10 @@ assert_eq "$ESC_OUT" "$(printf 'caf\303\251 \342\234\223 \346\227\245 ')${BS}u00
 ESC_ZW="$(printf "a\342\200\213b")"
 export ESC_ZW
 run_probe eval 'C_RV="$SGR_RV" C_DIM="<dim>"; untrusted_var v "$ESC_ZW" "$C_DIM"; printf "%s" "$v"'
-assert_eq "$POUT" "a"$'\033[7;31m'"${BS}u200B"$'\033[0m'"<dim>b" \
+assert_eq "$POUT" "a"$'\033[7;31m'"${BS}u{200B}"$'\033[0m'"<dim>b" \
   "color on: reverse red around the escape, then the row's color again"
 run_probe eval 'untrusted_var v "$ESC_ZW" "<dim>"; printf "%s" "$v"'
-assert_eq "$POUT" "a${BS}u200Bb" "color off: the escape text alone, no SGR at all"
+assert_eq "$POUT" "a${BS}u{200B}b" "color off: the escape text alone, no SGR at all"
 run_probe eval 'untrusted_var v "plain subject (no escapes)"; printf "%s" "$v"'
 assert_eq "$POUT" "plain subject (no escapes)" "printable ASCII is its own escaped form"
 assert_eq "$(grep -c '7;31m' "$SRC")" 1 "reverse red is defined once and worn by nothing else"
@@ -5462,8 +5472,8 @@ y
 '
   run_pinned review "$REPO_E"
   assert_exit "$RC" 0 "review over hidden characters exits 0"
-  assert_contains "$OUT" "e1 hidden${BS}u200Bmark" "the subject shows its zero-width space as an escape"
-  assert_contains "$OUT" "+e1${BS}u202Ertl" "the diff shows its bidi override as an escape"
+  assert_contains "$OUT" "e1 hidden${BS}u{200B}mark" "the subject shows its zero-width space as an escape"
+  assert_contains "$OUT" "+e1${BS}u{202E}rtl" "the diff shows its bidi override as an escape"
   if LC_ALL=C grep -q -e $'\342\200\213' -e $'\342\200\256' "$OUT"; then
     fail "no hidden character reaches the display raw"
   else

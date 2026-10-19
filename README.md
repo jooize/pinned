@@ -630,12 +630,13 @@ one.
   key names, repo and file names: every character that draws nothing,
   draws as something else or reorders what follows it (the control
   characters, bidi controls, zero-width and invisible spaces, variation
-  selectors, tag characters) prints as an escape -- `\uXXXX`,
-  `\UXXXXXXXX` above the BMP, and `\xHH` for each byte that is not valid
-  UTF-8 -- never raw and never dropped. Tab and CR escape, LF is the line
-  break, a plain space is itself. A literal backslash that would read as
-  an escape (before `u`, `U` or `x` and a hex digit) is escaped too, so
-  an escape on screen can only be one. One escaper, run on the raw bytes
+  selectors, tag characters) prints as an escape -- `\u{HEX}` in
+  uppercase hex with no leading zeros (`\u{9}`, `\u{200B}`, `\u{E0041}`),
+  and `\xHH` for each byte that is not valid UTF-8 -- never raw and never
+  dropped. Tab and CR escape, LF is the line break, a plain space is
+  itself. A literal backslash that would read as an escape (before `u{`,
+  or before `x` and a hex digit) is escaped too, as `\u{5C}`, so an
+  escape on screen can only be one. One escaper, run on the raw bytes
   before any color, so no byte of the content can act on the terminal; if
   it fails, the review stops and nothing raw is shown in its place. The
   records keep their bytes. The full list is in `man pinned`, "Third-party
