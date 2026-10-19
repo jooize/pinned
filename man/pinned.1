@@ -159,32 +159,56 @@ So every listing and every displayed body closes with a rule
 .BR "\-\-\- end of file: ... \-\-\-" ),
 and everything that is pinned's judgment \(em the backward or diverged
 alarm, the signature verdicts, the notes about a slot's state \(em prints
-below the last such rule, directly above the question it informs.
-A value whose length pinned does not choose (a path, a subject, a name)
-ends its line, section markers included:
-.BR "\-\-\- exactly the bytes being approved: " \fIpath\fP .
+below the last such rule, under the rows the question decides about and
+directly above the question it informs.
+A value whose length pinned does not choose (a path, a subject, a name, a
+command line) ends its line, and nothing is padded to its width.
+A bounded value (a hash, a count, a fixed word) is a field and may sit
+mid-line:
+.BR "\[u2713] approved " \fIhash\fP ": " \fIpath\fP .
+A word from a fixed set that qualifies a path is a column before it
+.RB ( "path:       gone  " \fIpath\fP );
+a sentence that qualifies one is a dim line under it.
+Section rules hold no value
+.RB ( "\-\-\- exactly the bytes being approved \-\-\-" ):
+the path stands on its
+.B file:
+row.
+A transition uses
+.BR \[u2192] :
+a bounded one stays on one row, and an unbounded one continues on the
+line under its row, the arrow hanging in the gutter so the new value
+starts in the old one's column.
+Errors and refusals end on their value too; a message about two such
+values gives each its own row.
 .PP
 .B A gate or a question holds no value of its own.
-It names its object with a noun
-.RB ( "approve this commit? [y/N]" ,
-.BR "review the diff; Enter open \(pc n skip" ),
-and every value it decides about stands on a labeled row directly
-above it, repeating what has scrolled away: a review gate stands under
+It names its object with a noun that matches a row's label
+.RB ( "approve this candidate? [y/N]" ,
+.BR "review this range; Enter open \(pc n skip" ),
+and every value it decides about stands on a labeled row above it: a
+review gate under
 .B repo:
 and
 .B range:
 rows, the approval under
 .B repo:
 and
-.BR commit: ,
-a file's gate under
-.B file:
-and
-.BR change: ,
-its approval under
+.BR candidate: ,
+a file's gate under its
+.B change:
+row, its approval under
 .B file:
 and the digest.
-The verdicts sit between those rows and the question.
+A question block reads top to bottom: the content and its closing rule,
+advice, the rows, the alarm or verdict and any consequence line, the
+question.
+A row repeats only when a listing, a diff or a pager stands between its
+first mention and the question; rows still on screen are not printed
+again, so a first approval's gate stands directly under the identity
+block.
+Rows print when the action can go ahead, as the record of what was done
+when the command line answered in advance, and a refusal prints none.
 .SH COMMANDS
 .SS Repository approval
 .TP
@@ -247,7 +271,9 @@ and
 open the diff;
 .B n
 is the other answer, and end of input takes the skip.
-Anything else is named back and the gate asks again.
+Anything else is not acted on: a yellow
+.B not an answer
+line, never an echo of what was typed, and the gate is printed again.
 Approving a repo without reading its diff is offered in one place only:
 a forward move from a pin, by its words (below).
 The gate's
@@ -370,9 +396,10 @@ range); for diverged, the merge base, the commits leaving the pinned line
 and the commits arriving on the new one.
 The authoritative diff still runs, pin to candidate \(em an honest
 rendering of what trust is moving to.
-Then, below the diff's closing rule and directly above the question, a
-full-caps alarm names the class and both revs: it is a verdict, and a
-verdict prints after the last third-party text on the screen.
+Then, below the diff's closing rule and the rows the question decides
+about, directly above the question, a full-caps alarm names the class and
+both revs: it is a verdict, and a verdict prints after the last
+third-party text on the screen.
 The classification is mirrored in the pre-sudo preview, so an undeclared
 non-forward move costs no authentication.
 .IP

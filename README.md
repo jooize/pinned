@@ -647,11 +647,25 @@ one.
   (`--- end of listing: 3 commits ---`, `--- end of diff: ... ---`,
   `--- end of file: ... ---`), and pinned's judgments -- the backward or
   diverged alarm, signature verdicts, notes on a slot's state -- print
-  below the last rule, directly above the question.
+  below the last rule, under the rows the question decides about and
+  directly above the question.
 - **A value whose length pinned does not choose ends its line.** A
-  subject, path or name comes last on its row, section markers included
-  (`--- exactly the bytes being approved: <path>`); nothing is padded to
-  its width and pinned reads no terminal width.
+  subject, path, name or command line comes last on its row, and nothing
+  is padded to its width; pinned reads no terminal width. A bounded value
+  (a hash, a count, a fixed word) is a field and may sit mid-line, so a
+  record verdict reads `✓ approved <hash>: <record path>`. A word from a
+  fixed set that qualifies a path is a column before it (`path:  gone
+  /x/old.txt`), and a sentence that qualifies one is a dim line under it.
+  Section rules hold no value (`--- exactly the bytes being approved
+  ---`): the path is on its `file:` row. Errors and refusals end on their
+  value too, and a message about two such values gives each its own row.
+- **Transitions** use `→`. A bounded one stays on one row (`pin:
+  b1ea8c7d50 → 5915adef87`); an unbounded one continues under its row,
+  the arrow hanging in the gutter so the new value starts in the old
+  one's column:
+
+      ✓ declared: v1.2
+                → /var/db/pinned/<user>/slots/<enc>/release
 - **`pinned list` rows** read state first, as one word (`current`,
   `changed`, `gone`, `broken`) padded to the widest word in the section,
   then a repo's short hash, and the name last. A state that says more
@@ -673,16 +687,21 @@ one.
   the part that changed, like Git's contrib `diff-highlight`. A pair that
   shares nothing past its indentation is left unmarked.
 - **Glyphs**: `✓` recorded/verified, `✗` refused, `~` matched with a
-  declared tolerance.
+  declared tolerance, `→` a transition.
 - **Gates read one way everywhere.** A gate names what happens next, then
   its keys: `review 1 repo as root; Enter run · n stop` before an action,
-  `review the diff; Enter open · n skip` before a review.
+  `review this range; Enter open · n skip` before a review.
   A gate or a question never holds a path, a name or a subject: it names
-  its object with a noun (`approve this commit? [y/N]`, `tombstone this
-  path? [y/N]`), and each value it decides about stands on a labeled row
-  directly above it (`repo:` and `range:` over a review gate, `repo:` and
-  `commit:` over the approval), repeating what the listing and the diff
-  scrolled away. An alarm sits between those rows and the question.
+  its object with a noun that matches a row's label (`approve this
+  candidate? [y/N]` under `candidate:`, `tombstone this path? [y/N]`
+  under `path:`), and each value it decides about stands on a labeled row
+  above it. A question block reads top to bottom: the content and its
+  closing rule, advice, the rows, the alarm or verdict and any
+  consequence line, the question. A row repeats only when a listing, a
+  diff or a pager stands between its first mention and the question
+  (`repo:` and `candidate:` after the diff); a first approval's gate
+  stands directly under the identity block. Rows print when the action
+  can go ahead, and a refusal prints none.
   The answer is typed at the end of the gate line. Enter, `y` and `yes`
   continue; `n` declines every gate, because a gate has exactly two
   outcomes and one decline key is enough; end of input declines too,
