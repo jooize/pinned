@@ -1495,7 +1495,7 @@ else
 fi
 run_pinned list --format yaml
 assert_exit "$RC" 1 "an unknown list format is refused"
-assert_contains "$OUT" "unknown list format: yaml" "and the refusal names it"
+assert_contains "$OUT" "unknown list format (text or json): yaml" "and the refusal names it, last"
 
 run_pinned list --under "$SUB/l/sub"
 assert_exit "$RC" 0 "list --under exits 0"
@@ -1684,7 +1684,7 @@ y
   ANS=""
   run_pinned status "$REPO_FIX"
   assert_exit "$RC" 1 "a short rev.git is refused by read_rev"
-  assert_contains "$OUT" "does not match rev.git (40 or 64 hex)" "the refusal names the length invariant"
+  assert_contains "$OUT" "not rev.git's (40 or 64 hex): " "the refusal names the length invariant, the record last"
 fi
 
 # Slot parsing without git: hand-written rev.git slots at non-repo paths.
@@ -3035,7 +3035,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   ANS=""
   run_pinned declare "$REPO_TS" --release v1
   assert_exit "$RC" 1 "a tombstoned slot refuses"
-  assert_contains "$OUT" "is tombstoned" "with read_rev's own refusal"
+  assert_contains "$OUT" "a tombstoned slot" "with read_rev's own refusal"
 
   # The elevation gates, in the verb's own words.
   ANS='
@@ -4084,7 +4084,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   ANS=""
   run_pinned show "$REPO_R"
   assert_exit "$RC" 1 "show of an unpinned repo refuses"
-  assert_contains "$OUT" "no pin for $REPO_R; show re-displays a pin (review it first)" \
+  assert_contains "$OUT" "show re-displays a pin; review it first: pinned review $REPO_R" \
     "the refusal names the missing pin and the remedy"
   assert_absent "$R_SLOT" "a refused show creates no slot dir"
 
@@ -4542,8 +4542,9 @@ write_shebang() { # name first-line -> path of a fixture "install"
 
 run_probe verify_interpreter_pin "$(write_shebang env.sh '#!/usr/bin/env bash')"
 assert_exit "$RC" 1 "env shebang: refused"
-assert_contains "$ERRF" "runs under an env shebang: #!/usr/bin/env bash" \
-  "env shebang: says what it found"
+assert_contains "$ERRF" "an env shebang: #!/usr/bin/env bash" \
+  "env shebang: says what it found, last"
+assert_contains "$ERRF" "        file:  $INTERP/env.sh" "and names the file on its own row"
 assert_contains "$ERRF" "The sudoers digest pins this script's bytes, not its interpreter, and" \
   "env shebang: says why the digest does not cover it"
 assert_contains "$ERRF" "Reinstall from a current checkout -- its first line already names an" \
@@ -4552,37 +4553,38 @@ assert_contains "$ERRF" "Reinstall from a current checkout -- its first line alr
 # Any path ending in /env is the same PATH-search delegator, wherever it sits.
 run_probe verify_interpreter_pin "$(write_shebang env2.sh '#!/run/current-system/sw/bin/env bash')"
 assert_exit "$RC" 1 "env under another prefix: refused"
-assert_contains "$ERRF" "runs under an env shebang" "env under another prefix: same refusal"
+assert_contains "$ERRF" "an env shebang: " "env under another prefix: same refusal"
 
 run_probe verify_interpreter_pin "$(write_shebang rel.sh '#!bash')"
 assert_exit "$RC" 1 "relative interpreter: refused"
-assert_contains "$ERRF" "names a relative interpreter: #!bash" \
+assert_contains "$ERRF" "a relative interpreter: #!bash" \
   "relative interpreter: says what it found"
 
 run_probe verify_interpreter_pin "$(write_shebang none.sh 'no shebang at all')"
 assert_exit "$RC" 1 "no shebang: refused"
-assert_contains "$ERRF" "has no shebang" "no shebang: says what it found"
+assert_contains "$ERRF" "no shebang, so its interpreter is whatever executes it" "no shebang: says what it found"
 
 printf '' > "$INTERP/empty.sh"
 run_probe verify_interpreter_pin "$INTERP/empty.sh"
 assert_exit "$RC" 1 "empty file: refused"
-assert_contains "$ERRF" "has no shebang" "empty file: refused as shebang-less"
+assert_contains "$ERRF" "no shebang, so its interpreter is whatever executes it" "empty file: refused as shebang-less"
 
 run_probe verify_interpreter_pin "$INTERP/no-such-file.sh"
 assert_exit "$RC" 1 "missing install target: refused"
-assert_contains "$ERRF" "is not a regular file" "missing install target: says what it found"
+assert_contains "$ERRF" "not a regular file, so its interpreter cannot be read: $INTERP/no-such-file.sh" \
+  "missing install target: says what it found, the path last"
 
 # The interpreter must survive the ownership walk too: a world-writable one
 # is swappable, so pinning its path buys nothing.
 run_probe verify_interpreter_pin "$(write_shebang loose.sh "#!$LOOSE_BASH")"
 assert_exit "$RC" 1 "world-writable interpreter: refused"
-assert_contains "$ERRF" "has mode 777" "world-writable interpreter: the mode check fired"
-assert_contains "$ERRF" "names an interpreter that is not root-owned" \
+assert_contains "$ERRF" "mode 777, expected 755 or stricter: " "world-writable interpreter: the mode check fired"
+assert_contains "$ERRF" "an interpreter that is not root-owned: " \
   "world-writable interpreter: the guard says why it matters"
 
 run_probe verify_interpreter_pin "$(write_shebang gone.sh '#!/nonexistent/bin/bash')"
 assert_exit "$RC" 1 "absolute but absent interpreter: refused"
-assert_contains "$ERRF" "names an interpreter that is not root-owned" \
+assert_contains "$ERRF" "an interpreter that is not root-owned: " \
   "absent interpreter: fails closed like any unverifiable path"
 
 # The passing shape: absolute, root-owned, no env in sight.
@@ -4707,7 +4709,8 @@ printf 'unrelated record\n' > "$SUB/rs/other.txt"
 seed_state "$SUB/rs/other.txt" pin.sha256 "$(digest_of "$SUB/rs/other.txt")  $SUB/rs/somewhere-else.txt"
 run_pinned verify "$SUB/rs/other.txt"
 assert_exit "$RC" 17 "verify: a record naming another path -> 17"
-assert_contains "$OUT" "names path" "the refusal states both paths"
+assert_contains "$OUT" "record names:  $SUB/rs/somewhere-else.txt" "the refusal states both paths, each on its row"
+assert_contains "$OUT" "path:          $SUB/rs/other.txt" "the path asked about too"
 assert_contains "$OUT" "review --file" "the refusal names the ceremony out"
 
 # ... and review --file is the repair: the record is re-stated for the path
@@ -4877,12 +4880,13 @@ assert_eq "$POUT" "$RR_HASH" "and echoes the rev"
 RC=0; POUT="$("$PROBE" read_rev "$(slot_of "$SUB/rr/dir")" "$SUB/rr/other" 2>"$ERRF")" || RC=$?
 assert_exit "$RC" 2 "read_rev: a record naming another path returns 2, not 1"
 assert_eq "$POUT" "$RR_HASH" "and STILL echoes the rev (the ceremony re-states it)"
-assert_contains "$ERRF" "names path '$SUB/rr/dir', not '$SUB/rr/other'" "the refusal states both paths"
+assert_contains "$ERRF" "record names:  $SUB/rr/dir" "the refusal states both paths, each on its row"
+assert_contains "$ERRF" "path:          $SUB/rr/other" "the asked-about one too"
 seed_state "$SUB/rr/bare" rev.git "$RR_HASH"
 RC=0; POUT="$("$PROBE" read_rev "$(slot_of "$SUB/rr/bare")" "$SUB/rr/bare" 2>"$ERRF")" || RC=$?
 assert_exit "$RC" 1 "read_rev: a bare hash (no path field) is malformed, not a lenient read"
 assert_eq "$POUT" "" "and echoes nothing"
-assert_contains "$ERRF" "names no path" "the refusal names the missing field"
+assert_contains "$ERRF" "naming no path" "the refusal names the missing field"
 seed_state "$SUB/rr/short" rev.git "deadbeef  $SUB/rr/short"
 RC=0; POUT="$("$PROBE" read_rev "$(slot_of "$SUB/rr/short")" "$SUB/rr/short" 2>"$ERRF")" || RC=$?
 assert_exit "$RC" 1 "read_rev: a wrong-length rev is malformed"
@@ -4923,7 +4927,7 @@ if rrgit init -q >/dev/null 2>&1 \
     "the json form keeps the rev and names the stale record as a problem"
   run_pinned show "$RRREPO"
   assert_exit "$RC" 1 "show refuses a record naming another path"
-  assert_contains "$OUT" "names path" "and says why"
+  assert_contains "$OUT" "record names:  " "and says why"
   run_pinned rekey "$RRREPO" "$FIX/rrs/moved"
   assert_exit "$RC" 1 "rekey refuses to move a record naming another path"
   ANS=""
