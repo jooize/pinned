@@ -874,13 +874,10 @@ assert_contains "$OUT" "approving reinstates this path" "ceremony warns it reins
 assert_before "$OUT" "reinstate me" "--- end of file: 1 line ---" "the content closes with its rule"
 assert_before "$OUT" "--- end of file: 1 line ---" "approving reinstates this path" "the note prints below the closing rule"
 assert_before "$OUT" "approving reinstates this path" "approve " "and above the question"
-# The section marker ends on the path: nothing follows a value whose length
-# pinned does not choose.
-# (The stub reads its answers from stdin, so the marker follows the gate
-# line it answered on; the line still ends where the path does.)
-assert_eq "$(grep -F -e "--- exactly the bytes being approved: $(ondisk_path "$SUB/a/reinstated.txt")" "$OUT" \
-  | grep -c 'approved: .*/reinstated\.txt$' || true)" 1 \
-  "the content marker ends on the path"
+assert_contains "$OUT" "note:       approving reinstates this path, which a tombstone retired: 1970-01-01T00:00:00Z retired by $USERNAME" \
+  "the note ends on the tombstone it is about"
+# The section marker holds no value: the path is on the file: row.
+assert_contains "$OUT" "--- exactly the bytes being approved ---" "the content marker holds no value"
 assert_absent "$REIN_SLOT/tombstone" "tombstone is gone after reinstatement"
 assert_eq "$(count_state "$REIN_SLOT")" 1 "reinstated slot holds exactly one state file"
 
@@ -965,11 +962,12 @@ assert_contains "$OUT" "[1/2]" "the batch counter names the item under ceremony"
 assert_contains "$OUT" "[2/2]" "and moves on with the batch"
 assert_contains "$OUT" "change:     3 lines" \
                 "a first approval's gate names the size of what it opens, on a row above it"
-assert_eq "$(lines_before "$OUT" "review the file;" 2)" \
-  "file:       $SUB/a/gate/one.txt|change:     3 lines|" \
-  "the file gate stands under its file: and change: rows"
-assert_contains "$OUT" "review the file; Enter open · n skip" \
-  "and names its object with a noun, holding no path"
+assert_eq "$(lines_before "$OUT" "review this file;" 1)" "change:     3 lines|" \
+  "the file gate stands under its change: row"
+assert_eq "$(grep -c "^file:" "$OUT")" 4 \
+  "each file: row repeats once, over its file only (two files, two rows each)"
+assert_contains "$OUT" "review this file; Enter open · n skip" \
+  "and names its object by the identity row's label, holding no path"
 
 printf 'lonely\n' > "$SUB/a/gate/solo.txt"
 ANS='
@@ -991,11 +989,11 @@ y
 run_pinned review --file "$SUB/a/gate/solo.txt" --baseline "$FIX/solo-baseline.txt"
 assert_exit "$RC" 0 "a baseline-diff ceremony records"
 assert_contains "$OUT" "change:     +1 -0" "the gate states the diff's magnitude"
-assert_eq "$(lines_before "$OUT" "review the diff;" 2)" \
-  "file:       $SUB/a/gate/solo.txt|change:     +1 -0|" \
-  "the diff gate stands under its file: and change: rows"
-assert_contains "$OUT" "review the diff; Enter open · n skip" \
-  "and holds no path of its own"
+assert_eq "$(lines_before "$OUT" "review this change;" 1)" "change:     +1 -0|" \
+  "the diff gate stands under its change: row"
+assert_eq "$(grep -c "^file:" "$OUT")" 2 "the file: row repeats once, over the diff only"
+assert_contains "$OUT" "review this change; Enter open · n skip" \
+  "and names its object by the row's label, holding no path"
 assert_eq "$(lines_before "$OUT" "approve this file?" 2)" \
   "file:       $SUB/a/gate/solo.txt|sha256:     $(digest_of "$SUB/a/gate/solo.txt")|" \
   "the question stands under the path and the digest it records"
@@ -3528,8 +3526,9 @@ y
 '
 run_pinned review --file "$SUB/pol/in/m.json" --ignore-json-key model --ignore-json-key effortLevel
 assert_exit "$RC" 0 "two granted keys at different scopes approve"
-assert_contains "$OUT" "model  (under $SUB/pol/in)" "a mixed set puts each key's scope on its row"
-assert_contains "$OUT" "effortLevel  (everywhere)" "for every key"
+assert_eq "$(next_line "$OUT" "ignored:    model")" "            under $SUB/pol/in" \
+  "a mixed set puts each key's scope on a dim line under its row"
+assert_eq "$(next_line "$OUT" "            effortLevel")" "            everywhere" "for every key"
 assert_contains "$OUT" "granted by user policy, scope per key" \
                 "mixed scopes name each key's reach"
 seed_policy_user "[{\"path\":[\"model\"],\"under\":\"$SUB/pol/in\"}]"
@@ -3602,8 +3601,9 @@ y
 run_pinned review --file "$SUB/pol/in/deeper/s.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "a user scope BELOW the machine scope survives the intersection"
 assert_contains "$OUT" "under $SUB/pol/in/deeper" "provenance names the narrower scope"
-assert_contains "$OUT" "within the machine policy at $PINNED_MACHINE_POLICY" \
-                "the machine tier is folded into the same provenance line"
+assert_eq "$(next_line "$OUT" "            granted by user policy, under $SUB/pol/in/deeper")" \
+  "            within the machine policy at $PINNED_MACHINE_POLICY" \
+  "the machine tier follows the provenance line, each ending on its own path"
 
 # An unusable tier grants nothing -- on either rung, at both ends.
 seed_policy_machine '{"path": ["model"]}'
@@ -4639,8 +4639,8 @@ ANS='y
 '
 run_pinned review --file "$SUB/rs/other.txt"
 assert_exit "$RC" 0 "review --file repairs a record naming another path"
-assert_contains "$OUT" "record names $SUB/rs/somewhere-else.txt" \
-  "the note states the stale path before the confirm"
+assert_contains "$OUT" "this approval re-states the record, which names another path: $SUB/rs/somewhere-else.txt" \
+  "the note states the stale path before the confirm, last on its row"
 assert_missing "$OUT" "already approved" \
   "identical bytes do not short-circuit while the recorded path disagrees"
 assert_eq "$(cat "$(slot_file_of "$SUB/rs/other.txt" pin.sha256)")" \
@@ -4667,7 +4667,7 @@ if [ "$CASEFOLD_OK" -eq 1 ]; then
 '
   run_pinned review --file "$SUB/rs/Renamed.txt"
   assert_exit "$RC" 0 "review --file repairs the case-respelled record"
-  assert_contains "$OUT" "record names $SUB/rs/renamed.txt" "the note names the stale spelling"
+  assert_contains "$OUT" "which names another path: $SUB/rs/renamed.txt" "the note names the stale spelling"
   assert_contains "$OUT" "slot renamed:" "the slot directory rename is announced"
   assert_eq "$(cat "$(slot_file_of "$SUB/rs/Renamed.txt" pin.sha256)")" \
             "$(digest_of "$SUB/rs/Renamed.txt")  $SUB/rs/Renamed.txt" \
@@ -4709,7 +4709,8 @@ if [ "$CASEFOLD_OK" -eq 1 ]; then
 '
   run_pinned review --file "$SUB/rs/Dirfix.txt"
   assert_missing "$OUT" "already approved" "a stale directory name defeats the short-circuit"
-  assert_contains "$OUT" "renames it to match" "the note names the rename before the confirm"
+  assert_contains "$OUT" "this approval renames the slot directory, which wears another spelling: " \
+    "the note names the rename before the confirm, the spelling last"
   assert_contains "$OUT" "slot renamed:" "and the rename is announced"
   DF_SLOT="$(slot_of "$SUB/rs/Dirfix.txt")"
   assert_eq "$(basename "$(ondisk_path "$DF_SLOT")")" "$(basename "$DF_SLOT")" \

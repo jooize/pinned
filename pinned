@@ -5553,8 +5553,8 @@ do_approve_files() {
   local ign ign_json old_ign old_bad had_copy copy_bad cur_copy ign_note cust_from cust_to cust_val decl_changed
   local cust_changed shape gate_shape n_lines gate_line same_bytes
   local keep store kept_ign cust_src ign_marks ign_new ign_old ign_lead imark ikey itail gr_list
-  local keys_block path_disp path_rule path_plain note_disp notes_out
-  local gk gscope gwhere gr_keys gr_pairs gr_scope gr_mixed gr_mach
+  local keys_block path_disp path_plain note_disp notes_out
+  local gk gscope gwhere gr_keys gr_pairs gr_scope gr_mixed
 
   # The ignorable policy, read ONCE for the whole ceremony: every --file in
   # it is checked against the same effective policy, and a policy that
@@ -5661,7 +5661,7 @@ do_approve_files() {
     # state this ceremony repairs whether or not the record itself is stale.
     slot_respell="$(slot_name_actual "$slot")"
     if [ -n "$slot_respell" ]; then
-      slot_note="slot directory is still named ${slot_respell##*/} -- this approval renames it to match"
+      slot_note="this approval renames the slot directory, which wears another spelling: ${slot_respell##*/}"
     fi
     if slot_declares_ignore "$slot"; then
       # Quiet read: a broken declaration is reported by the note below and
@@ -5698,12 +5698,12 @@ do_approve_files() {
             0) old_digest="$REC_DIGEST"; old_label="$REC_LABEL" ;;
             2) old_digest="$REC_DIGEST"; old_label="$REC_LABEL"
                path_restated=1
-               state_note="record names $REC_PATH -- this approval re-states it for this path" ;;
+               state_note="this approval re-states the record, which names another path: $REC_PATH" ;;
             *) state_note="the slot's record is unreadable -- this approval replaces it" ;;
           esac ;;
         tombstone)
           IFS= read -r line <"$slot_file" || line=""
-          state_note="tombstoned ($line) -- approving reinstates this path" ;;
+          state_note="approving reinstates this path, which a tombstone retired: $line" ;;
         rev)
           state_note="slot held a repo pin -- this approval resets it to a file pin" ;;
       esac
@@ -5767,18 +5767,16 @@ do_approve_files() {
       continue
     fi
 
-    # The path as each place on this screen draws it, escaped once per
-    # color it sits in: the subject color on the `file:` rows (the identity
-    # row, and the rows over the gate and the question), plain bold inside
-    # the section marker.
+    # The path as the `file:` rows draw it (the identity row, and the row
+    # over the question after a body), escaped in the subject color.
     untrusted_var path_disp "$path" "$C_B$C_MAG"
-    untrusted_var path_rule "$path" "$C_B"
     # THE NOTES are this ceremony's judgment of the slot (malformed, a
     # record naming another path, a tombstone, a stale directory name, a
     # witness that does not re-hash), so they print where a verdict
     # belongs: after the content's closing rule, directly above the
     # question -- never above third-party text a soft wrap could make pose
-    # as one. Collected here, printed there.
+    # as one. Collected here, printed there. A note about a value ends on
+    # it.
     notes_out=""
     for note_disp in "$state_note" "$ign_note" "$slot_note"; do
       [ -n "$note_disp" ] || continue
@@ -5846,19 +5844,22 @@ do_approve_files() {
 $(policy_grants "$POL_EFF" "$ign_json" "$path")
 EOF
       fi
+      # A key's own scope, when the scopes are mixed, names a value of its
+      # own (a path), so it is a dim line under the key's row, in the value
+      # column -- never text after the key.
       ign_lead="${C_B}ignored:${C_OFF}  "
       while IFS="$TAB" read -r imark ikey; do
         [ -n "$ikey" ] || continue
         itail=""
         if [ "$gr_mixed" -eq 1 ] && [ "$imark" != "-" ]; then
-          gwhere="$(printf '%s' "$gr_list" | awk -F "$TAB" -v k="$ikey" '$1 == k { print $2; exit }')"
-          [ -z "$gwhere" ] || itail="  ${C_DIM}(${gwhere})${C_OFF}"
+          itail="$(printf '%s' "$gr_list" | awk -F "$TAB" -v k="$ikey" '$1 == k { print $2; exit }')"
         fi
         case "$imark" in
-          +) printf '%s%s+%s %s%s%s%s\n' "$ign_lead" "$C_GRN" "$C_OFF" "$C_B$C_YEL" "$ikey" "$C_OFF" "$itail" ;;
-          -) printf '%s%s-%s %s%s%s%s\n' "$ign_lead" "$C_RED" "$C_OFF" "$C_DIM" "$ikey" "$C_OFF" "$itail" ;;
-          *) printf '%s  %s%s%s%s\n' "$ign_lead" "$C_YEL" "$ikey" "$C_OFF" "$itail" ;;
+          +) printf '%s%s+%s %s%s%s\n' "$ign_lead" "$C_GRN" "$C_OFF" "$C_B$C_YEL" "$ikey" "$C_OFF" ;;
+          -) printf '%s%s-%s %s%s%s\n' "$ign_lead" "$C_RED" "$C_OFF" "$C_DIM" "$ikey" "$C_OFF" ;;
+          *) printf '%s  %s%s%s\n' "$ign_lead" "$C_YEL" "$ikey" "$C_OFF" ;;
         esac
+        [ -z "$itail" ] || printf '            %s%s%s\n' "$C_DIM" "$itail" "$C_OFF"
         ign_lead="          "
       done <<EOF
 $(jq -r -n --argjson o "$ign_old" --argjson n "$ign_new" '
@@ -5874,16 +5875,15 @@ EOF
         else
           printf '            %s(these keys may drift without re-approval)%s\n' "$C_DIM" "$C_OFF"
         fi
-        # The machine tier is folded into the same line: it constrains the
-        # whole set, so it is one clause, not a line of its own.
-        gr_mach=""
-        [ -z "$POL_MACHINE" ] \
-          || gr_mach="; within the machine policy at $PINNED_MACHINE_POLICY"
+        # The grant, and the machine tier that constrains the whole set:
+        # each ends on its own path, so each is a line of its own.
         if [ -n "$gr_list" ] && [ "$gr_mixed" -eq 0 ]; then
-          printf '            %sgranted by user policy, %s%s%s\n' "$C_DIM" "$gr_scope" "$gr_mach" "$C_OFF"
+          printf '            %sgranted by user policy, %s%s\n' "$C_DIM" "$gr_scope" "$C_OFF"
         elif [ -n "$gr_list" ]; then
-          printf '            %sgranted by user policy, scope per key%s%s\n' "$C_DIM" "$gr_mach" "$C_OFF"
+          printf '            %sgranted by user policy, scope per key%s\n' "$C_DIM" "$C_OFF"
         fi
+        [ -z "$gr_list" ] || [ -z "$POL_MACHINE" ] \
+          || printf '            %swithin the machine policy at %s%s\n' "$C_DIM" "$PINNED_MACHINE_POLICY" "$C_OFF"
       fi
     fi
     # CUSTODY, stated in both directions and always -- not only when it is
@@ -6000,9 +6000,10 @@ EOF
         # is always "+A -D" (diff_shape prints both counts, either may be 0), so
         # the first word is the add count and the rest the delete count.
         gate_disp="${C_GRN}${gate_shape%% *}${C_OFF} ${C_RED}${gate_shape#* }${C_OFF}"
-        printf '%sfile:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_B$C_MAG" "$path_disp" "$C_OFF"
+        # The file: row is the identity block's, just above; only the
+        # change is new.
         printf '%schange:%s     %s\n' "$C_B" "$C_OFF" "$gate_disp"
-        printf -v gate_line '%sreview the diff;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
+        printf -v gate_line '%sreview this change;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
           "$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
           "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
         if ! gate_answer "$gate_line"; then
@@ -6029,10 +6030,9 @@ EOF
         [ "$(tail -c1 -- "$fro" | wc -l)" -eq 1 ] && nl=1
         n_lines="$(LC_ALL=C wc -l <"$fro" | tr -d ' ')"
         [ -n "$nl" ] || [ ! -s "$fro" ] || n_lines=$((n_lines + 1))
-        printf '%sfile:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_B$C_MAG" "$path_disp" "$C_OFF"
         printf '%schange:%s     %s%s line%s%s\n' "$C_B" "$C_OFF" \
           "$C_CYN" "$n_lines" "$(plural_s "$n_lines")" "$C_OFF"
-        printf -v gate_line '%sreview the file;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
+        printf -v gate_line '%sreview this file;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
           "$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
           "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
         if ! gate_answer "$gate_line"; then
@@ -6041,9 +6041,8 @@ EOF
           declined=$((declined + 1))
           continue
         fi
-        # The path ends the marker: nothing follows a value whose length
-        # this script does not choose.
-        printf '%s--- exactly the bytes being approved: %s%s\n' "$C_B" "$path_rule" "$C_OFF"
+        # The section rule holds no value: the path is on the file: row.
+        printf '%s--- exactly the bytes being approved ---%s\n' "$C_B" "$C_OFF"
         # Escaped first, then syntax color where the suffix names a
         # highlighter and highlight_ok admits the content; the digest above
         # came from the file, not from this stream, and a highlighter only
@@ -6058,9 +6057,13 @@ EOF
 
     # The question block: the rows it decides about (the path, and the
     # digest the record will bind), the notes, then the question, with
-    # nothing third-party between them.
-    printf '%sfile:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_B$C_MAG" "$path_disp" "$C_OFF"
-    printf '%s%s:%s     %s%s%s\n' "$C_B" "$file_algo" "$C_OFF" "$C_CYN" "$new_digest" "$C_OFF"
+    # nothing third-party between them. The rows repeat only over a body
+    # (the diff or the file); identical bytes showed none, so the identity
+    # block above is still the question's rows.
+    if [ "$same_bytes" -eq 0 ]; then
+      printf '%sfile:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_B$C_MAG" "$path_disp" "$C_OFF"
+      printf '%s%s:%s     %s%s%s\n' "$C_B" "$file_algo" "$C_OFF" "$C_CYN" "$new_digest" "$C_OFF"
+    fi
     printf '%s' "$notes_out"
     printf '%sapprove this file? [%sy%s/%sN%s]%s ' "$C_B" \
       "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
