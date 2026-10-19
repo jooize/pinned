@@ -2878,7 +2878,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_exit "$RC" 0 "list exits 0 over the declared slot"
   assert_contains "$OUT" "release:  v1" "list -v adds the declared release to the repo block"
   run_pinned list --under "$REPO_DC"
-  assert_contains "$OUT" " v1 " "the default view puts the release in its own column"
+  assert_missing "$OUT" "v1" "the default view leaves the release to -v and status"
   ANS=""
   run_pinned_split list --format json --under "$REPO_DC"
   assert_eq "$(jq -r '.pins[0] | [.type, .kind, .release, .custody] | map(tostring) | join(" ")' "$OUT")" \

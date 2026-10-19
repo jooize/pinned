@@ -7711,7 +7711,7 @@ list_order() { # count  array-name
 #   <check> current                 d526136  claude-code-hardening
 #   <part>  2 commits past the pin  f565991  pinned
 list_short() {
-  local i j n vw relw b name top rel dirs tops k nm
+  local i j n vw b name top rel dirs tops k nm
   local n_ok=0 n_part=0 n_gone=0 n_bad=0 past="" sep="" word
   local -a names=() tdirs=() ro=() fo=()
   while IFS= read -r i; do ro[${#ro[@]}]="$i"; done < <(list_order "$RP_N" RP_DISP)
@@ -7726,7 +7726,7 @@ list_short() {
   if [ "$RP_N" -gt 0 ]; then
     # A repo is named by its folder; two repos sharing one name get their
     # parent folder too.
-    vw=0 relw=0
+    vw=0
     for (( i = 0; i < RP_N; i++ )); do
       b="${RP_DISP[$i]##*/}"
       for (( j = 0; j < RP_N; j++ )); do
@@ -7737,14 +7737,12 @@ list_short() {
       done
       names[$i]="$b"
       [ "${#RP_MSG[$i]}" -le "$vw" ] || vw="${#RP_MSG[$i]}"
-      [ "${#RP_REL[$i]}" -le "$relw" ] || relw="${#RP_REL[$i]}"
     done
     printf '%srepos%s  %s%d%s\n' "$C_B" "$C_OFF" "$C_DIM" "$RP_N" "$C_OFF"
     for i in "${ro[@]}"; do
       untrusted_var nm "${names[$i]}" "$C_CYN"
       printf '  %s  %s%s%s  ' "$(list_mark_pad "${RP_CLASS[$i]}" "${RP_MSG[$i]}" "$vw")" \
         "$C_DIM" "$(list_pad "${RP_HASH[$i]:0:7}" 7)" "$C_OFF"
-      [ "$relw" -eq 0 ] || printf '%s  ' "$(list_pad "${RP_REL[$i]}" "$relw")"
       printf '%s%s%s\n' "$C_CYN" "$nm" "$C_OFF"
       if [ "${RP_PAST[$i]}" -ne 0 ]; then
         list_cmd_word word "${RP_PATH[$i]}"
@@ -7926,7 +7924,7 @@ list_walk() { # slots-dir
       short)
         if [ "$L_TYPE" = repo ]; then
           RP_PATH[$RP_N]="$path" RP_DISP[$RP_N]="$(list_tilde "$path")"
-          RP_HASH[$RP_N]="$L_DIGEST" RP_REL[$RP_N]="$L_RELEASE"
+          RP_HASH[$RP_N]="$L_DIGEST"
           RP_CLASS[$RP_N]="$LV_CLASS" RP_MSG[$RP_N]="$LV_MSG" RP_PAST[$RP_N]="$LV_PAST"
           RP_N=$((RP_N + 1))
         else
