@@ -163,6 +163,28 @@ below the last such rule, directly above the question it informs.
 A value whose length pinned does not choose (a path, a subject, a name)
 ends its line, section markers included:
 .BR "\-\-\- exactly the bytes being approved: " \fIpath\fP .
+.PP
+.B A gate or a question holds no value of its own.
+It names its object with a noun
+.RB ( "approve this commit? [y/N]" ,
+.BR "review the diff; Enter open \(pc n skip" ),
+and every value it decides about stands on a labeled row directly
+above it, repeating what has scrolled away: a review gate stands under
+.B repo:
+and
+.B range:
+rows, the approval under
+.B repo:
+and
+.BR commit: ,
+a file's gate under
+.B file:
+and
+.BR change: ,
+its approval under
+.B file:
+and the digest.
+The verdicts sit between those rows and the question.
 .SH COMMANDS
 .SS Repository approval
 .TP
@@ -228,7 +250,9 @@ is the other answer, and end of input takes the skip.
 Anything else is named back and the gate asks again.
 Approving a repo without reading its diff is offered in one place only:
 a forward move from a pin, by its words (below).
-The gate states the delta's size: the commit count, or, when the pin and
+The gate's
+.B range:
+row states the delta's size: the commit count, or, when the pin and
 the candidate share no history in the checkout, the diff's own totals
 .RI ( N " files +" A " \-" D ),
 since a commit count there would be the candidate's whole history.

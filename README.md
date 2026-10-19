@@ -676,7 +676,13 @@ one.
   declared tolerance.
 - **Gates read one way everywhere.** A gate names what happens next, then
   its keys: `review 1 repo as root; Enter run · n stop` before an action,
-  `review a1b2..c3d4 (2 commits) in foo; Enter open · n skip` before a review.
+  `review the diff; Enter open · n skip` before a review.
+  A gate or a question never holds a path, a name or a subject: it names
+  its object with a noun (`approve this commit? [y/N]`, `tombstone this
+  path? [y/N]`), and each value it decides about stands on a labeled row
+  directly above it (`repo:` and `range:` over a review gate, `repo:` and
+  `commit:` over the approval), repeating what the listing and the diff
+  scrolled away. An alarm sits between those rows and the question.
   The answer is typed at the end of the gate line. Enter, `y` and `yes`
   continue; `n` declines every gate, because a gate has exactly two
   outcomes and one decline key is enough; end of input declines too,
@@ -696,7 +702,7 @@ one.
   alternate screen; longer content gets the alternate screen and real
   scrollback.
 - **Structural views are derived; the raw byte diff is authoritative.**
-  Section labels, changed-key summaries and the gate's `+12 -4` orient
+  Section labels, changed-key summaries and the gate's `change:     +12 -4` row orient
   a reader; they can lie about where a change sits
   and never about what changed, because every changed line prints
   regardless and the digest comes from the bytes, not the view.

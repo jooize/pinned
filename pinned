@@ -1937,14 +1937,34 @@ sgit() {
 # record must keep the bytes that were approved.
 #
 # print_repo_row is the `repo:` row every repo screen opens with: the full
-# path, last on the row, its folder name in the subject color -- the name
-# the gates and the question use. Both parts are escaped -- a directory
-# name is bytes anyone could have chosen.
+# path, last on the row, its folder name in the subject color. Both parts
+# are escaped -- a directory name is bytes anyone could have chosen.
 print_repo_row() { # <label-SGR>
   local rd rn
   untrusted_var rd "${repo%/*}/" "$C_DIM"
   untrusted_var rn "${repo##*/}" "$C_B$C_MAG"
   printf '%srepo:%s       %s%s%s%s%s%s\n' "$1" "$C_OFF" "$C_DIM" "$rd" "$C_OFF" "$C_B$C_MAG" "$rn" "$C_OFF"
+}
+#
+# A GATE OR A QUESTION HOLDS NO VALUE whose length this script does not
+# choose: a repo's name would push the keys off the line and soft-wrap the
+# decision, and the reader would have to find what is being decided inside
+# the sentence that asks. So the question names its object with a noun
+# (`approve this commit?`, `review the diff;`), and every value it decides
+# about stands on a labeled row directly above it. The rows repeat what the
+# listing and the diff have scrolled away; a verdict (the lattice's alarm,
+# the signature rows) sits between them and the question.
+#
+# print_commit_rows: the `repo:` row and the commit the question approves.
+# print_range_rows: the `repo:` row and the range a gate opens, with its
+# size ($3, already spelled; it may color its own parts).
+print_commit_rows() { # <rev>
+  print_repo_row "$C_DIM"
+  printf '%scommit:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$1" "$C_OFF"
+}
+print_range_rows() { # <from rev> <to rev> <size>
+  print_repo_row "$C_DIM"
+  printf '%srange:%s      %s%.10s..%.10s%s (%s)\n' "$C_DIM" "$C_OFF" "$C_CYN" "$1" "$2" "$C_OFF" "$3"
 }
 #
 # subject_var is the one-row case: the subject of commit $2, escaped into the
@@ -2346,12 +2366,14 @@ ancestry_floor() {
 
 # The lattice's verdict, where a verdict belongs: after the last third-party
 # text of the screen, below its closing rule, directly above the question it
-# informs. One blank line and the alarm for a backward or diverged move,
-# nothing for any other. Reads the class and merge base ancestry_floor left.
-ancestry_verdict() { # <pinned rev> <candidate rev>
+# informs -- under the rows that question decides about. The alarm for a
+# backward or diverged move, nothing for any other; with `lead`, one blank
+# line before it (the preview, where no rows precede it). Reads the class
+# and merge base ancestry_floor left.
+ancestry_verdict() { # <pinned rev> <candidate rev> [lead]
   case "${ancestry_cls:-}" in
     backward|diverged)
-      echo
+      [ -z "${3:-}" ] || echo
       print_ancestry_alarm "$ancestry_cls" "$1" "$2" "${ancestry_mb:-}" ;;
   esac
 }
@@ -2437,6 +2459,15 @@ show_slot() {
     -e "s/%[89A-Fa-f][0-9A-Fa-f]/${C_DIM}&${C_OFF}/g" \
     -e "s/%[01][0-9A-Fa-f]/${C_RED}&${C_OFF}/g" \
     -e "s/%7[Ff]/${C_RED}&${C_OFF}/g"
+}
+
+# A verdict about two values whose length this script does not choose: the
+# first ends the verdict's row, the second its own row under it, after an
+# arrow at the label gutter (the shape of rekey's `slot:` rows). Neither
+# value is ever followed by the other on one line.
+print_verdict_to() { # <SGR> <verdict> <value> <target>
+  printf '%s✓ %s:%s %s\n' "$1" "$2" "$C_OFF" "$3"
+  printf '            %s->%s %s\n' "$C_DIM" "$C_OFF" "$4"
 }
 
 # ---- slot storage ----------------------------------------------------------
@@ -3986,7 +4017,8 @@ case "$action" in
         if [ -n "$dc_tag" ] && [ "$dc_remove" -eq 1 ]; then usage; fi
         if [ -z "$dc_tag" ] && [ "$dc_remove" -eq 0 ]; then usage; fi
         if [ -n "$dc_tag" ] && ! validate_release_name "$dc_tag"; then
-          echo "ERROR: release name '$dc_tag' is outside the declared-name grammar [A-Za-z0-9._/+-]" >&2
+          untrusted_var dc_disp "$dc_tag" "" 2
+          echo "ERROR: a release name outside the declared-name grammar [A-Za-z0-9._/+-]: $dc_disp" >&2
           exit 1
         fi
       fi
@@ -4332,7 +4364,7 @@ case "$action" in
                 # A declared backward or diverged move's alarm, below the
                 # listing it is about (one repo only: declarations bind to
                 # one), before the sudo prompt.
-                ancestry_verdict "$preview_pin" "$preview_head"
+                ancestry_verdict "$preview_pin" "$preview_head" lead
               fi
             else
               printf '%spinned:%s     (none -- first approval)\n' "$C_B" "$C_OFF"
@@ -4382,9 +4414,9 @@ case "$action" in
         # exempt -- installing the just-read checkout is its whole job.)
         elev="$(readlink -f "$0")"
         if [ "$action" != "setup" ]; then
-          printf '%swarning: pinned is not installed at %s.%s\n' "$C_YEL$C_B" "$INSTALL_TARGET" "$C_OFF"
-          printf '%s  About to run the uninstalled, user-writable copy at%s\n' "$C_YEL" "$C_OFF"
-          printf '%s  %s as root.%s\n' "$C_YEL" "$elev" "$C_OFF"
+          printf '%swarning: pinned is not installed at %s%s\n' "$C_YEL$C_B" "$INSTALL_TARGET" "$C_OFF"
+          printf '%s  About to run as root the uninstalled, user-writable copy at%s\n' "$C_YEL" "$C_OFF"
+          printf '%s  %s%s\n' "$C_YEL" "$elev" "$C_OFF"
           printf '%s  Only proceed if you have just read this exact file and%s\n' "$C_YEL" "$C_OFF"
           printf '%s  trust your user-space not to have swapped it since.%s\n' "$C_YEL" "$C_OFF"
           printf '%s  Safer: stage with trusted tooling, read the root-owned copy,%s\n' "$C_YEL" "$C_OFF"
@@ -4532,7 +4564,7 @@ case "$action" in
             verify_ancestry "$elev" || exit 1
           else
             elev="$(readlink -f "$0")"
-            printf '%swarning: pinned is not installed at %s; about to run the\nuser-writable checkout copy as root (safe only right after a hand-read).%s\n' \
+            printf '%swarning: about to run the user-writable checkout copy as root (safe only\nright after a hand-read); pinned is not installed at %s%s\n' \
               "$C_YEL" "$INSTALL_TARGET" "$C_OFF"
             printf '%scontinue? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
             drain_tty
@@ -4845,7 +4877,8 @@ do_approve() {
       # signed tag merely degrades to rev-only, but an explicit request
       # that cannot be honored must not half-succeed).
       validate_release_name "$sel_tag" || {
-        echo "ERROR: release name '$sel_tag' is outside the declared-name grammar [A-Za-z0-9._/+-]" >&2
+        untrusted_var tag_disp "$sel_tag" "" 2
+        echo "ERROR: a release name outside the declared-name grammar [A-Za-z0-9._/+-]: $tag_disp" >&2
         exit 1
       }
     fi
@@ -4864,9 +4897,7 @@ do_approve() {
       verify_ancestry "$slot" || exit 1
     fi
 
-    local hash old_hash diff_out step_rc ancestry_cls ancestry_mb rec_rc=0 rec_stale subj repo_nm tag_disp
-    # The folder name as every gate and question on this screen spells it.
-    untrusted_var repo_nm "${repo##*/}" "$C_B$C_MAG"
+    local hash old_hash diff_out step_rc ancestry_cls ancestry_mb rec_rc=0 rec_stale subj tag_disp
     # Uncaptured, so REC_DIGEST / REC_PATH survive: a record naming a former
     # spelling of this path (2) is readable and repaired below, every other
     # refusal (1) stays a refusal -- re-read unsilenced so it says why.
@@ -4897,15 +4928,16 @@ do_approve() {
     slot_respell="$(slot_name_actual "$slot")"
     if [ -n "$slot_respell" ]; then
       mv -f "$slot_respell" "$slot"
-      printf '%s✓ slot renamed:%s %s%s%s -> %s%s%s\n' \
-        "$C_GRN$C_B" "$C_OFF" "$C_CYN" "${slot_respell##*/}" "$C_OFF" \
-        "$C_CYN" "${slot##*/}" "$C_OFF"
+      print_verdict_to "$C_GRN$C_B" "slot renamed" \
+        "$C_CYN${slot_respell##*/}$C_OFF" "$C_CYN${slot##*/}$C_OFF"
     fi
     if [ "$rec_rc" -eq 2 ]; then
       write_slot_state "$slot" rev.git "$old_hash  $repo"
-      printf '%s✓ record re-stated:%s %s%s%s -> %s%s%s %s(same rev)%s\n' \
-        "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$rec_stale" "$C_OFF" \
-        "$C_CYN" "$repo" "$C_OFF" "$C_DIM" "$C_OFF"
+      local rs_from rs_to
+      untrusted_var rs_from "$rec_stale" "$C_CYN"
+      untrusted_var rs_to "$repo" "$C_CYN"
+      print_verdict_to "$C_GRN$C_B" "record re-stated, same rev" \
+        "$C_CYN$rs_from$C_OFF" "$C_CYN$rs_to$C_OFF"
     fi
     if [ -n "$slot_respell" ] || [ "$rec_rc" -eq 2 ]; then
       log_action respell "$repo" "$old_hash" ok
@@ -5012,10 +5044,12 @@ do_approve() {
           rule '' "$msg_mode"
       fi
       # THE VERDICTS, below the listing's closing rule and directly above
-      # the question: the lattice's alarm, then each signature with git's
-      # own words under it, then the agreement. Nothing third-party follows.
-      ancestry_verdict "$old_hash" "$hash"
+      # the question, under the rows it decides about: the lattice's alarm,
+      # then each signature with git's own words under it, then the
+      # agreement. Nothing third-party follows.
       echo
+      print_commit_rows "$hash"
+      ancestry_verdict "$old_hash" "$hash"
       local vi=0
       for t in "${tag_args[@]}"; do
         untrusted_var t_disp "$t"
@@ -5155,7 +5189,7 @@ do_approve() {
           totals="$(diff_totals "$old_hash" "$hash")"
           if [ "$ancestry_cls" = diverged ] && [ -z "$ancestry_mb" ]; then
             read -r t_n t_files t_add t_del <<<"$totals"
-            gate_size="no shared history; $t_n $t_files ${C_GRN}${t_add}${C_OFF}${C_B} ${C_RED}${t_del}${C_OFF}${C_B}"
+            gate_size="no shared history; $t_n $t_files ${C_GRN}${t_add}${C_OFF} ${C_RED}${t_del}${C_OFF}"
           elif [ "$ancestry_cls" = backward ]; then
             n_undo="$(sgit rev-list --count "${hash}..${old_hash}")"
             gate_size="$n_undo commit$(plural_s "$n_undo") un-approved"
@@ -5167,9 +5201,9 @@ do_approve() {
             n_range="$(sgit rev-list --count "${old_hash}..${hash}")"
             gate_size="$n_range commit$(plural_s "$n_range")"
           fi
-          printf -v gate_line '%sreview %s%.10s..%.10s%s (%s) in %s%s%s;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
-            "$C_B" "$C_CYN" "$old_hash" "$hash" "$C_OFF$C_B" "$gate_size" \
-            "$C_B$C_MAG" "$repo_nm" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
+          print_range_rows "$old_hash" "$hash" "$gate_size"
+          printf -v gate_line '%sreview the diff;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
+            "$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
             "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
           if ! gate_answer "$gate_line"; then
             printf '%sskipped; pin unchanged%s\n' "$C_YEL" "$C_OFF"
@@ -5184,13 +5218,16 @@ do_approve() {
           diff_out="$(sgit_diff "$old_hash" "$hash")"
           untrusted_page color_diff <<<"$diff_out"
           print_end_rule diff "$totals"
-          # The lattice's alarm, below the diff's closing rule and directly
-          # above the question (nothing for a forward move).
+          # The rows the question decides about, then the lattice's alarm
+          # (nothing for a forward move), directly above the question.
+          echo
+          print_commit_rows "$hash"
           ancestry_verdict "$old_hash" "$hash"
         fi
       elif [ "$trust" -eq 1 ]; then
         printf '%spinned:%s     (none)\n' "$C_DIM" "$C_OFF"
         echo
+        print_commit_rows "$hash"
         printf '%s!!! FIRST APPROVAL WITH --trust !!!%s\n' "$C_RED$C_B" "$C_OFF"
         printf '%s!!! The full tree at %s is being approved without review. !!!%s\n' "$C_RED$C_B" "$hash" "$C_OFF"
         printf '%s!!! Everything already in this repo becomes trusted as-is. !!!%s\n' "$C_RED$C_B" "$C_OFF"
@@ -5200,9 +5237,9 @@ do_approve() {
         # Same gate as the whole-delta pager (skip included); no range
         # exists yet.
         local gate_line
-        printf -v gate_line '%sreview the full tree at %s%.10s%s in %s%s%s;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
-          "$C_B" "$C_CYN" "$hash" "$C_OFF$C_B" \
-          "$C_B$C_MAG" "$repo_nm" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
+        print_commit_rows "$hash"
+        printf -v gate_line '%sreview the full tree;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
+          "$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
           "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
         if ! gate_answer "$gate_line"; then
           printf '%sskipped; pin unchanged%s\n' "$C_YEL" "$C_OFF"
@@ -5217,17 +5254,18 @@ do_approve() {
         totals="$(diff_totals 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
         untrusted_page color_diff <<<"$diff_out"
         print_end_rule diff "$totals"
+        echo
+        print_commit_rows "$hash"
       fi
     fi
     # Approved by words: the words and the count on the command line were
     # the answer, and this ceremony just matched both. There is no terminal
     # to ask (the caller runs without one), and a y/N here would only repeat
-    # that consent.
+    # that consent. Every other branch above ends on the rows this question
+    # decides about, and on its verdicts.
     if [ "${by_words:-0}" -eq 0 ]; then
-      echo
       local answer
-      printf '%sapprove %s%s%s in %s%s%s? [%sy%s/%sN%s]%s ' "$C_B" "$C_CYN" "$hash" "$C_OFF$C_B" \
-        "$C_B$C_MAG" "$repo_nm" "$C_OFF$C_B" \
+      printf '%sapprove this commit? [%sy%s/%sN%s]%s ' "$C_B" \
         "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
       drain_tty
       read -r answer </dev/tty
@@ -5264,12 +5302,13 @@ do_approve() {
     fi
     if [ -n "$decl_tag" ]; then
       if ! validate_release_name "$decl_tag"; then
-        printf '%snote: release name %s is outside the declared-name grammar [A-Za-z0-9._/+-]; not declaring it (rev-only slot)%s\n' \
-          "$C_YEL" "$decl_tag" "$C_OFF"
+        untrusted_var tag_disp "$decl_tag" "$C_YEL"
+        printf '%snote: the slot stays rev-only; this release name is outside the declared-name grammar [A-Za-z0-9._/+-]: %s%s\n' \
+          "$C_YEL" "$tag_disp" "$C_OFF"
         rm -f "$slot/release"
       else
         write_note "$slot" release "$decl_tag"
-        printf '%s✓ declared:%s %s -> %s\n' "$C_GRN" "$C_OFF" "$decl_tag" "$(show_slot "$slot")/release"
+        print_verdict_to "$C_GRN" declared "$decl_tag" "$(show_slot "$slot")/release"
       fi
     else
       rm -f "$slot/release"
@@ -5366,9 +5405,9 @@ EOF
     # `n` here stops the walk, exactly as a decline at the confirm does:
     # commits advance linearly, so there is no "skip this one and review
     # the next" -- the pin can never move past an unreviewed commit.
-    printf -v gate_line '%sreview %s%.10s..%.10s%s (1 commit) in %s%s%s;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
-      "$C_B" "$C_CYN" "$prev" "$c" "$C_OFF$C_B" \
-      "$C_B$C_MAG" "$repo_nm" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
+    print_range_rows "$prev" "$c" "1 commit"
+    printf -v gate_line '%sreview the diff;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
+      "$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
       "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
     if ! gate_answer "$gate_line"; then
       printf '%sskipped; the walk stops here%s\n' "$C_YEL" "$C_OFF"
@@ -5383,8 +5422,8 @@ EOF
     untrusted_page color_diff <<<"$diff_out"
     print_end_rule diff "$totals"
     echo
-    printf '%sapprove %s%s%s in %s%s%s? [%sy%s/%sN%s]%s ' "$C_B" "$C_CYN" "$c" "$C_OFF$C_B" \
-      "$C_B$C_MAG" "$repo_nm" "$C_OFF$C_B" \
+    print_commit_rows "$c"
+    printf '%sapprove this commit? [%sy%s/%sN%s]%s ' "$C_B" \
       "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     drain_tty
     read -r answer </dev/tty
@@ -5408,7 +5447,7 @@ EOF
     printf '%s✓ pin advanced:%s %s%s%s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$c" "$C_OFF"
     if [ -n "$sel_tag" ] && [ "$c" = "$hash" ]; then
       write_note "$slot" release "$sel_tag"
-      printf '%s✓ declared:%s %s -> %s\n' "$C_GRN" "$C_OFF" "$sel_tag" "$(show_slot "$slot")/release"
+      print_verdict_to "$C_GRN" declared "$sel_tag" "$(show_slot "$slot")/release"
     fi
     prev="$c"
     approved=$((approved + 1))
@@ -5438,7 +5477,7 @@ EOF
     printf '%sremaining: %s commit%s%s %s(%.10s..%.10s)%s\n' \
       "$C_DIM" "$rem" "$(plural_s "$rem")" "$C_OFF" "$C_CYN" "$prev" "$hash" "$C_OFF"
     [ -z "$sel_tag" ] \
-      || printf '%sdeclared name %s not reached; the slot stays rev-only%s\n' \
+      || printf '%sthe slot stays rev-only; the walk did not reach the declared name %s%s\n' \
            "$C_DIM" "$sel_tag" "$C_OFF"
   fi
   [ "$approved" -ge 1 ] || return 2
@@ -5473,7 +5512,7 @@ do_approve_files() {
   local ign ign_json old_ign old_bad had_copy copy_bad cur_copy ign_note cust_from cust_to cust_val decl_changed
   local cust_changed shape gate_shape n_lines gate_line same_bytes
   local keep store kept_ign cust_src ign_marks ign_new ign_old ign_lead imark ikey itail gr_list
-  local keys_block path_disp path_nm path_rule path_plain note_disp notes_out
+  local keys_block path_disp path_rule path_plain note_disp notes_out
   local gk gscope gwhere gr_keys gr_pairs gr_scope gr_mixed gr_mach
 
   # The ignorable policy, read ONCE for the whole ceremony: every --file in
@@ -5688,10 +5727,10 @@ do_approve_files() {
     fi
 
     # The path as each place on this screen draws it, escaped once per
-    # color it sits in: the subject color on the identity row and in the
-    # question, plain bold inside the section marker.
+    # color it sits in: the subject color on the `file:` rows (the identity
+    # row, and the rows over the gate and the question), plain bold inside
+    # the section marker.
     untrusted_var path_disp "$path" "$C_B$C_MAG"
-    untrusted_var path_nm "${path##*/}" "$C_B$C_MAG"
     untrusted_var path_rule "$path" "$C_B"
     # THE NOTES are this ceremony's judgment of the slot (malformed, a
     # record naming another path, a tombstone, a stale directory name, a
@@ -5919,10 +5958,11 @@ EOF
         # red -- matching the keys summary and the diff body below it. gate_shape
         # is always "+A -D" (diff_shape prints both counts, either may be 0), so
         # the first word is the add count and the rest the delete count.
-        gate_disp="${C_GRN}${gate_shape%% *}${C_OFF} ${C_RED}${gate_shape#* }${C_OFF}${C_B}"
-        printf -v gate_line '%sreview %s in %s%s%s;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
-          "$C_B" "$gate_disp" "$C_B$C_MAG" "$path_nm" "$C_OFF$C_B" \
-          "$C_OFF" "$C_BLU" "$C_OFF" \
+        gate_disp="${C_GRN}${gate_shape%% *}${C_OFF} ${C_RED}${gate_shape#* }${C_OFF}"
+        printf '%sfile:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_B$C_MAG" "$path_disp" "$C_OFF"
+        printf '%schange:%s     %s\n' "$C_B" "$C_OFF" "$gate_disp"
+        printf -v gate_line '%sreview the diff;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
+          "$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
           "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
         if ! gate_answer "$gate_line"; then
           printf '%sskipped; record unchanged%s\n' "$C_YEL" "$C_OFF"
@@ -5948,9 +5988,11 @@ EOF
         [ "$(tail -c1 -- "$fro" | wc -l)" -eq 1 ] && nl=1
         n_lines="$(LC_ALL=C wc -l <"$fro" | tr -d ' ')"
         [ -n "$nl" ] || [ ! -s "$fro" ] || n_lines=$((n_lines + 1))
-        printf -v gate_line '%sreview %s%s line%s%s of %s%s%s;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
-          "$C_B" "$C_CYN" "$n_lines" "$(plural_s "$n_lines")" "$C_OFF$C_B" \
-          "$C_B$C_MAG" "$path_nm" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
+        printf '%sfile:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_B$C_MAG" "$path_disp" "$C_OFF"
+        printf '%schange:%s     %s%s line%s%s\n' "$C_B" "$C_OFF" \
+          "$C_CYN" "$n_lines" "$(plural_s "$n_lines")" "$C_OFF"
+        printf -v gate_line '%sreview the file;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
+          "$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
           "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
         if ! gate_answer "$gate_line"; then
           printf '%sskipped; record unchanged%s\n' "$C_YEL" "$C_OFF"
@@ -5973,10 +6015,13 @@ EOF
       echo
     fi
 
-    # The verdict block: the notes, then the question, with nothing
-    # third-party between them.
-    [ -z "$notes_out" ] || printf '%s\n' "$notes_out"
-    printf '%sapprove %s%s%s? [%sy%s/%sN%s]%s ' "$C_B" "$C_B$C_MAG" "$path_disp" "$C_OFF$C_B" \
+    # The question block: the rows it decides about (the path, and the
+    # digest the record will bind), the notes, then the question, with
+    # nothing third-party between them.
+    printf '%sfile:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_B$C_MAG" "$path_disp" "$C_OFF"
+    printf '%s%s:%s     %s%s%s\n' "$C_B" "$file_algo" "$C_OFF" "$C_CYN" "$new_digest" "$C_OFF"
+    printf '%s' "$notes_out"
+    printf '%sapprove this file? [%sy%s/%sN%s]%s ' "$C_B" \
       "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     drain_tty
     read -r answer </dev/tty
@@ -5990,9 +6035,8 @@ EOF
         if [ -n "$slot_respell" ]; then
           mv -f "$slot_respell" "$slot"
           log_action respell "$path" "" ok
-          printf '%s✓ slot renamed:%s %s%s%s -> %s%s%s\n' \
-            "$C_GRN$C_B" "$C_OFF" "$C_CYN" "${slot_respell##*/}" "$C_OFF" \
-            "$C_CYN" "${slot##*/}" "$C_OFF"
+          print_verdict_to "$C_GRN$C_B" "slot renamed" \
+            "$C_CYN${slot_respell##*/}$C_OFF" "$C_CYN${slot##*/}$C_OFF"
         fi
         write_slot_state "$slot" "pin.$file_algo" "$new_digest  $path"
         # The stored witness is the frozen buffer this ceremony displayed and
@@ -6002,8 +6046,9 @@ EOF
         # everything else has to prove itself at every use.
         if [ "$store" -eq 1 ]; then
           write_slot_copy "$slot" approved "$fro"
-          printf '%s✓ approved:%s %s%s%s -> %s %s(+approved copy)%s\n' \
-            "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$new_digest" "$C_OFF" "$(show_slot "$slot")/pin.$file_algo" "$C_DIM" "$C_OFF"
+          printf '%s✓ approved:%s %s%s%s -> %s\n' \
+            "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$new_digest" "$C_OFF" "$(show_slot "$slot")/pin.$file_algo"
+          printf '%s✓ approved copy kept:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$(show_slot "$slot")/approved"
         else
           rm -f "$slot/approved"
           printf '%s✓ approved:%s %s%s%s -> %s\n' \
@@ -6022,8 +6067,8 @@ EOF
         clear_ignore_decl "$slot"
         if [ -n "$ign_json" ]; then
           write_note "$slot" ignored.json "$ign_json"
-          printf '%s✓ ignoring:%s %s%s%s -> %s\n' \
-            "$C_GRN$C_B" "$C_OFF" "$C_YEL" "$(ign_display "$ign_json")" "$C_OFF" "$(show_slot "$slot")/ignored.json"
+          print_verdict_to "$C_GRN$C_B" ignoring \
+            "$C_YEL$(ign_display "$ign_json")$C_OFF" "$(show_slot "$slot")/ignored.json"
         fi
         log_action approve-file "$path" "$new_digest"
         recorded=$((recorded + 1))
@@ -6064,36 +6109,42 @@ do_tombstone() {
     path_arg="$a"
   done
   [ -n "$path_arg" ] || usage
-  local path slot answer line gone=0
+  local path slot answer line gone=0 path_disp line_disp
   path="$(canon_path "$path_arg")" || exit 1
   path_gone "$path" || gone=$?
   if [ "$gone" -eq 2 ]; then
-    refused "cannot tell whether $path still exists -- you tombstone only what's gone"
+    refused "cannot tell whether this path still exists, and you tombstone only what's gone: $path"
     exit 1
   fi
   if [ "$gone" -eq 1 ]; then
-    refused "$path still exists -- you tombstone what's gone, not what's live"
+    refused "this path still exists, and you tombstone what's gone, not what's live: $path"
     echo "        (retire the content first, or review the current content instead)" >&2
     exit 1
   fi
   ensure_tree "$inv"
   slot="$(slot_dir_for "$inv" "$path")"
   inspect_slot "$slot" 2>/dev/null || slot_state=malformed
+  # The path is the caller's own bytes, escaped for every row it is on.
+  untrusted_var path_disp "$path" "$C_CYN"
   case "$slot_state" in
     none)
-      echo "no slot: $path was never approved; nothing to tombstone" >&2
+      echo "no slot: never approved, so there is nothing to tombstone: $path" >&2
       exit 1 ;;
     tombstone)
       IFS= read -r line <"$slot_file" || line=""
-      printf 'already tombstoned: %s %s(%s)%s\n' "$path" "$C_DIM" "$line" "$C_OFF"
+      untrusted_var line_disp "$line" "$C_DIM"
+      printf 'already tombstoned: %s%s%s\n' "$C_CYN" "$path_disp" "$C_OFF"
+      printf '%stombstone:%s  %s%s%s\n' "$C_DIM" "$C_OFF" "$C_DIM" "$line_disp" "$C_OFF"
       exit 0 ;;
   esac
-  printf '%spath:%s       %s %s(gone)%s\n' "$C_B" "$C_OFF" "$path" "$C_DIM" "$C_OFF"
-  printf '%sslot:%s       %s state: %s\n' "$C_B" "$C_OFF" "$(show_slot "$slot")" "$slot_state"
+  # The path last, directly above the consequence and the question: it is
+  # the value the question decides about (see print_commit_rows).
+  printf '%sslot:%s       %s\n' "$C_B" "$C_OFF" "$(show_slot "$slot")"
+  printf '%sstate:%s      %s %s(the path is gone)%s\n' "$C_B" "$C_OFF" "$slot_state" "$C_DIM" "$C_OFF"
+  printf '%spath:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$path_disp" "$C_OFF"
   if [ "$yes" -eq 0 ]; then
     printf '%sverify then refuses this path until it is re-approved.%s\n' "$C_DIM" "$C_OFF"
-    printf '%stombstone %s%s%s? [%sy%s/%sN%s]%s ' \
-      "$C_B" "$C_CYN" "$path" "$C_OFF$C_B" \
+    printf '%stombstone this path? [%sy%s/%sN%s]%s ' "$C_B" \
       "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     drain_tty
     read -r answer </dev/tty
@@ -6105,7 +6156,7 @@ do_tombstone() {
   write_slot_state "$slot" tombstone "$(date -u +%Y-%m-%dT%H:%M:%SZ) retired by $inv"
   rm -f "$slot/release"   # a declared release name has no meaning on a tombstone
   clear_slot_ignore "$slot"   # nor do tolerated keys, or a copy of what is gone
-  printf '%s✓ tombstoned:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$path"
+  printf '%s✓ tombstoned:%s %s%s%s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$path_disp" "$C_OFF"
   log_action tombstone "$path"
 }
 
@@ -6115,8 +6166,10 @@ do_tombstone() {
 # was about -- verify names the path whose SLOT it read (the old one), which
 # without this line reads as a verdict about the wrong file.
 rekey_verify_said() { # $1 old  $2 new  $3 captured output
-  printf '%sverify, on the record for %s and the bytes now at %s:%s\n' \
-    "$C2_DIM" "$1" "$2" "$C2_OFF" >&2
+  printf '%sverify, on the record for the old path and the bytes now at the new one:%s\n' \
+    "$C2_DIM" "$C2_OFF" >&2
+  printf '%s  old:  %s%s\n' "$C2_DIM" "$1" "$C2_OFF" >&2
+  printf '%s  new:  %s%s\n' "$C2_DIM" "$2" "$C2_OFF" >&2
   cat -- "$3" >&2
 }
 
@@ -6178,12 +6231,13 @@ do_rekey() {
   }
   case "$slot_state" in
     none)
-      echo "no slot: $old was never approved; there is no record to re-key" >&2
+      echo "no slot: never approved, so there is no record to re-key: $old" >&2
       echo "       (review $new instead)" >&2
       exit 1 ;;
     tombstone)
       IFS= read -r line <"$slot_file" || line=""
-      refused "$old is tombstoned ($line)"
+      refused "this path is tombstoned: $old"
+      echo "        ($line)" >&2
       echo "        a tombstone marks the old path's own history; it does not travel --" >&2
       echo "        review $new instead" >&2
       exit 1 ;;
@@ -6197,11 +6251,11 @@ do_rekey() {
   local old_gone=0
   path_gone "$old" || old_gone=$?
   if [ "$old_gone" -eq 2 ]; then
-    refused "cannot tell whether $old still exists -- a rekey follows only a move that happened"
+    refused "cannot tell whether this path still exists, and a rekey follows only a move that happened: $old"
     exit 1
   fi
   if [ "$old_gone" -eq 1 ]; then
-    refused "$old still exists -- you rekey a record whose content has already moved"
+    refused "this path still exists, and you rekey a record whose content has already moved: $old"
     echo "        (move the content first, or review $new instead)" >&2
     exit 1
   fi
@@ -6213,19 +6267,19 @@ do_rekey() {
   if [ -d "$new_slot" ]; then
     inspect_slot "$new_slot" || exit 1
     if [ "$slot_state" != none ]; then
-      refused "$new already has a record ($slot_state); records do not merge"
+      refused "the new path already has a record ($slot_state), and records do not merge: $new"
       echo "        tombstone or review $new explicitly" >&2
       exit 1
     fi
     if [ -e "$new_slot/signers" ]; then
-      refused "$new_slot holds per-slot signer data (signers/allowed_signers)"
+      refused "the new slot holds per-slot signer data (signers/allowed_signers): $new_slot"
       echo "        moving a record onto it would silently place this content under those" >&2
       echo "        signers; reconcile them by hand, then re-run" >&2
       exit 1
     fi
     for e in "$new_slot"/* "$new_slot"/.[!.]*; do
       if [ -e "$e" ]; then
-        refused "$new_slot already holds ${e##*/}; records do not merge"
+        refused "the new slot already holds a file, and records do not merge: $e"
         echo "        inspect the slot and clear it by hand, then re-run" >&2
         exit 1
       fi
@@ -6252,7 +6306,7 @@ do_rekey() {
       rev="$(read_rev "$old_slot" "$old")" || exit 1
       [ -n "$rev" ] || { echo "ERROR: $src holds no rev; malformed record" >&2; exit 1; }
       [ -d "$new" ] || {
-        refused "$new is not a directory; a repo record moves to a work tree"
+        refused "a repo record moves to a work tree, and this is not a directory: $new"
         exit 1
       }
       # resolve_repo is the contract every repo verb resolves through: a
@@ -6263,7 +6317,7 @@ do_rekey() {
       # one whose object store HOLDS that commit. A work tree that does not
       # is a different repository wearing the new name.
       sgit cat-file -e "${rev}^{commit}" 2>/dev/null || {
-        refused "$new is a work tree, but its object store does not hold the pinned rev"
+        refused "this work tree's object store does not hold the pinned rev: $new"
         echo "        $rev -- this is not the repository the record names" >&2
         exit 1
       }
@@ -6273,7 +6327,7 @@ do_rekey() {
       read_pin_record "$src" "$kind" "$old" || exit 1
       label="$REC_LABEL"; digest="$REC_DIGEST"
       [ -f "$new" ] || {
-        refused "$new is not a regular file; a file record moves to a file"
+        refused "a file record moves to a file, and this is not a regular file: $new"
         exit 1
       }
       freeze_file "$new" || { echo "ERROR: cannot read $new" >&2; exit 1; }
@@ -6299,12 +6353,12 @@ do_rekey() {
           done <"$vout" ;;
         11)
           rekey_verify_said "$old" "$new" "$vout"
-          refused "the content at $new is not what $old's record names"
-          echo "        a rekey carries the record verbatim; review $new instead" >&2
+          refused "the content at the new path is not what the old path's record names"
+          echo "        a rekey carries the record verbatim; review the new path instead: $new" >&2
           exit 1 ;;
         *)
           rekey_verify_said "$old" "$new" "$vout"
-          echo "ERROR: $old's record could not be checked against $new (verify exit $vrc)" >&2
+          echo "ERROR: the old path's record could not be checked against the new path (verify exit $vrc)" >&2
           exit 1 ;;
       esac
       ;;
@@ -6332,8 +6386,12 @@ do_rekey() {
     fi
   fi
 
-  printf '%sold:%s        %s %s(gone)%s\n' "$C_B" "$C_OFF" "$old" "$C_DIM" "$C_OFF"
-  printf '%snew:%s        %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$new" "$C_OFF"
+  # Both paths are the caller's own bytes, escaped for every row they are on.
+  local old_disp new_disp
+  untrusted_var old_disp "$old"
+  untrusted_var new_disp "$new" "$C_CYN"
+  printf '%sold:%s        %s\n' "$C_B" "$C_OFF" "$old_disp"
+  printf '%snew:%s        %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$new_disp" "$C_OFF"
   printf '%sslot:%s       %s\n' "$C_B" "$C_OFF" "$old_slot"
   printf '            %s-> %s%s\n' "$C_DIM" "$new_slot" "$C_OFF"
   case "$state" in
@@ -6369,12 +6427,15 @@ do_rekey() {
   printf '%sConsumers will now trust this content at the new path.%s\n' "$C_B" "$C_OFF"
   printf '%sThe record itself does not change -- same %s, same declarations; only the\n' \
     "$C_DIM" "$what"
-  printf 'path it answers to does. The old path above is tombstoned by this move, so\n'
-  printf 'anything reappearing there refuses until it is approved on its own.%s\n' "$C_OFF"
+  printf 'path it answers to does. The old path, now gone, is tombstoned by this move,\n'
+  printf 'so anything reappearing there refuses until it is approved on its own.%s\n' "$C_OFF"
   echo
+  # The two paths again, directly above the question that decides them
+  # (see print_commit_rows): the paragraph above has pushed the first rows up.
+  printf '%sfrom:%s       %s\n' "$C_B" "$C_OFF" "$old_disp"
+  printf '%sto:%s         %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$new_disp" "$C_OFF"
   if [ "$yes" -eq 0 ]; then
-    printf '%srekey to %s%s%s? [%sy%s/%sN%s]%s ' \
-      "$C_B" "$C_CYN" "$new" "$C_OFF$C_B" \
+    printf '%srekey this record? [%sy%s/%sN%s]%s ' "$C_B" \
       "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     drain_tty
     read -r answer </dev/tty
@@ -6409,7 +6470,12 @@ do_rekey() {
     install -d -m "$TREE_DMODE" -o root -g "$TREE_GRP" "$new_slot/signers"
     write_slot_copy "$new_slot/signers" allowed_signers "$old_slot/signers/allowed_signers"
   fi
-  printf '%s✓ re-keyed:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$new" "$C_OFF" "$new_slot/$target"
+  # What moved (the rev or digest, a fixed width) and where its record now
+  # lives, which ends the row; the paths are on the rows above.
+  case "$state" in
+    rev) printf '%s✓ re-keyed:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$rev" "$C_OFF" "$new_slot/$target" ;;
+    pin) printf '%s✓ re-keyed:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$digest" "$C_OFF" "$new_slot/$target" ;;
+  esac
 
   write_slot_state "$old_slot" tombstone "$(date -u +%Y-%m-%dT%H:%M:%SZ) moved to $new by $inv"
   rm -f "$old_slot/release"      # the declared name left with the record
@@ -6419,11 +6485,10 @@ do_rekey() {
     # Only an EMPTY leftover goes -- anything still in there is unexplained
     # state a trust tool must not delete on a hunch (ensure_tree's rule).
     rmdir "$old_slot/signers" 2>/dev/null \
-      || printf '%swarning: %s is not empty; left in place%s\n' \
+      || printf '%swarning: not empty, left in place: %s%s\n' \
            "$C2_YEL" "$old_slot/signers" "$C2_OFF" >&2
   fi
-  printf '%s✓ tombstoned:%s %s %s(moved to %s)%s\n' \
-    "$C_GRN$C_B" "$C_OFF" "$old" "$C_DIM" "$new" "$C_OFF"
+  printf '%s✓ tombstoned:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$old_disp"
   log_action mv "$old" "$new"
 }
 
@@ -6488,7 +6553,9 @@ do_declare() {
   # The declared-name grammar, before the name can reach a sed expression
   # or a flake URL -- enforced on write here and on read in deploy.
   if [ -n "$name" ] && ! validate_release_name "$name"; then
-    echo "ERROR: release name '$name' is outside the declared-name grammar [A-Za-z0-9._/+-]" >&2
+    local name_disp
+    untrusted_var name_disp "$name" "" 2
+    echo "ERROR: a release name outside the declared-name grammar [A-Za-z0-9._/+-]: $name_disp" >&2
     exit 1
   fi
 
@@ -6509,7 +6576,7 @@ do_declare() {
   local rev
   rev="$(read_rev "$slot" "$repo")" || exit 1
   [ -n "$rev" ] || {
-    echo "nothing is pinned here; pinned review $repo first" >&2
+    echo "nothing is pinned here; review it first: pinned review $repo" >&2
     exit 1
   }
 
@@ -6531,13 +6598,13 @@ do_declare() {
     # hooks): the name must already resolve to the pinned rev.
     t_hash="$(sgit rev-parse -q --verify "refs/tags/${name}"'^{commit}' 2>/dev/null || true)"
     if [ -z "$t_hash" ]; then
-      printf '%s✗ refused:%s tag %s is missing from this checkout\n' \
+      printf '%s✗ refused:%s this checkout has no such tag: %s\n' \
         "$C2_RED$C2_B" "$C2_OFF" "$name" >&2
       exit 1
     fi
     if [ "$t_hash" != "$rev" ]; then
-      printf '%s✗ refused:%s tag %s names %.10s, not the pinned %.10s\n' \
-        "$C2_RED$C2_B" "$C2_OFF" "$name" "$t_hash" "$rev" >&2
+      printf '%s✗ refused:%s the tag names %.10s, not the pinned %.10s: %s\n' \
+        "$C2_RED$C2_B" "$C2_OFF" "$t_hash" "$rev" "$name" >&2
       exit 1
     fi
     if [ "$old_tag" = "$name" ]; then
@@ -6551,17 +6618,21 @@ do_declare() {
   subject_var subj "$rev" "$C_DIM" 'commit not in repo!'
   printf '%spinned:%s     %s%s%s  %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$rev" "$C_OFF" \
     "$C_DIM" "$subj" "$C_OFF"
+  # The declaration as it stands and as it would be, each on its own row
+  # (a release name's length is the release's), directly above the question
+  # that decides it; what the question changes is stated above them. The
+  # name on record is re-read from the slot, so it is escaped like any value
+  # this script did not write in this run.
+  local old_disp
+  untrusted_var old_disp "${old_tag:-(none)}" "$C_DIM"
   if [ "$remove" -eq 1 ]; then
-    printf '%sdeclared:%s   %s%s%s -> (none)\n' "$C_B" "$C_OFF" "$C_DIM" "$old_tag" "$C_OFF"
     printf "%sdeploy:%s     %sthe input's ref= stops being managed; it keeps whatever it says now%s\n" \
       "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
     echo
+    printf '%sdeclared:%s   %s%s%s\n' "$C_B" "$C_OFF" "$C_DIM" "$old_disp" "$C_OFF"
+    printf '            %s->%s (none)\n' "$C_DIM" "$C_OFF"
     [ "$yes" -eq 1 ] || printf '%sclear this declaration? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
   else
-    printf '%srelease:%s    %s -> %s%.10s%s  %s✓ names the pinned rev%s\n' \
-      "$C_B" "$C_OFF" "$name" "$C_CYN" "$t_hash" "$C_OFF" "$C_GRN" "$C_OFF"
-    printf '%sdeclared:%s   %s%s%s -> %s%s%s\n' "$C_B" "$C_OFF" \
-      "$C_DIM" "${old_tag:-(none)}" "$C_OFF" "$C_CYN$C_B" "$name" "$C_OFF"
     # The deploy: row is the point of the whole ceremony -- the effect on
     # the root anchor, which is the only thing the declaration changes. It
     # prints the ref string and NOTHING about any flake's current contents,
@@ -6575,6 +6646,11 @@ do_declare() {
       "$C_DIM" "$C_OFF"
     printf '            %slive tag ever stops naming the pinned rev%s\n' "$C_DIM" "$C_OFF"
     echo
+    printf '%sdeclared:%s   %s%s%s\n' "$C_B" "$C_OFF" "$C_DIM" "$old_disp" "$C_OFF"
+    printf '            %s->%s %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN$C_B" "$name" "$C_OFF"
+    # The invariant's verdict, checked above: the tag resolves to exactly
+    # the pinned rev, so the row needs no second hash.
+    printf '%s✓ the tag names the pinned rev%s\n' "$C_GRN" "$C_OFF"
     [ "$yes" -eq 1 ] || printf '%sdeclare this release name? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
   fi
   if [ "$yes" -eq 0 ]; then
@@ -6591,12 +6667,11 @@ do_declare() {
 
   if [ "$remove" -eq 1 ]; then
     rm -f "$slot/release"
-    printf '%s✓ cleared:%s %s %s(the slot is rev-only)%s\n' \
-      "$C_GRN$C_B" "$C_OFF" "$old_tag" "$C_DIM" "$C_OFF"
+    printf '%s✓ cleared:%s the slot is rev-only\n' "$C_GRN$C_B" "$C_OFF"
     log_action declare "$repo" "$old_tag"
   else
     write_note "$slot" release "$name"
-    printf '%s✓ declared:%s %s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$name" "$(show_slot "$slot")/release"
+    print_verdict_to "$C_GRN$C_B" declared "$name" "$(show_slot "$slot")/release"
     log_action declare "$repo" "$name"
   fi
 }
@@ -7163,14 +7238,17 @@ do_status() {
   printf '%sslot:%s       %s\n' "$C_DIM" "$C_OFF" "$(show_slot "$slot")"
   # THE SLOT-NAME INVARIANT (above slot_name_actual), both halves: a record
   # naming another spelling, a directory wearing one. Either is repaired by
-  # a review, and either is invisible until something says so.
+  # a review, and either is invisible until something says so. The verdict
+  # leads its row and the spelling it is about ends it.
   if [ "$rec_rc" -eq 2 ]; then
-    printf '%srecord:%s     %s✗ names %s, not this spelling -- review re-states it%s\n' \
-      "$C_DIM" "$C_OFF" "$C_YEL" "$REC_PATH" "$C_OFF"
+    local rp_disp
+    untrusted_var rp_disp "$REC_PATH" "$C_YEL"
+    printf '%srecord:%s     %s✗ names another spelling, review re-states it: %s%s\n' \
+      "$C_DIM" "$C_OFF" "$C_YEL" "$rp_disp" "$C_OFF"
   fi
   slot_respell="$(slot_name_actual "$slot")"
   if [ -n "$slot_respell" ]; then
-    printf '%sslot name:%s  %s✗ directory is still named %s -- review renames it%s\n' \
+    printf '%sslot name:%s  %s✗ still another spelling, review renames it: %s%s\n' \
       "$C_DIM" "$C_OFF" "$C_YEL" "${slot_respell##*/}" "$C_OFF"
   fi
   if [ -z "$hash" ]; then
@@ -7194,15 +7272,19 @@ do_status() {
         "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF"
     else
       decl_live="$(sgit rev-parse -q --verify "refs/tags/${decl_tag}"'^{commit}' 2>/dev/null || true)"
+      # The name ends its row; what deploy makes of it is said on the line
+      # under it, at the gutter.
       if [ "$decl_live" = "$hash" ]; then
-        printf '%sdeclared:%s   %s%s%s  %s(deploy syncs ref= to refs/tags/%s)%s\n' \
-          "$C_DIM" "$C_OFF" "$C_CYN" "$decl_tag" "$C_OFF" "$C_DIM" "$decl_tag" "$C_OFF"
+        printf '%sdeclared:%s   %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$decl_tag" "$C_OFF"
+        printf '            %sdeploy syncs ref= to refs/tags/%s%s\n' "$C_DIM" "$decl_tag" "$C_OFF"
       elif [ -z "$decl_live" ]; then
-        printf '%sdeclared:%s   %s  %s✗ the live tag is missing from this checkout -- deploy will refuse%s\n' \
-          "$C_DIM" "$C_OFF" "$decl_tag" "$C_RED$C_B" "$C_OFF"
+        printf '%sdeclared:%s   %s\n' "$C_DIM" "$C_OFF" "$decl_tag"
+        printf '            %s✗ the live tag is missing from this checkout -- deploy will refuse%s\n' \
+          "$C_RED$C_B" "$C_OFF"
       else
-        printf '%sdeclared:%s   %s  %s✗ the live tag names %.10s, not the pin -- deploy will refuse%s\n' \
-          "$C_DIM" "$C_OFF" "$decl_tag" "$C_RED$C_B" "$decl_live" "$C_OFF"
+        printf '%sdeclared:%s   %s\n' "$C_DIM" "$C_OFF" "$decl_tag"
+        printf '            %s✗ the live tag names %.10s, not the pin -- deploy will refuse%s\n' \
+          "$C_RED$C_B" "$decl_live" "$C_OFF"
       fi
     fi
   fi
@@ -7235,10 +7317,11 @@ do_status() {
 # The verdict is verify's own (subshell), so status can never disagree
 # with the gate.
 do_status_file() {
-  local path slot rc line
+  local path slot rc line path_disp
   path="$(canon_path "$1")" || exit 1
   slot="$(slot_dir_for "$inv" "$path")"
-  printf '%sfile:%s       %s\n' "$C_DIM" "$C_OFF" "$path"
+  untrusted_var path_disp "$path"
+  printf '%sfile:%s       %s\n' "$C_DIM" "$C_OFF" "$path_disp"
   printf '%sslot:%s       %s\n' "$C_DIM" "$C_OFF" "$(show_slot "$slot")"
   if ! inspect_slot "$slot" 2>/dev/null; then
     printf '%sstate:%s      %s✗ malformed slot -- inspect it by hand%s\n' "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF"
@@ -7250,13 +7333,18 @@ do_status_file() {
       printf '%sstate:%s      %s✗ never approved%s\n' "$C_DIM" "$C_OFF" "$C_RED" "$C_OFF"
       return ;;
     rev)
+      # The record line names a path, so it ends its row and the reason
+      # goes under it.
       IFS= read -r line <"$slot_file" || line=""
-      printf '%spinned:%s     %s%s%s  %s(rev.%s -- a repo pin at a non-directory path)%s\n' \
-        "$C_DIM" "$C_OFF" "$C_CYN" "$line" "$C_OFF" "$C_YEL" "$slot_kind" "$C_OFF"
+      untrusted_var line "$line" "$C_CYN"
+      printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$line" "$C_OFF"
+      printf '            %s(rev.%s -- a repo pin at a non-directory path)%s\n' "$C_YEL" "$slot_kind" "$C_OFF"
       return ;;
     tombstone)
       IFS= read -r line <"$slot_file" || line=""
-      printf '%spinned:%s     tombstoned %s(%s)%s\n' "$C_DIM" "$C_OFF" "$C_DIM" "$line" "$C_OFF"
+      untrusted_var line "$line" "$C_DIM"
+      printf '%spinned:%s     tombstoned\n' "$C_DIM" "$C_OFF"
+      printf '            %s%s%s\n' "$C_DIM" "$line" "$C_OFF"
       local ts_gone=0
       path_gone "$path" 2>/dev/null || ts_gone=$?
       case "$ts_gone" in
@@ -7338,11 +7426,11 @@ do_sign() {
     local existing
     existing="$(sgit rev-parse "refs/tags/${tag_name}"'^{commit}')"
     if [ "$existing" != "$hash" ]; then
-      echo "ERROR: tag $tag_name exists at $existing, not the pinned $hash" >&2
+      echo "ERROR: the tag exists at $existing, not the pinned $hash: $tag_name" >&2
       echo "       refusing to move it -- pick another name, or review that rev first" >&2
       exit 1
     fi
-    echo "note: $tag_name already points at the pinned rev; re-signing in place"
+    echo "note: the tag already points at the pinned rev; re-signing it in place: $tag_name"
     force="-f"
   fi
 
@@ -7356,8 +7444,9 @@ do_sign() {
   else
     git -C "$repo" --no-pager tag -s -m "signed by $inv via pinned" "$tag_name" "$hash"
   fi
-  printf '%s✓ signed:%s %s at %s%s%s (the pinned hash)\n' "$C_GRN$C_B" "$C_OFF" "$tag_name" "$C_CYN" "$hash" "$C_OFF"
-  printf '%s  consumers verify with review --signed-tag %s against their allowed_signers%s\n' "$C_DIM" "$tag_name" "$C_OFF"
+  printf '%s✓ signed:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$tag_name"
+  printf '%scommit:%s     %s%s%s %s(the pinned hash)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" "$C_DIM" "$C_OFF"
+  printf '%s  consumers verify it against their allowed_signers: pinned review --signed-tag %s%s\n' "$C_DIM" "$tag_name" "$C_OFF"
   log_action sign "$repo" "$hash"
 }
 
@@ -8391,8 +8480,10 @@ EOF
       printf '%salready present%s (same key material): %s\n' "$C_GRN" "$C_OFF" "$target"
       exit 0
     fi
+    local entry_disp
+    untrusted_var entry_disp "$entry"
     printf '%starget:%s      %s\n' "$C_B" "$C_OFF" "$target"
-    printf '%sentry:%s       %s\n' "$C_B" "$C_OFF" "$entry"
+    printf '%sentry:%s       %s\n' "$C_B" "$C_OFF" "$entry_disp"
     printf '%sfingerprint:%s %s\n' "$C_B" "$C_OFF" "$fp"
     printf '%s(obtain the key out of band -- printed card, password manager, existing\ntrusted machine -- never from the repo it will vouch for.)%s\n' "$C_DIM" "$C_OFF"
     if [ "$yes" -eq 0 ]; then
@@ -8575,10 +8666,16 @@ do_ignorable() {
       '[ $e[] | select((.path == $p and ((.under // "") == $u)) | not) ]')" || exit 1
   fi
 
+  # The key and the scope are the caller's own bytes: escaped, each on a
+  # row it ends (see print_commit_rows).
+  local key_disp json_disp scope_row
+  untrusted_var key_disp "$key" "$C_CYN"
+  untrusted_var json_disp "$path_json" "$C_DIM"
+  untrusted_var scope_row "$scope_disp" "$C_CYN"
   printf '%starget:%s      %s\n' "$C_B" "$C_OFF" "$pf"
-  printf '%skey:%s         %s%s%s  %s(stored as %s)%s\n' \
-    "$C_B" "$C_OFF" "$C_CYN" "$key" "$C_OFF" "$C_DIM" "$path_json" "$C_OFF"
-  printf '%sscope:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$scope_disp" "$C_OFF"
+  printf '%skey:%s         %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$key_disp" "$C_OFF"
+  printf '%sstored as:%s   %s%s%s\n' "$C_B" "$C_OFF" "$C_DIM" "$json_disp" "$C_OFF"
+  printf '%sscope:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$scope_row" "$C_OFF"
   if [ "$sub" = add ]; then
     printf '            %sreview --file may then declare this key ignored for paths in%s\n' "$C_DIM" "$C_OFF"
     printf '            %sscope; verify answers 5 instead of 11 when only it drifts%s\n' "$C_DIM" "$C_OFF"
@@ -8612,10 +8709,11 @@ do_ignorable() {
   fi
   write_note "$(policy_dir_for "$inv")" ignorable.json "$new_json"
   if [ "$sub" = add ]; then
-    printf '%s✓ granted:%s %s%s%s %s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$key" "$C_OFF" "$scope_disp" "$pf"
+    printf '%s✓ granted:%s %s%s%s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$key_disp" "$C_OFF"
   else
-    printf '%s✓ withdrawn:%s %s%s%s %s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$key" "$C_OFF" "$scope_disp" "$pf"
+    printf '%s✓ withdrawn:%s %s%s%s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$key_disp" "$C_OFF"
   fi
+  printf '            %s%s%s\n' "$C_CYN" "$scope_row" "$C_OFF"
   log_action "ignorable-$sub" "$key" "${under:-everywhere}"
 }
 
