@@ -1932,14 +1932,15 @@ sgit() {
 # recorded, compared or passed to another program goes through it: the
 # record must keep the bytes that were approved.
 #
-# print_repo_row is the `repo:` row every repo screen opens with: the
-# folder name in the subject color, then the full path, last on the row.
-# Both are escaped -- a directory name is bytes anyone could have chosen.
+# print_repo_row is the `repo:` row every repo screen opens with: the full
+# path, last on the row, its folder name in the subject color -- the name
+# the gates and the question use. Both parts are escaped -- a directory
+# name is bytes anyone could have chosen.
 print_repo_row() { # <label-SGR>
-  local rn rp
+  local rd rn
+  untrusted_var rd "${repo%/*}/" "$C_DIM"
   untrusted_var rn "${repo##*/}" "$C_B$C_MAG"
-  untrusted_var rp "$repo" "$C_DIM"
-  printf '%srepo:%s       %s%s%s  %s%s%s\n' "$1" "$C_OFF" "$C_B$C_MAG" "$rn" "$C_OFF" "$C_DIM" "$rp" "$C_OFF"
+  printf '%srepo:%s       %s%s%s%s%s%s\n' "$1" "$C_OFF" "$C_DIM" "$rd" "$C_OFF" "$C_B$C_MAG" "$rn" "$C_OFF"
 }
 #
 # subject_var is the one-row case: the subject of commit $2, escaped into the
@@ -5162,10 +5163,9 @@ do_approve() {
             n_range="$(sgit rev-list --count "${old_hash}..${hash}")"
             gate_size="$n_range commit$(plural_s "$n_range")"
           fi
-          printf -v gate_line '%sreview %s%s%s %s%.10s..%.10s%s (%s);%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
-            "$C_B" "$C_B$C_MAG" "$repo_nm" "$C_OFF$C_B" \
-            "$C_CYN" "$old_hash" "$hash" "$C_OFF$C_B" \
-            "$gate_size" "$C_OFF" "$C_BLU" "$C_OFF" \
+          printf -v gate_line '%sreview %s%.10s..%.10s%s (%s) in %s%s%s;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
+            "$C_B" "$C_CYN" "$old_hash" "$hash" "$C_OFF$C_B" "$gate_size" \
+            "$C_B$C_MAG" "$repo_nm" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
             "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
           if ! gate_answer "$gate_line"; then
             printf '%sskipped; pin unchanged%s\n' "$C_YEL" "$C_OFF"
@@ -5196,9 +5196,9 @@ do_approve() {
         # Same gate as the whole-delta pager (skip included); no range
         # exists yet.
         local gate_line
-        printf -v gate_line '%sreview %s%s%s full tree at %s%.10s%s;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
-          "$C_B" "$C_B$C_MAG" "$repo_nm" "$C_OFF$C_B" \
-          "$C_CYN" "$hash" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
+        printf -v gate_line '%sreview the full tree at %s%.10s%s in %s%s%s;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
+          "$C_B" "$C_CYN" "$hash" "$C_OFF$C_B" \
+          "$C_B$C_MAG" "$repo_nm" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
           "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
         if ! gate_answer "$gate_line"; then
           printf '%sskipped; pin unchanged%s\n' "$C_YEL" "$C_OFF"
@@ -5222,8 +5222,8 @@ do_approve() {
     if [ "${by_words:-0}" -eq 0 ]; then
       echo
       local answer
-      printf '%sapprove %s%s%s %s%s%s? [%sy%s/%sN%s]%s ' "$C_B" "$C_B$C_MAG" "$repo_nm" "$C_OFF$C_B" \
-        "$C_CYN" "$hash" "$C_OFF$C_B" \
+      printf '%sapprove %s%s%s in %s%s%s? [%sy%s/%sN%s]%s ' "$C_B" "$C_CYN" "$hash" "$C_OFF$C_B" \
+        "$C_B$C_MAG" "$repo_nm" "$C_OFF$C_B" \
         "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
       drain_tty
       read -r answer </dev/tty
@@ -5362,9 +5362,9 @@ EOF
     # `n` here stops the walk, exactly as a decline at the confirm does:
     # commits advance linearly, so there is no "skip this one and review
     # the next" -- the pin can never move past an unreviewed commit.
-    printf -v gate_line '%sreview %s%s%s %s%.10s..%.10s%s (1 commit);%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
-      "$C_B" "$C_B$C_MAG" "$repo_nm" "$C_OFF$C_B" \
-      "$C_CYN" "$prev" "$c" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
+    printf -v gate_line '%sreview %s%.10s..%.10s%s (1 commit) in %s%s%s;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
+      "$C_B" "$C_CYN" "$prev" "$c" "$C_OFF$C_B" \
+      "$C_B$C_MAG" "$repo_nm" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
       "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
     if ! gate_answer "$gate_line"; then
       printf '%sskipped; the walk stops here%s\n' "$C_YEL" "$C_OFF"
@@ -5379,8 +5379,8 @@ EOF
     untrusted_page color_diff <<<"$diff_out"
     print_end_rule diff "$totals"
     echo
-    printf '%sapprove %s%s%s %s%s%s? [%sy%s/%sN%s]%s ' "$C_B" "$C_B$C_MAG" "$repo_nm" "$C_OFF$C_B" \
-      "$C_CYN" "$c" "$C_OFF$C_B" \
+    printf '%sapprove %s%s%s in %s%s%s? [%sy%s/%sN%s]%s ' "$C_B" "$C_CYN" "$c" "$C_OFF$C_B" \
+      "$C_B$C_MAG" "$repo_nm" "$C_OFF$C_B" \
       "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     drain_tty
     read -r answer </dev/tty
@@ -5916,9 +5916,9 @@ EOF
         # is always "+A -D" (diff_shape prints both counts, either may be 0), so
         # the first word is the add count and the rest the delete count.
         gate_disp="${C_GRN}${gate_shape%% *}${C_OFF} ${C_RED}${gate_shape#* }${C_OFF}${C_B}"
-        printf -v gate_line '%sreview %s%s%s %s;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
-          "$C_B" "$C_B$C_MAG" "$path_nm" "$C_OFF$C_B" \
-          "$gate_disp" "$C_OFF" "$C_BLU" "$C_OFF" \
+        printf -v gate_line '%sreview %s in %s%s%s;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
+          "$C_B" "$gate_disp" "$C_B$C_MAG" "$path_nm" "$C_OFF$C_B" \
+          "$C_OFF" "$C_BLU" "$C_OFF" \
           "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
         if ! gate_answer "$gate_line"; then
           printf '%sskipped; record unchanged%s\n' "$C_YEL" "$C_OFF"
@@ -5944,9 +5944,9 @@ EOF
         [ "$(tail -c1 -- "$fro" | wc -l)" -eq 1 ] && nl=1
         n_lines="$(LC_ALL=C wc -l <"$fro" | tr -d ' ')"
         [ -n "$nl" ] || [ ! -s "$fro" ] || n_lines=$((n_lines + 1))
-        printf -v gate_line '%sreview %s%s%s full content %s%s line%s%s;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
-          "$C_B" "$C_B$C_MAG" "$path_nm" "$C_OFF$C_B" \
-          "$C_CYN" "$n_lines" "$(plural_s "$n_lines")" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
+        printf -v gate_line '%sreview %s%s line%s%s of %s%s%s;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
+          "$C_B" "$C_CYN" "$n_lines" "$(plural_s "$n_lines")" "$C_OFF$C_B" \
+          "$C_B$C_MAG" "$path_nm" "$C_OFF$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
           "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
         if ! gate_answer "$gate_line"; then
           printf '%sskipped; record unchanged%s\n' "$C_YEL" "$C_OFF"
@@ -6087,7 +6087,8 @@ do_tombstone() {
   printf '%spath:%s       %s %s(gone)%s\n' "$C_B" "$C_OFF" "$path" "$C_DIM" "$C_OFF"
   printf '%sslot:%s       %s state: %s\n' "$C_B" "$C_OFF" "$(show_slot "$slot")" "$slot_state"
   if [ "$yes" -eq 0 ]; then
-    printf '%stombstone %s%s%s? verify will then refuse it until re-approved [%sy%s/%sN%s]%s ' \
+    printf '%sverify then refuses this path until it is re-approved.%s\n' "$C_DIM" "$C_OFF"
+    printf '%stombstone %s%s%s? [%sy%s/%sN%s]%s ' \
       "$C_B" "$C_CYN" "$path" "$C_OFF$C_B" \
       "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     drain_tty
@@ -6368,8 +6369,8 @@ do_rekey() {
   printf 'anything reappearing there refuses until it is approved on its own.%s\n' "$C_OFF"
   echo
   if [ "$yes" -eq 0 ]; then
-    printf '%srekey %s%s%s -> %s%s%s? [%sy%s/%sN%s]%s ' \
-      "$C_B" "$C_CYN" "$old" "$C_OFF$C_B" "$C_CYN" "$new" "$C_OFF$C_B" \
+    printf '%srekey to %s%s%s? [%sy%s/%sN%s]%s ' \
+      "$C_B" "$C_CYN" "$new" "$C_OFF$C_B" \
       "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     drain_tty
     read -r answer </dev/tty

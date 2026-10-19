@@ -672,7 +672,7 @@ one.
   declared tolerance.
 - **Gates read one way everywhere.** A gate names what happens next, then
   its keys: `review 1 repo as root; Enter run · n stop` before an action,
-  `review foo a1b2..c3d4 (2 commits); Enter open · n skip` before a review.
+  `review a1b2..c3d4 (2 commits) in foo; Enter open · n skip` before a review.
   The answer is typed at the end of the gate line. Enter, `y` and `yes`
   continue; `n` declines every gate, because a gate has exactly two
   outcomes and one decline key is enough; end of input declines too,

@@ -943,7 +943,7 @@ run_pinned review --file "$SUB/a/gate/one.txt" --file "$SUB/a/gate/two.txt"
 assert_exit "$RC" 0 "a two-file ceremony records both"
 assert_contains "$OUT" "[1/2]" "the batch counter names the item under ceremony"
 assert_contains "$OUT" "[2/2]" "and moves on with the batch"
-assert_contains "$OUT" "full content 3 lines; Enter open" \
+assert_contains "$OUT" "review 3 lines of " \
                 "a first approval's gate names the size of what it opens"
 
 printf 'lonely\n' > "$SUB/a/gate/solo.txt"
@@ -952,7 +952,7 @@ y
 '
 run_pinned review --file "$SUB/a/gate/solo.txt"
 assert_exit "$RC" 0 "a single-file ceremony records"
-assert_contains "$OUT" "full content 1 line; Enter open" "the singular gate reads as one"
+assert_contains "$OUT" "review 1 line of " "the singular gate reads as one"
 assert_contains "$OUT" "--- end of file: 1 line ---" "the paged file leaves a closing rule, singular"
 assert_missing "$OUT" "[1/1]" "one --file is not a batch: no counter"
 
@@ -965,7 +965,7 @@ y
 '
 run_pinned review --file "$SUB/a/gate/solo.txt" --baseline "$FIX/solo-baseline.txt"
 assert_exit "$RC" 0 "a baseline-diff ceremony records"
-assert_contains "$OUT" "+1 -0; Enter open" "the gate states the diff's magnitude"
+assert_contains "$OUT" "review +1 -0 in " "the gate states the diff's magnitude"
 assert_contains "$OUT" "diff vs the approved baseline" "and the pager is that diff"
 assert_contains "$OUT" "--- approved: " "the diff header names the baseline side by role"
 assert_contains "$OUT" "+++ candidate: " "and the candidate side by role"
@@ -991,7 +991,7 @@ y
 run_pinned review --file "$SUB/a/witness/held.txt" --store
 assert_exit "$RC" 0 "a custody slot re-approves with no --baseline"
 assert_contains "$OUT" "diff vs the approved baseline" "and diffs against its own stored copy"
-assert_contains "$OUT" "+1 -0; Enter open" "at the right magnitude"
+assert_contains "$OUT" "review +1 -0 in " "at the right magnitude"
 # (b) --baseline-store: a copy-less slot finds its witness by slot name + digest.
 STORED="$SUB/a/witness/stored.txt"
 printf 's1\ns2\n' > "$STORED"
@@ -1011,7 +1011,7 @@ y
 run_pinned review --baseline-store "$WSTORE" --file "$STORED"
 assert_exit "$RC" 0 "a --baseline-store ceremony records"
 assert_contains "$OUT" "diff vs the approved baseline" "the store entry is the diff's other side"
-assert_contains "$OUT" "+1 -0; Enter open" "at the right magnitude"
+assert_contains "$OUT" "review +1 -0 in " "at the right magnitude"
 # (c) a store with no entry for this slot shows the full file, with no note:
 # nothing was offered, so nothing failed.
 printf 's1\ns2\ns3\ns4\n' > "$STORED"
@@ -1020,7 +1020,7 @@ y
 '
 run_pinned review --baseline-store "$FIX/empty-store" --file "$STORED"
 assert_exit "$RC" 0 "an empty store still records"
-assert_contains "$OUT" "full content 4 lines; Enter open" "and the whole file is what opens"
+assert_contains "$OUT" "review 4 lines of " "and the whole file is what opens"
 assert_missing "$OUT" "does not re-hash" "with no claim that a witness failed"
 # (d) a store entry that does not re-hash is refused: full file, and the note.
 printf 'forged\n' > "$WENTRY/$(digest_of "$STORED")"
@@ -1031,7 +1031,7 @@ y
 run_pinned review --baseline-store "$WSTORE" --file "$STORED"
 assert_exit "$RC" 0 "a forged store entry still records"
 assert_contains "$OUT" "does not re-hash to the approved record" "the note says the witness failed"
-assert_contains "$OUT" "full content 5 lines; Enter open" "and the whole file is what opens"
+assert_contains "$OUT" "review 5 lines of " "and the whole file is what opens"
 assert_before "$OUT" "--- end of file: 5 lines ---" "does not re-hash to the approved record" \
   "the witness note prints below the content, above the question"
 # (e) outside the --file ceremony the flag is refused, like --store.
@@ -1260,6 +1260,8 @@ ANS='y
 '
 run_pinned tombstone "$SUB/t/live.txt"
 assert_exit "$RC" 0 "tombstone records once the path is gone"
+assert_contains "$OUT" "tombstone $SUB/t/live.txt? [y/N]" "the prompt ends on the path, then the keys"
+assert_before "$OUT" "verify then refuses this path" "tombstone $SUB" "and what it means sits on a line above"
 assert_contains "$OUT" "tombstoned" "ceremony confirms the tombstone"
 LIVE_SLOT="$(slot_of "$SUB/t/live.txt")"
 assert_file "$LIVE_SLOT/tombstone" "tombstone state file written"
@@ -2210,7 +2212,9 @@ y
   assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_C2" "the forward pin moved to HEAD"
   assert_contains "$OUT" "--- commits since last approval ---" "forward keeps the ordinary listing"
   assert_missing "$OUT" "!!!" "a forward move raises no alarm"
-  assert_contains "$OUT" "(2 commits); Enter open" "a forward gate sizes the delta in commits"
+  assert_contains "$OUT" "(2 commits) in ${REPO_G##*/}; Enter open" "a forward gate sizes the delta in commits, the name last"
+  assert_contains "$OUT" " in ${REPO_G##*/}? [y/N]" "the question names the commit, then the repo, then the keys"
+  assert_contains "$OUT" "repo:       $REPO_G" "the repo row is the path alone, the name last"
   assert_contains "$OUT" "--- end of diff: 2 files +2 -0 ---" "the paged diff leaves a closing rule with its totals"
 
   # A declaration on a forward candidate overrides nothing.
@@ -2255,7 +2259,7 @@ y
   assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_C1" "the declared backward move recorded the pin"
   assert_contains "$OUT" "!!! BACKWARD:" "the ceremony raises the backward alarm"
   assert_contains "$OUT" "--- commits being un-approved ---" "the display names the reversed range"
-  assert_contains "$OUT" "(1 commit un-approved); Enter open" \
+  assert_contains "$OUT" "(1 commit un-approved) in " \
     "a backward gate sizes what it un-approves"
   assert_contains "$OUT" "g2 second" "the un-approved commit is listed"
   assert_contains "$OUT" "--- diff " "the honest diff of the move still runs"
@@ -2307,7 +2311,7 @@ y
   assert_contains "$OUT" "commits being un-approved (leaving the pinned line)" \
     "the display names the abandoned range"
   assert_contains "$OUT" "commits arriving on the new line" "the display names the arriving range"
-  assert_contains "$OUT" "(1 commit un-approved, 1 arriving); Enter open" \
+  assert_contains "$OUT" "(1 commit un-approved, 1 arriving) in " \
     "a diverged gate sizes both sides of the merge base"
   assert_contains "$OUT" "g2 second" "the abandoned commit is listed"
   assert_contains "$OUT" "gx side" "the arriving commit is listed"
@@ -2333,9 +2337,9 @@ y
   assert_exit "$RC" 0 "a declared rootless rewrite proceeds"
   assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_R" "the rewrite's root commit is pinned"
   assert_contains "$OUT" "no common ancestor in this checkout" "the listing says there is no range"
-  assert_contains "$OUT" "(no shared history; 1 file +1 -0); Enter open" \
+  assert_contains "$OUT" "(no shared history; 1 file +1 -0) in " \
     "the gate sizes an ancestorless move by the diff, not by commits"
-  assert_missing "$OUT" "commit); Enter" "no commit count stands in for the delta"
+  assert_missing "$OUT" "commit) in " "no commit count stands in for the delta"
   assert_contains "$OUT" "--- end of diff: 1 file +1 -0 ---" "the paged diff leaves a closing rule"
   bgit "$REPO_G" checkout -q -f main
 
@@ -4065,6 +4069,7 @@ ANS='y
 run_pinned rekey "$SUB/mv/from.txt" "$SUB/mv/deeper/to.txt"
 assert_exit "$RC" 0 "a file record moves to the path its content moved to"
 assert_contains "$OUT" "at the new path" "the ceremony states what the y buys"
+assert_contains "$OUT" "rekey to $SUB/mv/deeper/to.txt? [y/N]" "the prompt names only the new path, last"
 assert_contains "$OUT" "the approved copy" "and names the annotations that travel"
 assert_file "$MV_NEW_SLOT/pin.sha256" "the new slot holds the record"
 assert_eq "$(cat "$MV_NEW_SLOT/pin.sha256")" "$MV_DIG  $SUB/mv/deeper/to.txt" \
