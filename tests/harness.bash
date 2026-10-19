@@ -2844,6 +2844,29 @@ n
   run_pinned rekey "$FIX/mv-old-gone" "$FIX/mv-new" --yes
   assert_exit "$RC" 1 "rekey with --yes reaches its own checks"
   assert_missing "$OUT" "usage: pinned" "--yes is not a usage error there"
+
+  # Every question names its object: setup's plan asks about the setup, and
+  # running the uninstalled checkout copy asks about the copy, on its row.
+  ANS='n
+'
+  run_preview setup
+  assert_exit "$RC" 2 "declining setup's plan exits 2"
+  assert_contains "$OUT" "run this setup? [y/N]" "setup's question names its object"
+  printf 'n\n' > "$FIX/stdin"
+  RC=0
+  INSTALL_TARGET="$FIX/not-installed" PINNED_TEST_NOTTY="" \
+    "$PREVIEW" tombstone "$FIX/ts-gone" <"$FIX/stdin" >"$OUT" 2>&1 || RC=$?
+  assert_exit "$RC" 2 "declining the uninstalled copy exits 2"
+  assert_eq "$(lines_before "$OUT" "run this copy?" 3 | cut -d'|' -f1)" "copy:       $PREVIEW" \
+    "the question about the uninstalled copy stands under its copy: row and the consequence"
+  assert_contains "$OUT" "aborted; nothing ran" "and its decline says nothing ran"
+  printf 'n\n' > "$FIX/stdin"
+  RC=0
+  INSTALL_TARGET="$FIX/not-installed" PINNED_TEST_NOTTY="" \
+    "$PREVIEW" ignorable add model <"$FIX/stdin" >"$OUT" 2>&1 || RC=$?
+  assert_exit "$RC" 2 "declining the uninstalled copy for a policy verb exits 2"
+  assert_eq "$(lines_before "$OUT" "run this copy?" 2 | cut -d'|' -f1)" "copy:       $PREVIEW" \
+    "and asks about the copy on its row there too"
 else
   skip "S8i" "no git fixture"
 fi
@@ -2956,7 +2979,8 @@ if [ "$GIT_OK" -eq 1 ]; then
   run_pinned status "$REPO_DC"
   assert_exit "$RC" 0 "status exits 0 on a declared slot"
   assert_contains "$OUT" "declared:   v1" "status shows the declared name"
-  assert_contains "$OUT" "deploy syncs ref= to refs/tags/v1" "and its effect"
+  assert_missing "$OUT" "deploy syncs ref=" \
+    "a live declaration is the normal state: its row alone, no detail line"
   ANS=""
   run_pinned list --under "$REPO_DC"
   assert_exit "$RC" 0 "list exits 0 over the declared slot"
@@ -3597,7 +3621,8 @@ assert_contains "$OUT" "everywhere" "the user tier's unscoped entry is shown"
 ANS=""
 run_pinned ignorable add effortLevel --yes
 assert_exit "$RC" 1 "an uncovered grant under --yes refuses"
-assert_contains "$OUT" "does not cover this scope" "naming the machine policy"
+assert_contains "$OUT" "does not cover this scope: $PINNED_MACHINE_POLICY" "naming the machine policy, last"
+assert_missing "$OUT" "target:" "and printing no rows: a refusal is no record"
 assert_eq "$(jq -c . "$POLICY_USER")" '[{"path":["model"]}]' "and the user tier is unchanged"
 ANS=""
 run_pinned ignorable add model --under "$SUB/pol/in" --yes
@@ -5486,12 +5511,31 @@ if command -v ssh-keygen >/dev/null 2>&1; then
   run_pinned signer add --key "$SK_LINE" --principal yes@test --yes
   assert_exit "$RC" 0 "signer add --key --yes records with no answer"
   assert_missing "$OUT" "[y/N]" "and asks nothing"
-  assert_contains "$OUT" "fingerprint:" "the fingerprint is still shown"
+  assert_contains "$OUT" "fingerprint:  " "the fingerprint is still shown, two spaces past the widest label"
   assert_contains "$OUT" "✓ added:" "the result is confirmed as always"
   ANS=""
   run_pinned signer remove --key "$SK_LINE" --yes
   assert_exit "$RC" 0 "signer remove --key --yes removes with no answer"
   assert_missing "$OUT" "[y/N]" "and asks nothing"
+  # The signers file's lines are someone else's text: a full line names its
+  # own principal, unchecked, so a hidden character in it shows as an escape
+  # on the key: row, in the listing and on the entries: row, never raw.
+  ZW="$(printf '\342\200\213')"
+  SK_BLOB="$(awk '{ print $2 }' "$FIX/yes-key.pub")"
+  ANS=""
+  run_pinned signer add --key "hid${ZW}den@test ssh-ed25519 $SK_BLOB" --yes
+  assert_exit "$RC" 0 "a full line with a hidden character in its principal records"
+  assert_contains "$OUT" "key:          hid${BS}u{200B}den@test ssh-ed25519 $SK_BLOB" \
+    "the key: row shows the hidden character as an escape"
+  assert_missing "$OUT" "$ZW" "and nothing raw"
+  run_pinned signer list
+  assert_contains "$OUT" "hid${BS}u{200B}den@test" "the listing escapes the principal"
+  assert_missing "$OUT" "$ZW" "and shows nothing raw"
+  run_pinned signer remove --key "$SK_LINE" --yes
+  assert_exit "$RC" 0 "signer remove takes that entry out"
+  assert_contains "$OUT" "entries:      hid${BS}u{200B}den@test ssh-ed25519 $SK_BLOB" \
+    "the entries: row shows the file's line escaped"
+  assert_missing "$OUT" "$ZW" "and nothing raw"
   if [ -n "$SK_SAVED" ]; then
     cp -p "$FIX/allowed_signers.saved" "$SK_FILE"
   else

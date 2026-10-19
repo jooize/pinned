@@ -3636,7 +3636,7 @@ do_setup() {
   if [ "$assume_yes" -ne 1 ]; then
     setup_plan "$inv"
     local answer
-    printf '%sproceed? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+    printf '%srun this setup? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     drain_tty
     read -r answer </dev/tty
     case "$answer" in
@@ -4069,7 +4069,7 @@ case "$action" in
         for a in "$@"; do [ "$a" = "--yes" ] && want_yes=1; done
         if [ "$want_yes" -eq 0 ]; then
           setup_plan "$(id -un)"
-          printf '%sproceed? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+          printf '%srun this setup? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
           drain_tty
           read -r answer </dev/tty
           case "$answer" in
@@ -4454,11 +4454,10 @@ case "$action" in
         # exempt -- installing the just-read checkout is its whole job.)
         elev="$(readlink -f "$0")"
         if [ "$action" != "setup" ]; then
+          # The question block: the warning and the safer route (advice),
+          # the copy the question is about on its row, the consequence, the
+          # question -- which names its object by that row's label.
           printf '%swarning: pinned is not installed at %s%s\n' "$C_YEL$C_B" "$INSTALL_TARGET" "$C_OFF"
-          printf '%s  About to run as root the uninstalled, user-writable copy at%s\n' "$C_YEL" "$C_OFF"
-          printf '%s  %s%s\n' "$C_YEL" "$elev" "$C_OFF"
-          printf '%s  Only proceed if you have just read this exact file and%s\n' "$C_YEL" "$C_OFF"
-          printf '%s  trust your user-space not to have swapped it since.%s\n' "$C_YEL" "$C_OFF"
           printf '%s  Safer: stage with trusted tooling, read the root-owned copy,%s\n' "$C_YEL" "$C_OFF"
           printf '%s  promote it, rerun (README: "Bootstrap without executing%s\n' "$C_YEL" "$C_OFF"
           printf '%s  unverified code"):%s\n' "$C_YEL" "$C_OFF"
@@ -4468,12 +4467,16 @@ case "$action" in
           printf '    less %s-unverified\n' "$INSTALL_TARGET"
           printf '    sudo mv %s-unverified %s\n' "$INSTALL_TARGET" "$INSTALL_TARGET"
           printf '    sudo chmod 755 %s\n' "$INSTALL_TARGET"
-          printf '%scontinue? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+          untrusted_var elev_disp "$elev"
+          printf '%scopy:%s       %s\n' "$C_B" "$C_OFF" "$elev_disp"
+          printf '%sThis copy is user-writable, and it runs as root: run it only if you have just%s\n' "$C_YEL" "$C_OFF"
+          printf '%sread this exact file and trust your user-space not to have swapped it since.%s\n' "$C_YEL" "$C_OFF"
+          printf '%srun this copy? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
           drain_tty
           read -r answer </dev/tty
           case "$answer" in
             y|Y|yes) ;;
-            *) echo "aborted" ; exit 2 ;;
+            *) echo "aborted; nothing ran" ; exit 2 ;;
           esac
         fi
       fi
@@ -4604,14 +4607,18 @@ case "$action" in
             verify_ancestry "$elev" || exit 1
           else
             elev="$(readlink -f "$0")"
-            printf '%swarning: about to run the user-writable checkout copy as root (safe only\nright after a hand-read); pinned is not installed at %s%s\n' \
-              "$C_YEL" "$INSTALL_TARGET" "$C_OFF"
-            printf '%scontinue? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+            # The review arm's question block, without its safer route.
+            printf '%swarning: pinned is not installed at %s%s\n' "$C_YEL" "$INSTALL_TARGET" "$C_OFF"
+            untrusted_var elev_disp "$elev"
+            printf '%scopy:%s       %s\n' "$C_B" "$C_OFF" "$elev_disp"
+            printf '%sThis copy is user-writable, and it runs as root: run it only right after a hand-read.%s\n' \
+              "$C_YEL" "$C_OFF"
+            printf '%srun this copy? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
             drain_tty
             read -r answer </dev/tty
             case "$answer" in
               y|Y|yes) ;;
-              *) echo "aborted"; exit 2 ;;
+              *) echo "aborted; nothing ran"; exit 2 ;;
             esac
           fi
           # The pre-sudo handoff review gives, in the same shape and the
@@ -7341,11 +7348,12 @@ do_status() {
         "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF"
     else
       decl_live="$(sgit rev-parse -q --verify "refs/tags/${decl_tag}"'^{commit}' 2>/dev/null || true)"
-      # The name ends its row; what deploy makes of it is said on the line
-      # under it, at the gutter.
+      # The name ends its row. A status list keeps one row per fact, and a
+      # detail line goes under a row only for a state that is not normal:
+      # a live declaration is the normal one (deploy syncs ref= to it), so
+      # it is the row alone; a stale one says what deploy will do about it.
       if [ "$decl_live" = "$hash" ]; then
         printf '%sdeclared:%s   %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$decl_tag" "$C_OFF"
-        printf '            %sdeploy syncs ref= to refs/tags/%s%s\n' "$C_DIM" "$decl_tag" "$C_OFF"
       elif [ -z "$decl_live" ]; then
         printf '%sdeclared:%s   %s\n' "$C_DIM" "$C_OFF" "$decl_tag"
         printf '            %s✗ the live tag is missing from this checkout -- deploy will refuse%s\n' \
@@ -7444,9 +7452,8 @@ do_status_file() {
       if [ -e "$slot/approved" ]; then
         printf '%scustody:%s    approved bytes kept in the slot (pinned cat serves them)\n' "$C_DIM" "$C_OFF"
       else
-        printf '%scustody:%s    %snone -- a consumer supplies its own witness (verify --baseline),%s\n' \
+        printf '%scustody:%s    none  %s(a consumer brings its own witness: verify --baseline, or re-approve with --store)%s\n' \
           "$C_DIM" "$C_OFF" "$C_DIM" "$C_OFF"
-        printf '            %sor re-approve with --store%s\n' "$C_DIM" "$C_OFF"
       fi
       rc=0; (do_verify "$path" >/dev/null 2>&1) || rc=$?
       case "$rc" in
@@ -8550,14 +8557,19 @@ EOF
       printf '%salready present%s (same key material): %s\n' "$C_GRN" "$C_OFF" "$target"
       exit 0
     fi
+    # The question block: the advice, the rows (a 14-column gutter, the
+    # widest label plus two), the consequence, the question -- which names
+    # its object by the key: row's label. The line is the caller's bytes,
+    # escaped.
     local entry_disp
     untrusted_var entry_disp "$entry"
-    printf '%starget:%s      %s\n' "$C_B" "$C_OFF" "$target"
-    printf '%sentry:%s       %s\n' "$C_B" "$C_OFF" "$entry_disp"
-    printf '%sfingerprint:%s %s\n' "$C_B" "$C_OFF" "$fp"
     printf '%s(obtain the key out of band -- printed card, password manager, existing\ntrusted machine -- never from the repo it will vouch for.)%s\n' "$C_DIM" "$C_OFF"
+    printf '%starget:%s       %s\n' "$C_B" "$C_OFF" "$target"
+    printf '%skey:%s          %s\n' "$C_B" "$C_OFF" "$entry_disp"
+    printf '%sfingerprint:%s  %s\n' "$C_B" "$C_OFF" "$fp"
+    printf '%sThis key may then vouch for signed tags.%s\n' "$C_DIM" "$C_OFF"
     if [ "$yes" -eq 0 ]; then
-      printf '%strust this key to vouch? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+      printf '%strust this key? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
       drain_tty
       read -r answer </dev/tty
       case "$answer" in
@@ -8579,12 +8591,20 @@ EOF
       exit 1
     fi
     ensure_tree "$inv"
-    printf '%starget:%s      %s\n' "$C_B" "$C_OFF" "$target"
-    printf '%sremoving:%s\n' "$C_B" "$C_OFF"
-    grep -F "$keyblob" "$target" | sed 's/^/  /'
-    printf '%sfingerprint:%s %s\n' "$C_B" "$C_OFF" "$fp"
+    # The entries are lines of the signers file, which anyone who could
+    # write a key into it wrote: escaped, one per line, stacked in the
+    # value column under their entries: label.
+    local e_lead e_line e_disp
+    printf '%starget:%s       %s\n' "$C_B" "$C_OFF" "$target"
+    e_lead="${C_B}entries:${C_OFF}      "
+    while IFS= read -r e_line; do
+      untrusted_var e_disp "$e_line"
+      printf '%s%s\n' "$e_lead" "$e_disp"
+      e_lead="              "
+    done < <(grep -F "$keyblob" "$target")
+    printf '%sfingerprint:%s  %s\n' "$C_B" "$C_OFF" "$fp"
     if [ "$yes" -eq 0 ]; then
-      printf "%sremove this key's entries? [%sy%s/%sN%s]%s " "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+      printf '%sremove these entries? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
       drain_tty
       read -r answer </dev/tty
       case "$answer" in
@@ -8603,8 +8623,10 @@ EOF
 }
 
 do_signer_list() {
-  # Principals, key types, fingerprints. Unprivileged (group-read).
-  local f="$1" line words ki i w found=0
+  # Key types, fingerprints, principals: one row per key, the bounded
+  # fields first and the principal (a name) last, escaped like every line
+  # of the file. Unprivileged (group-read).
+  local f="$1" line words ki i w found=0 disp
   [ -f "$f" ] || { echo "(no signers file: $f)"; return; }
   while IFS= read -r line; do
     case "$line" in ''|'#'*) continue ;; esac
@@ -8617,12 +8639,15 @@ EOF
       i=$((i + 1))
     done
     if [ "$ki" -lt 1 ] || [ -z "${words[$((ki + 1))]:-}" ]; then
-      printf '%sUNPARSEABLE%s  %s\n' "$C_RED$C_B" "$C_OFF" "$line"
+      untrusted_var disp "$line"
+      printf '%sUNPARSEABLE%s  %s\n' "$C_RED$C_B" "$C_OFF" "$disp"
       found=1
       continue
     fi
-    printf '%s%s%s  %s  %s\n' "$C_CYN" "${words[0]}" "$C_OFF" "${words[$ki]}" \
-      "$(key_fingerprint "${words[$ki]}" "${words[$((ki + 1))]}" 2>/dev/null || echo 'fingerprint failed')"
+    untrusted_var disp "${words[0]}" "$C_CYN"
+    printf '%s  %s  %s%s%s\n' "${words[$ki]}" \
+      "$(key_fingerprint "${words[$ki]}" "${words[$((ki + 1))]}" 2>/dev/null || echo 'fingerprint failed')" \
+      "$C_CYN" "$disp" "$C_OFF"
     found=1
   done <"$f"
   [ "$found" -eq 1 ] || echo "(no signers)"
@@ -8712,8 +8737,10 @@ do_ignorable() {
 
   if [ "$sub" = add ]; then
     [ "$dup" -eq 0 ] || {
-      refused "already granted, $scope_disp: $key"
-      echo "        (a second identical entry would say nothing new; see: pinned ignorable list)" >&2
+      # Two values, the key and its scope: each on a row of its own.
+      refused "already granted"
+      printf '        key:    %s\n        scope:  %s\n' "$key" "$scope_disp" >&2
+      echo "        a second identical entry would say nothing new; the entries are listed by: pinned ignorable list" >&2
       exit 1
     }
     new_json="$(jq -n --argjson e "$POL_USER" --argjson p "$path_json" --arg u "$under" \
@@ -8727,7 +8754,8 @@ do_ignorable() {
     fi
   else
     [ "$dup" -gt 0 ] || {
-      refused "no such grant to withdraw: $key, $scope_disp"
+      refused "no such grant to withdraw"
+      printf '        key:    %s\n        scope:  %s\n' "$key" "$scope_disp" >&2
       echo "        remove takes the exact entry -- same key and same scope; the entries are" >&2
       echo "        listed by: pinned ignorable list" >&2
       exit 1
@@ -8736,8 +8764,20 @@ do_ignorable() {
       '[ $e[] | select((.path == $p and ((.under // "") == $u)) | not) ]')" || exit 1
   fi
 
-  # The key and the scope are the caller's own bytes: escaped, each on a
-  # row it ends (see print_candidate_rows).
+  # A grant the machine policy would not let take effect refuses under
+  # --yes, before any row prints: rows are the record of an action that
+  # goes ahead, and a refusal prints none.
+  if [ "$sub" = add ] && [ "$covered" -eq 0 ] && [ "$yes" -eq 1 ]; then
+    refused "the machine policy does not cover this scope: $PINNED_MACHINE_POLICY"
+    printf '        key:    %s\n        scope:  %s\n' "$key" "$scope_disp" >&2
+    echo "        the grant would be recorded but not effective; widen the machine policy first," >&2
+    echo "        or run it without --yes to record it anyway (see: pinned ignorable list)" >&2
+    exit 1
+  fi
+  # The question block: the rows (a 13-column gutter, the widest label plus
+  # two), the verdict on the machine tier, the consequence, the question --
+  # which names its object by the key: row's label. The key and the scope
+  # are the caller's own bytes: escaped, each on a row it ends.
   local key_disp json_disp scope_row
   untrusted_var key_disp "$key" "$C_CYN"
   untrusted_var json_disp "$path_json" "$C_DIM"
@@ -8747,28 +8787,23 @@ do_ignorable() {
   printf '%sstored as:%s   %s%s%s\n' "$C_B" "$C_OFF" "$C_DIM" "$json_disp" "$C_OFF"
   printf '%sscope:%s       %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$scope_row" "$C_OFF"
   if [ "$sub" = add ]; then
-    printf '            %sreview --file may then declare this key ignored for paths in%s\n' "$C_DIM" "$C_OFF"
-    printf '            %sscope; verify answers 5 instead of 11 when only it drifts%s\n' "$C_DIM" "$C_OFF"
-    if [ "$covered" -eq 0 ] && [ "$yes" -eq 1 ]; then
-      refused "the machine policy ($PINNED_MACHINE_POLICY) does not cover this scope: $key, $scope_disp"
-      echo "        the grant would be recorded but not effective; widen the machine policy first," >&2
-      echo "        or run it without --yes to record it anyway (see: pinned ignorable list)" >&2
-      exit 1
-    fi
     if [ "$covered" -eq 0 ]; then
-      printf '%snote:%s        %sthe machine policy (%s) does not cover this scope --\n' \
-        "$C_B" "$C_OFF" "$C_YEL" "$PINNED_MACHINE_POLICY"
-      printf '            the entry will be recorded but will not be effective%s\n' "$C_OFF"
+      printf '%snote:%s        %sthe entry will be recorded but will not be effective, since the%s\n' \
+        "$C_B" "$C_OFF" "$C_YEL" "$C_OFF"
+      printf '             %smachine policy does not cover this scope: %s%s\n' \
+        "$C_YEL" "$PINNED_MACHINE_POLICY" "$C_OFF"
     fi
+    printf '%sReview --file may then declare this key ignored for paths in scope, and\n' "$C_DIM"
+    printf 'verify answers 5 instead of 11 when only it drifts.%s\n' "$C_OFF"
   else
-    printf '            %sany slot that records this key falls back to a byte-exact%s\n' "$C_DIM" "$C_OFF"
-    printf '            %sverdict (11) at the very next verify -- no re-ceremony needed%s\n' "$C_DIM" "$C_OFF"
+    printf '%sAny slot that records this key falls back to a byte-exact verdict (11) at\n' "$C_DIM"
+    printf 'the very next verify, with no re-ceremony.%s\n' "$C_OFF"
   fi
   if [ "$yes" -eq 0 ]; then
     if [ "$sub" = add ]; then
       printf '%sgrant this key? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     else
-      printf '%swithdraw this grant? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
+      printf '%swithdraw this key? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
     fi
     drain_tty
     read -r answer </dev/tty
@@ -8778,12 +8813,16 @@ do_ignorable() {
     esac
   fi
   write_note "$(policy_dir_for "$inv")" ignorable.json "$new_json"
+  # The key ends the verdict; its scope names a value of its own, so it is
+  # a dim line under the verdict, in its value column.
+  untrusted_var scope_row "$scope_disp" "$C_DIM"
   if [ "$sub" = add ]; then
     printf '%s✓ granted:%s %s%s%s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$key_disp" "$C_OFF"
+    printf '           %s%s%s\n' "$C_DIM" "$scope_row" "$C_OFF"
   else
     printf '%s✓ withdrawn:%s %s%s%s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$key_disp" "$C_OFF"
+    printf '             %s%s%s\n' "$C_DIM" "$scope_row" "$C_OFF"
   fi
-  printf '            %s%s%s\n' "$C_CYN" "$scope_row" "$C_OFF"
   log_action "ignorable-$sub" "$key" "${under:-everywhere}"
 }
 
