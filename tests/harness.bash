@@ -4188,6 +4188,9 @@ assert_exit "$RC" 0 "show of a regular file exits 0"
 assert_contains "$OUT" "$(digest_of "$SUB/reviewme.sh")" "the file display prints the file's sha256"
 assert_contains "$OUT" "hook body" "the reviewed bytes are displayed"
 assert_contains "$OUT" "fail-closed wrapper" "the file display still emits the wrapper"
+assert_eq "$(lines_before "$OUT" "--- exactly the bytes being hashed ---" 1)" "file:       $SUB/reviewme.sh|" \
+  "the path stands on its file: row, and the section rule holds no value"
+assert_contains "$OUT" "sha256:  $(digest_of "$SUB/reviewme.sh")" "the digest row keeps two spaces past its label"
 run_pinned show "$SUB/reviewme.sh" --algo sha512
 assert_exit "$RC" 0 "--algo still applies to the file display"
 run_pinned show "$SUB/no-such-file"

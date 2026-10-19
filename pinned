@@ -8230,11 +8230,11 @@ do_show() {
   content="$(cat -- "$file"; printf x)" || { echo "cannot read: $file" >&2; exit 1; }
   content="${content%x}"
 
-  # The path ends the marker: nothing follows a value whose length this
-  # script does not choose.
-  local file_rule n_lines
-  untrusted_var file_rule "$file" "$C_B"
-  printf '%s--- exactly the bytes being hashed: %s%s\n' "$C_B" "$file_rule" "$C_OFF"
+  # The path stands on its row, escaped; the section rule holds no value.
+  local file_disp n_lines
+  untrusted_var file_disp "$file"
+  printf '%sfile:%s       %s\n' "$C_DIM" "$C_OFF" "$file_disp"
+  printf '%s--- exactly the bytes being hashed ---%s\n' "$C_B" "$C_OFF"
   # The guard, the escaper and the highlighter are all fed $content, not the
   # file, so the single-read rule holds; the digest below still comes from
   # $content too, never from the displayed stream.
@@ -8275,7 +8275,7 @@ do_show() {
   [ -n "$hash" ] || { echo "hashing failed" >&2; exit 1; }
 
   echo
-  printf '%s%s:%s %s%s%s\n' "$C_B" "$label" "$C_OFF" "$C_CYN" "$hash" "$C_OFF"
+  printf '%s%s:%s  %s%s%s\n' "$C_B" "$label" "$C_OFF" "$C_CYN" "$hash" "$C_OFF"
   echo
   # Emit the consumer snippet, not just the hash: the wrapper must read and
   # hash exactly as this did, or the two sides drift and every launch refuses.
