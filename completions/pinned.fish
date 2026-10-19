@@ -121,7 +121,6 @@ complete -c pinned -n '__pinned_sub_is ignorable add remove' -l under -x -a '(__
 # --- list ---------------------------------------------------------------------
 complete -c pinned -n '__pinned_action_is list' -l under -x -a '(__fish_complete_directories)' -d 'Only pins under this directory'
 complete -c pinned -n '__pinned_action_is list' -l format -x -a 'text json' -d 'Output format'
-complete -c pinned -n '__pinned_action_is list' -s v -l verbose -d 'Every field, one block per pin'
 complete -c pinned -n '__pinned_action_is list' -l repos -d 'Only repo pins'
 complete -c pinned -n '__pinned_action_is list' -l files -d 'Only file pins'
 complete -c pinned -n '__pinned_action_is list' -l stale -d 'Only pins that are not current'

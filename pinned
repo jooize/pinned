@@ -346,7 +346,7 @@ usage: pinned <action> [args]
   ignorable add|remove|list ...  (sudo) ignorable-JSON-key grants
   status <repo|file>             record vs live state
   show <file|repo> [options]     trusted re-display; files get hash + wrapper
-  list [-v] [--repos|--files] [--stale] [--under <dir>] [--format text|json]
+  list [--repos|--files] [--stale] [--under <dir>] [--format text|json]
                                  your pins and their live state
   slot <path>                    print the slot directory for a path
   setup [--yes]                  (sudo) provision sudoers digest pin; self-install
@@ -7358,47 +7358,23 @@ do_sign() {
 
 # ---- list ------------------------------------------------------------------
 
-# Three views of one walk, every one fed by list_entry, so they cannot
-# disagree about a slot:
+# Two views of one walk, both fed by list_entry, so they cannot disagree
+# about a slot:
 #
-#   (default)       an index for people: a repos section (name, short hash,
-#                   release, live state) and a files section grouped under
-#                   their folders, then the counts and the review line for
-#                   repos past their pin
-#   -v              one block per pin: the path alone on its first line, each
-#                   fact an indented `label: value` field beneath it
+#   (default)       an index for people: a repos section (live state, short
+#                   hash, name) and a files section grouped under their
+#                   folders, then the counts and the review line for repos
+#                   past their pin
 #   --format json   the stable interface for programs (LIST_JSON below)
 #
-# The two text views are for reading and promise no grammar; a program reads
+# Every field of one pin is `status`'s job, not a third view here.
+#
+# The text view is for reading and promises no grammar; a program reads
 # the JSON. Live state (does the file or HEAD still match the record?) is
 # computed for the text views and for --stale, never for a plain JSON
 # listing: it costs a verify per file and a few git calls per repo, and a
 # consumer reading records has no use for it. It is display, not a trust
 # decision -- every gate runs its own `pinned verify`.
-
-# The -v block's first line: the path, bold cyan as a group header, the way
-# the default view heads a folder. Not bold magenta: magenta is the one
-# subject under decision, and a listing decides nothing.
-list_subject() { # found-so-far (0 = this is the first entry)  path
-  local d
-  [ "$1" -eq 0 ] || printf '\n'
-  untrusted_var d "$(list_tilde "$2")" "$C_B$C_CYN"
-  printf '%s%s%s\n' "$C_B$C_CYN" "$d" "$C_OFF"
-}
-
-# The field gutter is the ceremony's: values start at column 12, so `list
-# -v`, `status` and the review header all line up. Padding is applied to the
-# BARE label, outside the color, because %-9s counts escape bytes. The kind
-# (sha256 / git) is the LABEL of the digest field: it says what the value is.
-list_field() { # label  value-color  value  parenthetical ("" for none)
-  local lbl="$1:"
-  if [ -n "$4" ]; then
-    printf '  %s%-9s%s %s%s%s  %s(%s)%s\n' \
-      "$C_B" "$lbl" "$C_OFF" "$2" "$3" "$C_OFF" "$C_DIM" "$4" "$C_OFF"
-  else
-    printf '  %s%-9s%s %s%s%s\n' "$C_B" "$lbl" "$C_OFF" "$2" "$3" "$C_OFF"
-  fi
-}
 
 # One entry's facts, read once and shared by every output format, so the
 # text listing and the JSON document can never disagree about a slot. Sets
@@ -7614,58 +7590,6 @@ list_mark_pad() { # class  message  width
   [ "$n" -le 0 ] || printf '%*s' "$n" ''
 }
 
-# The -v block for the entry list_entry and list_live just read.
-LIST_NO_CUSTODY=0
-list_verbose_entry() { # found-so-far  path
-  local rp
-  list_subject "$1" "$2"
-  if list_has_problem slot-malformed; then
-    list_field live "" "$(list_mark bad "malformed slot")" "more than one state file"
-    return 0
-  fi
-  if list_has_problem record-corrupt; then
-    if [ "$L_TYPE" = repo ]; then
-      list_field live "" "$(list_mark bad "corrupt record")" "no readable revision"
-    else
-      list_field live "" "$(list_mark bad "corrupt record")" "no readable digest"
-    fi
-    return 0
-  fi
-  list_field "$L_KIND" "$C_CYN" "$L_DIGEST" ""
-  # Rows end on their unbounded value: the path a record names comes last
-  # on the note, and the release name has its row to itself, with what
-  # deploy does with it on the next.
-  if [ -n "$L_RECPATH" ]; then
-    untrusted_var rp "$(list_tilde "$L_RECPATH")" "$C_YEL"
-    if [ "$L_TYPE" = repo ]; then
-      list_field note "$C_YEL" "review re-states the record, which names $rp" ""
-    else
-      list_field note "$C_YEL" "review --file re-states the record, which names $rp" ""
-    fi
-  fi
-  if [ "$L_TYPE" = repo ]; then
-    if [ -n "$L_RELEASE" ]; then
-      list_field release "" "$L_RELEASE" ""
-      list_field deploy "" "ref=refs/tags/$L_RELEASE" ""
-    elif list_has_problem release-unusable; then
-      list_field release "$C_YEL" "unusable declaration" ""
-    fi
-  else
-    if [ -n "$L_IGNORED" ]; then
-      list_field ignored "$C_CYN" "$(ign_display "$L_IGNORED")" ""
-    elif list_has_problem ignored-unusable; then
-      list_field ignored "$C_YEL" "unusable declaration" ""
-    fi
-    if [ "$L_CUSTODY" = kept ]; then
-      list_field custody "" kept "pinned cat serves these bytes"
-    else
-      list_field custody "" none ""
-      LIST_NO_CUSTODY=1
-    fi
-  fi
-  list_field live "" "$(list_mark "$LV_CLASS" "$LV_MSG")" ""
-}
-
 # Pad by characters, not bytes: printf's %-Ns counts bytes, so a name with
 # an accented letter would push its row's state column out.
 list_pad() { # text  width
@@ -7812,7 +7736,7 @@ do_list() {
   # Unprivileged -- reading needs membership in the tier's group. Slot
   # names never leave this function: consumers get decoded paths.
   inv="$(tier_user)"  # not id -un: correct tier under sudo (root has none)
-  local format=text verbose=0
+  local format=text
   LW_UNDER="" LW_REPOS=0 LW_FILES=0 LW_STALE=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -7822,7 +7746,6 @@ do_list() {
       --format)
         [ $# -ge 2 ] || { echo "--format needs a name: text or json" >&2; exit 1; }
         format="$2"; shift 2 ;;
-      -v|--verbose) verbose=1; shift ;;
       --repos) LW_REPOS=1; shift ;;
       --files) LW_FILES=1; shift ;;
       --stale) LW_STALE=1; shift ;;
@@ -7831,9 +7754,7 @@ do_list() {
   done
   case "$format" in
     text) ;;
-    json)
-      [ "$verbose" -eq 0 ] || { echo "-v shapes the text form; --format json always carries every field" >&2; exit 1; }
-      require_jq "list --format json" || exit 1 ;;
+    json) require_jq "list --format json" || exit 1 ;;
     *) echo "unknown list format: $format (text or json)" >&2; exit 1 ;;
   esac
   # Neither type flag, or both, shows both.
@@ -7850,10 +7771,7 @@ do_list() {
     while [ "${LW_UNDER%/}" != "$LW_UNDER" ]; do LW_UNDER="${LW_UNDER%/}"; done
     [ -n "$LW_UNDER" ] || LW_UNDER=/
   fi
-  if [ "$format" = json ]; then LW_VIEW=json
-  elif [ "$verbose" -eq 1 ]; then LW_VIEW=verbose
-  else LW_VIEW=short
-  fi
+  if [ "$format" = json ]; then LW_VIEW=json; else LW_VIEW=short; fi
 
   local sroot="$PINNED_ROOT/$inv/slots"
   # No tree yet is an empty listing, not an error: a consumer asking "which
@@ -7867,7 +7785,7 @@ do_list() {
     echo "ERROR: cannot read $sroot -- are you in group $(pin_group "$inv")?" >&2
     exit 1
   }
-  RP_N=0 FP_N=0 LW_SEEN=0 LW_FOUND=0 LIST_NO_CUSTODY=0
+  RP_N=0 FP_N=0 LW_SEEN=0 LW_FOUND=0
   if [ "$LW_VIEW" = json ]; then
     list_walk "$sroot" | jq -Rs "$LIST_JSON"
     return 0
@@ -7883,12 +7801,7 @@ do_list() {
     fi
     return 0
   fi
-  if [ "$LW_VIEW" = short ]; then
-    list_short
-  elif [ "$LIST_NO_CUSTODY" -eq 1 ]; then
-    printf '\n%scustody none: re-approve with%s %s--store%s %sto keep a copy pinned can serve%s\n' \
-      "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
-  fi
+  list_short
 }
 
 # One pass over the slots, filtered by the LW_* options. The JSON view
@@ -7920,7 +7833,6 @@ list_walk() { # slots-dir
     fi
     case "$LW_VIEW" in
       json) list_json_entry "$path" ;;
-      verbose) list_verbose_entry "$LW_FOUND" "$path" ;;
       short)
         if [ "$L_TYPE" = repo ]; then
           RP_PATH[$RP_N]="$path" RP_DISP[$RP_N]="$(list_tilde "$path")"

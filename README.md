@@ -159,11 +159,12 @@ the nix module; a manual install copies it onto `fish_complete_path` / `fpath`.
                                       file is one read, shown and hashed;
                                       a repo is the tree at its pin, from
                                       the object store
-    pinned list [-v] [--repos|--files] [--stale] [--under <dir>]
+    pinned list [--repos|--files] [--stale] [--under <dir>]
                 [--format text|json]
                                       your pins and their live state:
-                                      repos and files at a glance, -v
-                                      for every field, json for programs
+                                      repos and files at a glance, json
+                                      for programs (every field of one
+                                      pin: status)
     pinned slot <path>                print the slot directory for any
                                       path -- repo, file, existing or
                                       not; a name, never an existence

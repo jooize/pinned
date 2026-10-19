@@ -956,7 +956,7 @@ and
 belong to the file form and are refused here.
 .RE
 .TP
-.B list [\-v] [\-\-repos|\-\-files] [\-\-stale] [\-\-under \fIdir\fP] [\-\-format text|json]
+.B list [\-\-repos|\-\-files] [\-\-stale] [\-\-under \fIdir\fP] [\-\-format text|json]
 The live pins in your tier and whether each still matches its record.
 By default, an index: a
 .B repos
@@ -968,7 +968,7 @@ when a repo's HEAD has moved past its pin, the
 line that approves it.
 Every row reads in the order it is scanned: the live state first, padded
 to the longest state in its section, then (for a repo) the short pinned
-hash and the declared release, and the name last, never padded:
+hash, and the name last, never padded:
 .RS
 .IP
 .EX
@@ -1002,11 +1002,10 @@ A file's state is
 own verdict, so the listing never disagrees with a gate; it is display,
 not a decision.
 .IP
-.B \-v
-prints one block per pin: the path alone on its first line, then the
-declared kind and full digest, the declared release, the ignored\-key
-declaration, custody (a stored approved copy, or none) and the live
-state, each an indented \(dqlabel: value\(dq field.
+Every field of one pin (the full digest, the declared release, the
+ignored\-key declaration, custody) is
+.BR status 's
+to show.
 .B \-\-repos
 and
 .B \-\-files
@@ -1015,7 +1014,7 @@ show one kind of pin,
 only the pins that are not current, and
 .B \-\-under
 only paths below that directory.
-The text views are for reading and promise no format; a program reads
+The text view is for reading and promises no format; a program reads
 .BR "\-\-format json" .
 .IP
 .B \-\-format json
@@ -1069,19 +1068,15 @@ JSON (macOS volumes refuse such names).
 The filters apply to it too, and
 .B \-\-stale
 is the one place it computes live state; the document itself carries
-no live state, and
-.B \-v
-does not apply.
+no live state.
 .IP
 A slot that violates the slot\-name invariant (see
 .BR FILES )
 shows as
 .B record names another path
-in the default view and carries a
-.B note:
-field under
-.BR \-v ,
-naming the drift (a record naming another path than the directory
+in the default view, and
+.B status
+names the drift (a record naming another path than the directory
 encodes) and the review that repairs it.
 In the json form it is the
 .B record\-names\-other\-path

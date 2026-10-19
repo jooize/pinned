@@ -117,7 +117,6 @@ _pinned() {
           ;;
         list)
           _arguments \
-            '(-v --verbose)'{-v,--verbose}'[every field, one block per pin]' \
             '--repos[only repo pins]' \
             '--files[only file pins]' \
             '--stale[only pins that are not current]' \
