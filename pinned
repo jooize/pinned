@@ -2220,7 +2220,15 @@ ancestry_class() {
 # an abbreviated rev, so the width is deterministic.
 # $1 = class, $2 = pinned rev, $3 = candidate rev, $4 = merge base (diverged
 # only; empty when the two revs have no common ancestor in this checkout).
-_alarm_line() { printf '%s!!! %-54s !!!%s\n' "$C_RED$C_B" "$1" "$C_OFF"; }
+# The transition's `→` is budgeted as two columns (it is ambiguous width):
+# the line is padded with a two-character stand-in, then the stand-in becomes
+# the arrow, so the ruled-off column is right wherever `→` draws two and one
+# column short where it draws one.
+_alarm_line() {
+  local l
+  printf -v l '%-54s' "$1"
+  printf '%s!!! %s !!!%s\n' "$C_RED$C_B" "${l/ -> / → }" "$C_OFF"
+}
 print_ancestry_alarm() {
   local l
   case "$1" in
@@ -2462,12 +2470,23 @@ show_slot() {
 }
 
 # A verdict about two values whose length this script does not choose: the
-# first ends the verdict's row, the second its own row under it, after an
-# arrow at the label gutter (the shape of rekey's `slot:` rows). Neither
-# value is ever followed by the other on one line.
+# first ends the verdict's row, and the second continues on the line under
+# it, `→` hanging in the gutter so it starts in the first one's column.
+# Neither value is ever followed by the other on one line. The hang counts
+# `→` as one column, as Ghostty draws it; where it draws two, the second
+# value lands one column right, which misleads nothing.
+#
+#   ✓ declared: v1.2
+#             → /var/db/pinned/<user>/slots/<enc>/release
 print_verdict_to() { # <SGR> <verdict> <value> <target>
   printf '%s✓ %s:%s %s\n' "$1" "$2" "$C_OFF" "$3"
-  printf '            %s->%s %s\n' "$C_DIM" "$C_OFF" "$4"
+  printf '%*s%s→%s %s\n' "$(( ${#2} + 2 ))" '' "$C_DIM" "$C_OFF" "$4"
+}
+# The same continuation under a labeled row (the 12-column gutter every
+# ceremony block uses): a row's value that moves to another value whose
+# length this script does not choose either.
+print_row_to() { # <target>
+  printf '          %s→%s %s\n' "$C_DIM" "$C_OFF" "$1"
 }
 
 # ---- slot storage ----------------------------------------------------------
@@ -2532,7 +2551,7 @@ ensure_tree() {
   if group_exists "$grp"; then
     TREE_GRP="$grp" TREE_DMODE=750 TREE_FMODE=640
   else
-    printf '%swarning: group %s does not exist -- %s stays root-only (0700) until it does%s\n' \
+    printf '%swarning: group %s does not exist, so this tier stays root-only (0700) until it does: %s%s\n' \
       "$C2_YEL" "$grp" "$udir" "$C2_OFF" >&2
     TREE_GRP=wheel TREE_DMODE=700 TREE_FMODE=600
   fi
@@ -2550,14 +2569,18 @@ ensure_tree() {
   local old_signers="$udir/signers" moved=0
   if [ -f "$old_signers/allowed_signers" ]; then
     if [ -e "$udir/policy/allowed_signers" ]; then
-      printf '%swarning: both %s/allowed_signers and %s/policy/allowed_signers exist;\n' \
-        "$C2_YEL" "$old_signers" "$udir" >&2
-      printf '         policy/ is the one that is read -- inspect and remove the old file by hand%s\n' \
-        "$C2_OFF" >&2
+      printf '%swarning: two allowed_signers files exist, and the policy one is the one that is read%s\n' \
+        "$C2_YEL" "$C2_OFF" >&2
+      printf '%s         old:     %s/allowed_signers%s\n' "$C2_YEL" "$old_signers" "$C2_OFF" >&2
+      printf '%s         policy:  %s/policy/allowed_signers%s\n' "$C2_YEL" "$udir" "$C2_OFF" >&2
+      printf '%s         inspect them, and remove the old file by hand%s\n' "$C2_YEL" "$C2_OFF" >&2
     else
       mv -f "$old_signers/allowed_signers" "$udir/policy/allowed_signers"
-      printf '%snote: moved allowed_signers into the policy dir:%s\n' "$C2_YEL" "$C2_OFF" >&2
-      printf '      %s/allowed_signers -> %s/policy/allowed_signers\n' "$old_signers" "$udir" >&2
+      # The move as a transition: the new path continues under the old one,
+      # `→` hanging in the gutter (print_verdict_to's shape).
+      printf '%snote: moved allowed_signers into the policy dir:%s %s/allowed_signers\n' \
+        "$C2_YEL" "$C2_OFF" "$old_signers" >&2
+      printf '%47s%s→%s %s/policy/allowed_signers\n' '' "$C2_DIM" "$C2_OFF" "$udir" >&2
       moved=1
     fi
   fi
@@ -2574,7 +2597,7 @@ ensure_tree() {
         printf '%snote: removed the now-empty legacy dir %s%s\n' "$C2_YEL" "$old_signers" "$C2_OFF" >&2
       fi
     else
-      printf '%swarning: %s is not empty; left in place (nothing reads it any more)%s\n' \
+      printf '%swarning: not empty, so left in place (nothing reads it any more): %s%s\n' \
         "$C2_YEL" "$old_signers" "$C2_OFF" >&2
     fi
   fi
@@ -2595,16 +2618,16 @@ ensure_tree() {
     old_decl="$d/tag"
     [ -f "$old_decl" ] || continue
     if [ -e "$d/release" ]; then
-      printf '%serror: %s holds both a tag and a release record; release is the one that is read%s\n' \
+      printf '%serror: a slot holds both a tag and a release record, and release is the one that is read: %s%s\n' \
         "$C2_RED$C2_B" "$d" "$C2_OFF" >&2
-      printf '%s       inspect both, then remove the old one by hand (rm %s), and re-run%s\n' \
+      printf '%s       inspect both, remove the old one by hand, and re-run: rm %s%s\n' \
         "$C2_RED" "$old_decl" "$C2_OFF" >&2
       survivors=$((survivors + 1))
       continue
     fi
     mv -f "$old_decl" "$d/release"
-    printf '%snote: renamed the declared release name record:%s\n' "$C2_YEL" "$C2_OFF" >&2
-    printf '      %s -> %s/release\n' "$old_decl" "$d" >&2
+    printf '%snote: renamed the declared release name record:%s %s\n' "$C2_YEL" "$C2_OFF" "$old_decl" >&2
+    printf '%46s%s→%s %s/release\n' '' "$C2_DIM" "$C2_OFF" "$d" >&2
   done
   [ "$survivors" -eq 0 ] || exit 1
   # Deterministic sweep so a group arriving (or leaving) heals the whole
@@ -5289,7 +5312,8 @@ do_approve() {
     # approve answered `y` and returned to the prompt in silence -- which reads
     # exactly like a no-op in the one place a user most needs to know a record
     # was written.
-    printf '%s✓ approved:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" "$(show_slot "$slot")/rev.git"
+    printf '%s✓ approved %s%s%s%s:%s %s\n' "$C_GRN$C_B" "$C_OFF$C_CYN" "$hash" "$C_OFF" "$C_GRN$C_B" "$C_OFF" \
+      "$(show_slot "$slot")/rev.git"
     # The declared release name (optional `release` record, repo slots
     # only): deploy syncs the input's ref= to it after cross-checking the
     # live tag still names the pinned rev. The --tag selector is the
@@ -5462,7 +5486,7 @@ EOF
     # The run's commits first, closed by their rule; the outcome after it,
     # where a verdict belongs (nothing third-party follows it).
     print_commit_range "$old_hash" "$prev" '' "$msg_mode" || true
-    printf '%sapproved %s of %s commit%s; pin:%s %s%.10s%s %s->%s %s%.10s%s\n' \
+    printf '%sapproved %s of %s commit%s; pin:%s %s%.10s%s %s→%s %s%.10s%s\n' \
       "$C_DIM" "$approved" "$m" "$(plural_s "$m")" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF" \
       "$C_DIM" "$C_OFF" "$C_CYN" "$prev" "$C_OFF"
     # THE COMPOSITION-RISK MITIGATION. Reading one commit at a time covers the
@@ -6046,13 +6070,13 @@ EOF
         # everything else has to prove itself at every use.
         if [ "$store" -eq 1 ]; then
           write_slot_copy "$slot" approved "$fro"
-          printf '%s✓ approved:%s %s%s%s -> %s\n' \
-            "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$new_digest" "$C_OFF" "$(show_slot "$slot")/pin.$file_algo"
+          printf '%s✓ approved %s%s%s%s:%s %s\n' "$C_GRN$C_B" "$C_OFF$C_CYN" "$new_digest" "$C_OFF" \
+            "$C_GRN$C_B" "$C_OFF" "$(show_slot "$slot")/pin.$file_algo"
           printf '%s✓ approved copy kept:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$(show_slot "$slot")/approved"
         else
           rm -f "$slot/approved"
-          printf '%s✓ approved:%s %s%s%s -> %s\n' \
-            "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$new_digest" "$C_OFF" "$(show_slot "$slot")/pin.$file_algo"
+          printf '%s✓ approved %s%s%s%s:%s %s\n' "$C_GRN$C_B" "$C_OFF$C_CYN" "$new_digest" "$C_OFF" \
+            "$C_GRN$C_B" "$C_OFF" "$(show_slot "$slot")/pin.$file_algo"
           # Losing custody is a state change worth naming after the fact too:
           # a consumer reading through the slot stops being served here.
           if [ "$had_copy" -eq 1 ]; then
@@ -6393,7 +6417,7 @@ do_rekey() {
   printf '%sold:%s        %s\n' "$C_B" "$C_OFF" "$old_disp"
   printf '%snew:%s        %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$new_disp" "$C_OFF"
   printf '%sslot:%s       %s\n' "$C_B" "$C_OFF" "$old_slot"
-  printf '            %s-> %s%s\n' "$C_DIM" "$new_slot" "$C_OFF"
+  print_row_to "$new_slot"
   case "$state" in
     rev)
       printf '%skind:%s       repo record %s(%s)%s\n' "$C_B" "$C_OFF" "$C_DIM" "$target" "$C_OFF"
@@ -6473,8 +6497,8 @@ do_rekey() {
   # What moved (the rev or digest, a fixed width) and where its record now
   # lives, which ends the row; the paths are on the rows above.
   case "$state" in
-    rev) printf '%s✓ re-keyed:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$rev" "$C_OFF" "$new_slot/$target" ;;
-    pin) printf '%s✓ re-keyed:%s %s%s%s -> %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$digest" "$C_OFF" "$new_slot/$target" ;;
+    rev) printf '%s✓ re-keyed %s%s%s%s:%s %s\n' "$C_GRN$C_B" "$C_OFF$C_CYN" "$rev" "$C_OFF" "$C_GRN$C_B" "$C_OFF" "$new_slot/$target" ;;
+    pin) printf '%s✓ re-keyed %s%s%s%s:%s %s\n' "$C_GRN$C_B" "$C_OFF$C_CYN" "$digest" "$C_OFF" "$C_GRN$C_B" "$C_OFF" "$new_slot/$target" ;;
   esac
 
   write_slot_state "$old_slot" tombstone "$(date -u +%Y-%m-%dT%H:%M:%SZ) moved to $new by $inv"
@@ -6630,7 +6654,7 @@ do_declare() {
       "$C_B" "$C_OFF" "$C_DIM" "$C_OFF"
     echo
     printf '%sdeclared:%s   %s%s%s\n' "$C_B" "$C_OFF" "$C_DIM" "$old_disp" "$C_OFF"
-    printf '            %s->%s (none)\n' "$C_DIM" "$C_OFF"
+    print_row_to "(none)"
     [ "$yes" -eq 1 ] || printf '%sclear this declaration? [%sy%s/%sN%s]%s ' "$C_B" "$C_BLU" "$C_OFF$C_B" "$C_BLU" "$C_OFF$C_B" "$C_OFF"
   else
     # The deploy: row is the point of the whole ceremony -- the effect on
@@ -6647,7 +6671,7 @@ do_declare() {
     printf '            %slive tag ever stops naming the pinned rev%s\n' "$C_DIM" "$C_OFF"
     echo
     printf '%sdeclared:%s   %s%s%s\n' "$C_B" "$C_OFF" "$C_DIM" "$old_disp" "$C_OFF"
-    printf '            %s->%s %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN$C_B" "$name" "$C_OFF"
+    print_row_to "$C_CYN$C_B$name$C_OFF"
     # The invariant's verdict, checked above: the tag resolves to exactly
     # the pinned rev, so the row needs no second hash.
     printf '%s✓ the tag names the pinned rev%s\n' "$C_GRN" "$C_OFF"
@@ -6667,7 +6691,11 @@ do_declare() {
 
   if [ "$remove" -eq 1 ]; then
     rm -f "$slot/release"
-    printf '%s✓ cleared:%s the slot is rev-only\n' "$C_GRN$C_B" "$C_OFF"
+    # The name that was cleared ends the verdict; what the slot is now is a
+    # sentence, on a dim line under it in the value column.
+    untrusted_var old_disp "$old_tag"
+    printf '%s✓ cleared:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$old_disp"
+    printf '           %sthe slot is rev-only%s\n' "$C_DIM" "$C_OFF"
     log_action declare "$repo" "$old_tag"
   else
     write_note "$slot" release "$name"
@@ -7444,8 +7472,8 @@ do_sign() {
   else
     git -C "$repo" --no-pager tag -s -m "signed by $inv via pinned" "$tag_name" "$hash"
   fi
-  printf '%s✓ signed:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$tag_name"
-  printf '%scommit:%s     %s%s%s %s(the pinned hash)%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$hash" "$C_OFF" "$C_DIM" "$C_OFF"
+  # The pinned hash is a field and may sit mid-line; the tag name ends it.
+  printf '%s✓ signed at %s%.10s%s%s:%s %s\n' "$C_GRN$C_B" "$C_OFF$C_CYN" "$hash" "$C_OFF" "$C_GRN$C_B" "$C_OFF" "$tag_name"
   printf '%s  consumers verify it against their allowed_signers: pinned review --signed-tag %s%s\n' "$C_DIM" "$tag_name" "$C_OFF"
   log_action sign "$repo" "$hash"
 }

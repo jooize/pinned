@@ -2057,7 +2057,7 @@ y
   # sitting's totals, exactly.
   assert_contains "$OUT" "total: 4 files +5 -1" "the summary totals the approved range"
   assert_missing  "$OUT" "remaining:" "a completed walk has nothing remaining"
-  assert_missing  "$OUT" "✓ approved:" "the walk replaces the single-approval line"
+  assert_missing  "$OUT" "✓ approved " "the walk replaces the single-approval line"
 
   # --- yes then no: the pin rests where reading stopped --------------------
   seed_rev "$REPO_E" "$E_BASE"
@@ -2885,10 +2885,13 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_exit "$RC" 0 "declaring a valid name on a rev-only slot succeeds"
   assert_contains "$OUT" "names the pinned rev" "the display shows the invariant holding"
   assert_eq "$(lines_before "$OUT" "declare this release name?" 3)" \
-    "declared:   (none)|            -> v1|✓ the tag names the pinned rev|" \
+    "declared:   (none)|          → v1|✓ the tag names the pinned rev|" \
     "the declared rows show the transition, the verdict between them and the question"
   assert_contains "$OUT" "ref=refs/tags/v1" "the deploy row states the effect on the anchor"
   assert_file "$DC_SLOT/release" "the declaration was written"
+  # (The verdict follows the unechoed answer on the question's line.)
+  assert_eq "$(grep -A1 -e '✓ declared: v1$' "$OUT" | sed -n 2p)" "          → $DC_SLOT/release" \
+    "the verdict names the record on the line under the name, the arrow in the gutter"
   assert_eq "$(cat "$DC_SLOT/release")" "v1" "and holds exactly the name"
   assert_eq "$(rev_in "$DC_SLOT/rev.git")" "$DC_C2" "the pin itself is untouched"
 
@@ -2929,9 +2932,11 @@ if [ "$GIT_OK" -eq 1 ]; then
   run_pinned declare "$REPO_DC" --no-release
   assert_exit "$RC" 0 "--no-release clears the declaration"
   assert_eq "$(lines_before "$OUT" "clear this declaration?" 2)" \
-    "declared:   v1|            -> (none)|" "the display shows the transition directly above the question"
+    "declared:   v1|          → (none)|" "the display shows the transition directly above the question"
   assert_contains "$OUT" "stops being managed" "and says what deploy stops doing"
-  assert_contains "$OUT" "✓ cleared: the slot is rev-only" "the result line says what the slot is now"
+  assert_contains "$OUT" "✓ cleared: v1" "the result line names the declaration it cleared"
+  assert_eq "$(grep -A1 -e '✓ cleared: v1$' "$OUT" | sed -n 2p)" "           the slot is rev-only" \
+    "and says what the slot is now on the line under it, in the value column"
   assert_absent "$DC_SLOT/release" "the slot is rev-only again"
   ANS=""
   run_pinned status "$REPO_DC"
@@ -4142,7 +4147,7 @@ assert_missing "$OUT" "$SUB/mv/deeper/to.txt? [y/N]" "and holds no path"
 assert_eq "$(lines_before "$OUT" "rekey this record?" 2)" \
   "from:       $SUB/mv/from.txt|to:         $SUB/mv/deeper/to.txt|" \
   "the from: and to: rows stand directly above it"
-assert_contains "$OUT" "✓ re-keyed: $MV_DIG -> $MV_NEW_SLOT/pin.sha256" \
+assert_contains "$OUT" "✓ re-keyed $MV_DIG: $MV_NEW_SLOT/pin.sha256" \
   "the result names what moved, then where its record now lives"
 assert_contains "$OUT" "✓ tombstoned: $SUB/mv/from.txt" "and the old path, last"
 assert_contains "$OUT" "the approved copy" "and names the annotations that travel"
@@ -4819,7 +4824,11 @@ if rrgit init -q >/dev/null 2>&1 \
   run_pinned review "$RRREPO"
   assert_exit "$RC" 0 "review of the already-pinned repo succeeds"
   assert_contains "$OUT" "record re-stated, same rev:" "and re-states the record at entry"
-  assert_contains "$OUT" "$FIX/rrs/elsewhere" "naming the path it used to say"
+  assert_contains "$OUT" "✓ record re-stated, same rev: $FIX/rrs/elsewhere" \
+    "naming the path it used to say, last on its row"
+  assert_eq "$(next_line "$OUT" "✓ record re-stated, same rev: $FIX/rrs/elsewhere")" \
+    "                            → $RRREPO" \
+    "the new path continues under it, the arrow hanging so the paths share a column"
   assert_missing "$OUT" "slot renamed:" "the directory name was never stale here"
   assert_contains "$OUT" "already pinned" "and then reports the pin as the no-op it is"
   RR_SLOT="$(slot_of "$RRREPO")"
@@ -5181,7 +5190,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_missing "$OUT" "--- diff " "no diff"
   assert_missing "$OUT" "[y/N]" "no y/N: the authentication was the answer"
   assert_missing "$OUT" "Enter open" "no review gate"
-  assert_contains "$OUT" "✓ approved: $W_C1" "the approval is confirmed as always"
+  assert_contains "$OUT" "✓ approved $W_C1: " "the approval is confirmed as always"
   assert_contains "$OUT" "commits:    1 since the pin" "the count is shown beside the words"
 
   # --commits: the size of the range, required with --words and only with
