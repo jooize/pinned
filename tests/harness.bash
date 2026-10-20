@@ -5938,6 +5938,127 @@ else
   skip "S27" "no git fixture or no ssh-keygen"
 fi
 
+# ---------------------------------------------------------------------------
+say "S28: diff shows a change from one file to another as review shows it"
+# One file-diff path for two callers: review --file against its baseline and
+# the diff verb. The old side holds a zero-width space; the new side changes
+# a tab-indented line and adds an invalid byte and a line. A second pair is
+# CRLF throughout. (No bare CR: Apple's diff splits a line at one, so its
+# rendering differs from GNU diff's, and that is diff's own line model.)
+DD="$FIX/diffverb"
+mkdir -p "$DD"
+printf 'one\n\tindented\nzero%swidth\n' "$ZW" > "$DD/old"
+printf 'one\n\tindented more\nzero%swidth\377\nadded\n' "$ZW" > "$DD/new"
+printf 'x\r\ny\r\n' > "$DD/crlf-old"
+printf 'x\r\nz\r\n' > "$DD/crlf-new"
+assert_eq "$(grep -c '^  *file_diff_capture "' "$SRC")" 2 \
+  "review --file and diff share one capture (file_diff_capture), never a fork"
+assert_eq "$(grep -c '^  *file_diff_show "' "$SRC")" 2 "and one body (file_diff_show)"
+
+ANS='
+'
+run_pinned diff "$DD/old" "$DD/new"
+assert_exit "$RC" 0 "diff shows the change and exits 0"
+assert_line "$OUT" "old:        $DD/old" "an old: row names the first path"
+assert_line "$OUT" "new:        $DD/new" "a new: row names the second"
+assert_line "$OUT" "change:     +3 -2" "a change: row gives the size before the gate"
+assert_contains "$OUT" "show the diff; Enter open · n skip" "the body is announced by the gate"
+assert_before "$OUT" "change:     +3 -2" "show the diff;" "the rows stand above the gate"
+assert_contains "$OUT" "--- diff from old to new ---" "a section rule opens the body"
+assert_contains "$OUT" "--- old: $DD/old" "the diff names the old side by role and path"
+assert_contains "$OUT" "+++ new: $DD/new" "and the new side"
+assert_line "$OUT" "-zero${BS}u{200B}width" "a hidden character shows as its escape"
+assert_missing "$OUT" "$ZW" "and never raw"
+assert_line "$OUT" "+zero${BS}u{200B}width${BS}xFF" "an invalid byte shows as a kept escape"
+assert_line "$OUT" "+	indented more" "a tab in a content line is layout, shown raw"
+assert_missing "$OUT" "${BS}u{9}" "and never escaped"
+assert_line "$OUT" "--- end of diff: +3 -2 ---" "the closing rule gives the size"
+assert_before "$OUT" "+added" "--- end of diff: " "below the last line of the diff"
+
+# Colored, through the library (HL_ON forced, as S21 does): the hidden
+# escape wears reverse red, the kept one none.
+run_probe eval 'HL_ON=1; freeze_file "'"$DD"'/old"; o="$FROZEN_COPY"; freeze_file "'"$DD"'/new"
+  file_diff_capture "$o" "$FROZEN_COPY" old new; untrusted_render diff color_diff <<<"$FD_DIFF"
+  printf "%s" "$UT_OUT"'
+assert_contains <(printf '%s' "$POUT") $'\033[7;31m'"${BS}u{200B}"$'\033[0m' \
+  "colored, the hidden escape wears reverse red"
+if printf '%s' "$POUT" | grep -qF -e $'\033[7;31m'"${BS}xFF"; then
+  fail "colored, the kept escape wears no reverse red"
+else
+  ok "colored, the kept escape wears no reverse red"
+fi
+
+ANS='
+'
+run_pinned diff "$DD/crlf-old" "$DD/crlf-new"
+assert_exit "$RC" 0 "a CRLF pair is shown"
+assert_line "$OUT" "CRLF line endings" "its line endings are stated once, as a header line"
+assert_line "$OUT" "+z" "each CR LF draws as a plain break"
+assert_missing "$OUT" "${BS}u{D}" "with no carriage return escaped"
+
+ANS='n
+'
+run_pinned diff "$DD/old" "$DD/new"
+assert_exit "$RC" 2 "n at the gate declines with exit 2"
+# The answer is not echoed here, so the decline continues the gate's line.
+assert_contains "$OUT" "show the diff; Enter open · n skip skipped; nothing shown" \
+  "in the decline's words, right after the gate"
+assert_missing "$OUT" "--- diff from old to new ---" "and shows no body"
+ANS=''
+run_pinned diff "$DD/old" "$DD/new"
+assert_exit "$RC" 2 "end of input at the gate declines too"
+assert_missing "$OUT" "--- end of diff" "with nothing shown"
+
+ANS=''
+run_pinned diff "$DD/old" "$DD/old"
+assert_exit "$RC" 0 "two identical files exit 0"
+assert_eq "$(cat "$OUT")" "the two files are byte-identical; there is no diff to show" \
+  "in one line, with no gate"
+
+run_pinned diff "$DD/old" "$DD/no-such"
+assert_exit "$RC" 1 "a missing file refuses"
+assert_line "$OUT" "✗ refused: no such file: $DD/no-such" "in the refusal shape, the path last"
+assert_missing "$OUT" "old:" "with nothing shown"
+run_pinned diff "$DD/no-such" "$DD/new"
+assert_exit "$RC" 1 "a missing old file refuses as well"
+run_pinned diff "$DD" "$DD/new"
+assert_exit "$RC" 1 "a directory refuses"
+assert_line "$OUT" "✗ refused: not a regular file: $DD" "as not a regular file"
+cp "$DD/new" "$DD/unreadable"
+chmod 000 "$DD/unreadable"
+if [ -r "$DD/unreadable" ]; then
+  skip "S28 unreadable file" "this user reads a mode-000 file"
+else
+  run_pinned diff "$DD/old" "$DD/unreadable"
+  assert_exit "$RC" 1 "an unreadable file refuses"
+  assert_line "$OUT" "✗ refused: cannot read: $DD/unreadable" "the path last"
+fi
+chmod 600 "$DD/unreadable"
+ln -s "$DD/new" "$DD/a
+b"
+run_pinned diff "$DD/old" "$DD/a
+b"
+assert_exit "$RC" 1 "a path holding a line feed refuses"
+assert_contains "$OUT" "✗ refused: a path holding a line feed cannot head a diff: $DD/a" \
+  "the path last"
+run_pinned diff "$DD/old"
+assert_exit "$RC" 1 "diff takes two files"
+assert_contains "$OUT" "usage: pinned" "and says so with the usage"
+
+# No elevation, no record: the preview stub keeps the elevation gate live
+# (sudo is exit 97 there), and the record tree is made unreadable for the
+# run, so a diff that needed either could not answer.
+mkdir -p "$PINNED_ROOT"
+PR_MODE="$(perl -e 'printf "%o", (stat $ARGV[0])[2] & 07777' "$PINNED_ROOT")"
+chmod 000 "$PINNED_ROOT"
+ANS='
+'
+run_preview diff "$DD/old" "$DD/new"
+chmod "$PR_MODE" "$PINNED_ROOT"
+assert_exit "$RC" 0 "diff runs as the caller, never through sudo, with the record tree unreadable"
+assert_missing "$OUT" "sudo" "and no sudo line is shown"
+assert_contains "$OUT" "--- end of diff: +3 -2 ---" "the whole diff is shown"
+
 
 # ---------------------------------------------------------------------------
 printf '1..%d\n' "$TESTS"

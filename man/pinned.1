@@ -1021,6 +1021,41 @@ and
 belong to the file form and are refused here.
 .RE
 .TP
+.B diff \fIold\fP \fInew\fP
+The change from one file to another, shown exactly as
+.B review \-\-file
+shows a file's change against its baseline: the same
+.B change:
+row and gate
+.RB ( "show the diff; Enter open \(pc n skip" ),
+the same escaping and colors, the same keys block and hunk labels for
+JSON, the same pager and closing rule.
+For a caller that needs a display it can trust of two files it already
+holds, such as a deployer showing an installed copy against a staged one.
+.RS
+.PP
+It reads the two files with the caller's own rights and nothing else:
+no sudo, no record, no slot, no policy, no audit log.
+Each file is read once, and the diff, its size and its keys all come
+from that one read.
+Rows
+.B old:
+and
+.B new:
+name the two paths as given, escaped; the diff's own header lines name
+each side by role and path.
+Two byte-identical files print one line saying so and exit 0.
+.PP
+A missing file, one that is not a regular file, one that cannot be read,
+a path holding a line feed (it would head the diff as its label) or a
+diff that cannot be made refuses with nothing shown, the path last, and
+exits 1.
+Declining the gate prints
+.B skipped; nothing shown
+and exits 2; a caller across a process seam prints no decline line of
+its own.
+.RE
+.TP
 .B list [\-\-repos|\-\-files] [\-\-stale] [\-\-under \fIdir\fP] [\-\-format text|json]
 The live pins in your tier and whether each still matches its record.
 By default, an index: a

@@ -53,6 +53,7 @@ complete -c pinned -n __pinned_needs_action -a signer -d 'Allowed-signers ceremo
 complete -c pinned -n __pinned_needs_action -a ignorable -d 'Ignorable-JSON-key grants'
 complete -c pinned -n __pinned_needs_action -a status -d 'Record vs live state'
 complete -c pinned -n __pinned_needs_action -a show -d 'Trusted re-display, records nothing'
+complete -c pinned -n __pinned_needs_action -a diff -d 'The change from one file to another, shown as review shows it'
 complete -c pinned -n __pinned_needs_action -a list -d 'Your pins and their live state'
 complete -c pinned -n __pinned_needs_action -a slot -d 'Print the slot directory for a path'
 complete -c pinned -n __pinned_needs_action -a setup -d '(sudo) Provision sudoers digest pin, self-install'
@@ -88,8 +89,8 @@ complete -c pinned -n '__pinned_action_is declare' -a '(__fish_complete_director
 complete -c pinned -n '__pinned_action_is declare' -l release -x -d 'Release name to declare'
 complete -c pinned -n '__pinned_action_is declare' -l no-release -d 'Clear the declared release name'
 
-# --- verify, cat, status, show, slot ------------------------------------------
-complete -c pinned -n '__pinned_action_is verify cat status show slot' -F
+# --- verify, cat, status, show, diff, slot ------------------------------------
+complete -c pinned -n '__pinned_action_is verify cat status show diff slot' -F
 complete -c pinned -n '__pinned_action_is verify' -l emit -d 'Print the verified bytes on stdout'
 complete -c pinned -n '__pinned_action_is verify' -l frozen -r -F -d 'Verify this caller-frozen copy against the record'
 complete -c pinned -n '__pinned_action_is verify' -l baseline -r -F -d 'Your own witness for the ignored-key comparison'

@@ -159,6 +159,11 @@ the nix module; a manual install copies it onto `fish_complete_path` / `fpath`.
                                       file is one read, shown and hashed;
                                       a repo is the tree at its pin, from
                                       the object store
+    pinned diff <old> <new>           the change from one file to another,
+                                      shown exactly as review --file shows
+                                      a file's change (rows, gate, escapes,
+                                      colors, pager, closing rule); reads
+                                      the two files and nothing else
     pinned list [--repos|--files] [--stale] [--under <dir>]
                 [--format text|json]
                                       your pins and their live state:
@@ -176,8 +181,8 @@ the nix module; a manual install copies it onto `fish_complete_path` / `fpath`.
 review, setup, tombstone, rekey, declare, signer add/remove and
 ignorable add/remove self-elevate via sudo (re-exec of the installed
 root-owned binary).
-sign, show and cat
-run as you: sign needs your SSH agent, show and cat write nothing. The
+sign, show, diff and cat
+run as you: sign needs your SSH agent, show, diff and cat write nothing. The
 verb triple: `show` rehearses (no record), `review` records, `verify`
 answers -- humans review, machines verify; the record happens only in
 the review ceremony. The triple covers both kinds: `show <file>`
@@ -504,6 +509,19 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   is right here: content-addressing carries the trust (the rev names
   the bytes, and the pin it comes from is root-owned), and the
   root-owned binary is what keeps the display path itself unswappable.
+- `pinned diff <old> <new>` lends the file diff of `review --file` to a
+  caller that already holds two files and needs to show the change
+  between them -- a deployer showing an installed copy against a staged
+  one -- so the caller carries no copy of this display that could drift
+  from it. It is the same code path, not a second renderer: one read of
+  each file, the `old:`, `new:` and `change:` rows, the `show the diff`
+  gate, the diff through the escaper and colorizer, the pager and the
+  closing rule. It reads the two files with the caller's own rights and
+  nothing else (no sudo, no record, no policy, no audit log), refuses a
+  missing, unreadable or non-regular file with nothing shown, says so in
+  one line when the two are byte-identical, and exits 2 with `skipped;
+  nothing shown` when the gate is declined; a caller across a process
+  seam prints no decline line of its own.
 - Trust prerequisite: the interactive flow assumes your terminal and
   shell honestly relay what you type and see. Shell configuration is
   user-writable state -- a compromised config can alias `pinned`, fake

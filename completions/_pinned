@@ -34,6 +34,7 @@ _pinned() {
         'ignorable:ignorable-JSON-key grants'
         'status:record vs live state'
         'show:trusted re-display, records nothing'
+        'diff:the change from one file to another, shown as review shows it'
         'list:your pins and their live state'
         'slot:print the slot directory for a path'
         'setup:(sudo) provision sudoers digest pin, self-install'
@@ -114,6 +115,11 @@ _pinned() {
             "(-a --algo)"{-a,--algo}"[hash algorithm]:algorithm:(${algos[*]})" \
             '(-l --length)'{-l,--length}'[output length in bits (blake3 only)]:bits: ' \
             '1:file or repository:_files' && ret=0
+          ;;
+        diff)
+          _arguments \
+            '1:old file:_files' \
+            '2:new file:_files' && ret=0
           ;;
         list)
           _arguments \

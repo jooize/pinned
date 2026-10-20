@@ -54,6 +54,10 @@
 #   pinned words <repo> <rev>                 the words for <rev>, its full id,
 #                                             the commits since the pin, and the
 #                                             review --words line that approves it
+#   pinned diff <old> <new>                   the change from one file to another,
+#                                             shown exactly as review shows a
+#                                             file's change; reads the two files
+#                                             and nothing else, never elevates
 #   pinned setup [--yes]                      provision sudoers digest pin; self-install
 #
 # review, setup, tombstone, rekey, declare, signer add/remove and ignorable
@@ -362,6 +366,8 @@ usage: pinned <action> [args]
   ignorable add|remove|list ...  (sudo) ignorable-JSON-key grants
   status <repo|file>             record vs live state
   show <file|repo> [options]     trusted re-display; files get hash + wrapper
+  diff <old> <new>               the change from one file to another, shown as review
+                                 shows it; reads the two files and nothing else
   list [--repos|--files] [--stale] [--under <dir>] [--format text|json]
                                  your pins and their live state
   slot <path>                    print the slot directory for a path
@@ -2057,6 +2063,88 @@ diff_totals() {
 # $1 = what ended ("diff", "file"), $2 = its size, already spelled.
 print_end_rule() {
   printf '%s--- end of %s: %s ---%s\n' "$C_B" "$1" "$2" "$C_OFF"
+}
+
+# ---- the file diff ---------------------------------------------------------
+#
+# ONE DISPLAY FOR A CHANGE FROM ONE FILE TO ANOTHER, shared by review --file
+# (its diff against a verified baseline) and the diff verb, so the two can
+# never drift apart: the same diff, labels, keys block, escaper, colorizer,
+# gate and closing rule, in that order. Both callers hand it FROZEN copies
+# (freeze_file), so everything below reads bytes no one can change between
+# two looks.
+
+# The diff and its parts, computed BEFORE any gate announces it, so a diff
+# that cannot be made fails while nothing has been promised. Sets FD_DIFF
+# (the unified diff, hunks labeled), FD_SHAPE ("+A -D", the gate's and the
+# closing rule's spelling) and FD_KEYS (the keys block, or empty).
+#
+# -U1: unified context lines are UNCHANGED content by definition, and diff
+# prints every changed line at any -U level, so trimming context shortens
+# the read without ever hiding an edit. label_hunks then names each hunk
+# with the key path its changed lines sit under, read out of the same two
+# frozen buffers by jq's parser (see its comment); a side that does not
+# parse simply keeps diff's plain "@@" headers. The labels name each side
+# by role and path: the frozen copies are temp paths that name nothing.
+#
+# FAIL CLOSED: diff answers 0 (the same) or 1 (different), and anything
+# else is trouble; so is a failing label_hunks (each status read from
+# PIPESTATUS, under set +e, since 1 is an answer here). Either returns 1 with
+# nothing shown, and the caller says what could not be compared. The keys
+# block fails safe instead: an empty row set (non-JSON, malformed JSON, or
+# no jq -- rc 1 from json_keys_changed) is NO block, never a wrong one. Its
+# key names are the file's own text, so the rows go through the escaper
+# before render_keys_block lays them out, and a failure of either stops
+# the process (untrusted_fail). Called directly, never in a command
+# substitution, so that exit ends the process and not a subshell.
+file_diff_capture() { # <old-frozen> <new-frozen> <old-label> <new-label>
+  local _fd_shape
+  FD_DIFF="$(set +e
+    diff -U1 --label "$3" --label "$4" "$1" "$2" | label_hunks "$1" "$2"
+    _fd_st=("${PIPESTATUS[@]}")
+    [ "${_fd_st[0]}" -le 1 ] && [ "${_fd_st[1]}" -eq 0 ])" || return 1
+  _fd_shape="$(printf '%s\n' "$FD_DIFF" | diff_shape)"
+  # The gate says the magnitude, so the shape's own "+A/-D lines" tail is
+  # re-cut to the gate's spelling rather than counted a second time.
+  FD_SHAPE="${_fd_shape#*, }"; FD_SHAPE="${FD_SHAPE% lines}"
+  FD_SHAPE="${FD_SHAPE/\// }"
+  FD_KEYS="$({ json_keys_changed "$1" "$2" || true; } \
+    | untrusted_escape | render_keys_block)" || untrusted_fail
+}
+
+# The change: row, the magnitude colored the diff's own way -- additions
+# green, deletions red -- matching the keys summary and the diff body
+# below it. FD_SHAPE is always "+A -D" (diff_shape prints both counts,
+# either may be 0), so the first word is the add count and the rest the
+# delete count.
+file_diff_change_row() {
+  printf '%schange:%s     %s%s%s %s%s%s\n' "$C_B" "$C_OFF" \
+    "$C_GRN" "${FD_SHAPE%% *}" "$C_OFF" "$C_RED" "${FD_SHAPE#* }" "$C_OFF"
+}
+
+# THE GATE BEFORE THE PAGER: nothing full-screen arrives unannounced, and
+# what arrives is named with its size first (the change: row above it).
+# Enter (or y) opens it; `n` declines without looking, and so does end of
+# input. $1 is the decision clause, which names the object. Returns as
+# gate_answer does; the caller owns the decline line.
+file_diff_gate() { # <decision clause>
+  local _fd_gate
+  printf -v _fd_gate '%s%s;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
+    "$C_B" "$1" "$C_OFF" "$C_BLU" "$C_OFF" \
+    "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
+  gate_answer "$_fd_gate"
+}
+
+# The body: the section rule ($1, the program's own words, no value), one
+# keys block above the whole diff (see json_keys_changed: a per-hunk
+# placement would let one hunk lie about another; absent entirely when
+# there is no structural view), the diff through the escaper in diff mode
+# and color_diff into the pager, then the closing rule with the size.
+file_diff_show() { # <section rule text>
+  printf '%s--- %s ---%s\n' "$C_B" "$1" "$C_OFF"
+  [ -z "$FD_KEYS" ] || printf '%s\n' "$FD_KEYS"
+  untrusted_page color_diff <<<"$FD_DIFF"
+  print_end_rule diff "$FD_SHAPE"
 }
 
 sgit() {
@@ -5819,9 +5907,9 @@ do_approve_files() {
   local i=0 n="${#files[@]}" f base path slot line new_digest old_digest old_label
   local base_ok recorded=0 declined=0 failed=0 answer state_note nl
   local ign ign_json old_ign old_bad had_copy copy_bad cur_copy ign_note cust_from cust_to cust_val decl_changed
-  local cust_changed shape gate_shape n_lines gate_line same_bytes
+  local cust_changed n_lines gate_line same_bytes
   local keep store kept_ign cust_src ign_marks ign_new ign_old ign_lead imark ikey itail gr_list
-  local keys_block path_disp path_plain note_disp notes_out
+  local path_disp path_plain note_disp notes_out
   local gk gscope gwhere gr_keys gr_pairs gr_scope gr_mixed
 
   # The ignorable policy, read ONCE for the whole ceremony: every --file in
@@ -6215,7 +6303,7 @@ EOF
       # nor custody is what makes a witness usable, the re-hash is, so the
       # first candidate that re-hashes wins and a wrong or forged one can
       # only widen the display to the full file.
-      base_ok=0 keys_block="" base_tried=0
+      base_ok=0 base_tried=0
       if [ -n "$old_digest" ]; then
         for cand in "$slot/approved" "$base" \
                     "${baseline_store:+$baseline_store/$(encode "$path")/$old_digest}"; do
@@ -6228,65 +6316,32 @@ EOF
         done
       fi
       if [ "$base_ok" -eq 1 ]; then
-        # -U1: unified context lines are UNCHANGED content by definition, and
-        # diff prints every changed line at any -U level, so trimming context
-        # shortens the read without ever hiding an edit. Produced BEFORE the
-        # gate below announces it, so a diff that cannot be made fails while
-        # nothing has been promised. label_hunks then names each hunk with the
-        # key path its changed lines sit under, read out of the same two
-        # frozen buffers by jq's parser (see its comment); a side that does
-        # not parse simply keeps diff's plain "@@" headers. --label names
-        # the two sides by role and by the subject path: both frozen copies
-        # are temp paths that name nothing, and the path is what the header
-        # already showed.
-        line="$(diff -U1 --label "approved: $path" --label "candidate: $path" \
-          "$FROZEN_COPY" "$fro" | label_hunks "$FROZEN_COPY" "$fro" || true)"
-        shape="$(printf '%s\n' "$line" | diff_shape)"
-        # The gate says the magnitude, so the shape's own "+A/-D lines" tail
-        # is re-cut to the gate's spelling rather than counted a second time.
-        gate_shape="${shape#*, }"; gate_shape="${gate_shape% lines}"
-        gate_shape="${gate_shape/\// }"
-        # The keys block, computed here with the diff -- before the gate
-        # announces anything -- from the same two frozen buffers the diff
-        # reads (baseline = $FROZEN_COPY, candidate = $fro). An empty row
-        # set (non-JSON, malformed JSON, or no jq -- rc 1 from
-        # json_keys_changed) fails safe to NO block, never to a wrong one.
-        # The key names are the file's own text, so the rows go through the
-        # escaper before render_keys_block lays them out; a failure of
-        # either stops the ceremony here, before the gate promises a thing.
-        keys_block="$({ json_keys_changed "$FROZEN_COPY" "$fro" || true; } \
-          | untrusted_escape | render_keys_block)" || untrusted_fail
+        # The diff, its size and its keys block, from the two frozen
+        # buffers (baseline = $FROZEN_COPY, candidate = $fro), through the
+        # one file-diff path the diff verb shares (file_diff_capture).
+        # --label names the two sides by role and by the subject path, the
+        # path the header already showed.
+        file_diff_capture "$FROZEN_COPY" "$fro" "approved: $path" "candidate: $path" || {
+          error "cannot diff the candidate against the approved baseline: " "$path"
+          failed=$((failed + 1))
+          continue
+        }
       fi
-      # THE GATE BEFORE THE PAGER, as the repo ceremony has it: nothing
-      # full-screen arrives unannounced, and what arrives is named with its
-      # size first. Enter (or y) opens it; `n` declines without looking --
-      # record unchanged, logged as skip, counted as declined. End of input
-      # declines the same way. Approving without the bytes stays impossible.
+      # THE GATE BEFORE THE PAGER, as the repo ceremony has it (see
+      # file_diff_gate). `n` declines without looking -- record unchanged,
+      # logged as skip, counted as declined. Approving without the bytes
+      # stays impossible.
       if [ "$base_ok" -eq 1 ]; then
-        # Color the magnitude the diff's own way -- additions green, deletions
-        # red -- matching the keys summary and the diff body below it. gate_shape
-        # is always "+A -D" (diff_shape prints both counts, either may be 0), so
-        # the first word is the add count and the rest the delete count.
-        gate_disp="${C_GRN}${gate_shape%% *}${C_OFF} ${C_RED}${gate_shape#* }${C_OFF}"
         # The file: row is the identity block's, just above; only the
         # change is new.
-        printf '%schange:%s     %s\n' "$C_B" "$C_OFF" "$gate_disp"
-        printf -v gate_line '%sreview this change;%s %sEnter%s open %s· %s%sn%s%s skip%s ' \
-          "$C_B" "$C_OFF" "$C_BLU" "$C_OFF" \
-          "$C_DIM" "$C_OFF" "$C_BLU" "$C_OFF" "$C_DIM" "$C_OFF"
-        if ! gate_answer "$gate_line"; then
+        file_diff_change_row
+        if ! file_diff_gate "review this change"; then
           printf '%sskipped; record unchanged%s\n' "$C_YEL" "$C_OFF"
           log_action approve-file "$path" "$new_digest" skip
           declined=$((declined + 1))
           continue
         fi
-        printf '%s--- diff vs the approved baseline (exactly the bytes being approved) ---%s\n' "$C_B" "$C_OFF"
-        # One summary block, above the whole diff (see json_keys_changed: a
-        # per-hunk placement would let one hunk lie about another); absent
-        # entirely when there is no structural view.
-        [ -z "$keys_block" ] || printf '%s\n' "$keys_block"
-        untrusted_page color_diff <<<"$line"
-        print_end_rule diff "$gate_shape"
+        file_diff_show "diff vs the approved baseline (exactly the bytes being approved)"
       else
         if [ "$base_tried" -eq 1 ]; then
           notes_out="$notes_out${C_B}note:${C_OFF}       ${C_YEL}the baseline does not re-hash to the approved record, so the full file was shown${C_OFF}$NL"
@@ -8630,6 +8685,89 @@ do_show_repo() {
   log_action show "$repo" "$hash"
 }
 
+# ---- diff ------------------------------------------------------------------
+
+# The change from one file to another, shown exactly as review --file shows
+# a file's change against its baseline -- the same capture, rows, gate,
+# escaper, colorizer, pager and closing rule (the file diff above) -- for a
+# caller that needs a trustworthy display of two files it already holds: a
+# deployer showing an installed copy against a staged one, say, without a
+# copy of this display of its own.
+#
+# IT TOUCHES NOTHING BUT THE TWO FILES. No sudo, no record, no slot, no
+# policy, no audit log: it is not in the self-elevation list, it calls
+# nothing that reads a slot, and it runs with whatever rights its caller
+# has. Each file is read ONCE (freeze_file), and everything shown derives
+# from those frozen copies, so a file that changes mid-display cannot make
+# the diff, its size and its keys disagree.
+#
+# FAIL CLOSED: a missing file, one that is not a regular file, one that
+# cannot be read, or a diff that cannot be made refuses with nothing shown,
+# the path last. A path holding a line feed refuses too: it heads the diff
+# as its label, and a line feed there would let the path's own text pose as
+# diff structure. Exit 0 shown (or identical), 2 declined at the gate, 1
+# refused.
+do_diff() {
+  local old="" new="" a want_paths=1 old_fro new_fro p gone
+  for a in "$@"; do
+    if [ "$want_paths" -eq 1 ]; then
+      case "$a" in
+        --) want_paths=2; continue ;;
+        -?*) say_err "unknown option: " "$a"; usage ;;
+      esac
+    fi
+    if [ -z "$old" ]; then old="$a"
+    elif [ -z "$new" ]; then new="$a"
+    else echo "diff takes two files" >&2; usage; fi
+  done
+  [ -n "$old" ] && [ -n "$new" ] || usage
+
+  # Both paths are checked before either is read, so a refusal shows
+  # nothing of the other file.
+  for p in "$old" "$new"; do
+    case "$p" in
+      *"$NL"*) refused "a path holding a line feed cannot head a diff: " "$p"; exit 1 ;;
+    esac
+    gone=0
+    path_gone "$p" || gone=$?
+    case "$gone" in
+      0) refused "no such file: " "$p"; exit 1 ;;
+      2) refused "cannot read: " "$p"; exit 1 ;;
+    esac
+    [ -f "$p" ] || { refused "not a regular file: " "$p"; exit 1; }
+    [ -r "$p" ] || { refused "cannot read: " "$p"; exit 1; }
+  done
+  freeze_file "$old" 2>/dev/null || { refused "cannot read: " "$old"; exit 1; }
+  old_fro="$FROZEN_COPY"
+  freeze_file "$new" 2>/dev/null || { refused "cannot read: " "$new"; exit 1; }
+  new_fro="$FROZEN_COPY"
+
+  if cmp -s -- "$old_fro" "$new_fro"; then
+    echo "the two files are byte-identical; there is no diff to show"
+    return 0
+  fi
+  file_diff_capture "$old_fro" "$new_fro" "old: $old" "new: $new" || {
+    refused "cannot diff the two files"
+    exit 1
+  }
+
+  # The rows the gate decides about: the two paths as given, then the
+  # change. Each path ends its line, escaped.
+  local old_disp new_disp
+  untrusted_var old_disp "$old" "$C_CYN"
+  untrusted_var new_disp "$new" "$C_CYN"
+  printf '%sold:%s        %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$old_disp" "$C_OFF"
+  printf '%snew:%s        %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$new_disp" "$C_OFF"
+  file_diff_change_row
+  # A caller across a process seam prints nothing of its own for a decline:
+  # this line is the one record of it.
+  if ! file_diff_gate "show the diff"; then
+    printf '%sskipped; nothing shown%s\n' "$C_YEL" "$C_OFF"
+    exit 2
+  fi
+  file_diff_show "diff from old to new"
+}
+
 # ---- slot ------------------------------------------------------------------
 
 do_slot() {
@@ -9179,5 +9317,6 @@ case "$action" in
   list)      do_list "$@" ;;
   slot)      do_slot "$@" ;;
   show)      do_show "$@" ;;
+  diff)      do_diff "$@" ;;
   *)         usage ;;
 esac
