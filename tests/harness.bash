@@ -6257,6 +6257,25 @@ assert_exit "$RC" 0 "diff runs as the caller, never through sudo, with the recor
 assert_missing "$OUT" "sudo" "and no sudo line is shown"
 assert_contains "$OUT" "--- end of diff: +3 -2 ---" "the whole diff is shown"
 
+# ---------------------------------------------------------------------------
+say "S29: what survives -p is cleared first"
+# ---------------------------------------------------------------------------
+# Privileged mode still honors POSIXLY_CORRECT (posix mode) and BASH_COMPAT
+# (a compatibility level), so the script's first command clears both. The
+# position is asserted in the source (nothing may run before it); the effect
+# through the probe, which sources the library under an environment that
+# sets both, and through a child, which must inherit neither.
+assert_eq "$(awk 'NR > 1 && !/^#/ && !/^$/ { print; exit }' "$SRC")" \
+  "unset POSIXLY_CORRECT BASH_COMPAT; set +o posix" \
+  "the first command after line 1 clears POSIXLY_CORRECT and BASH_COMPAT"
+RC=0
+POUT="$(env POSIXLY_CORRECT=1 BASH_COMPAT=42 "$PROBE" eval \
+  'shopt -oq posix && echo posix-on; shopt -q compat42 2>/dev/null && echo compat42
+   echo "vars:${POSIXLY_CORRECT+P}${BASH_COMPAT+C}"; env | grep -c "^POSIXLY_CORRECT=\|^BASH_COMPAT=" || true' \
+  2>"$ERRF")" || RC=$?
+assert_exit "$RC" 0 "the library loads under POSIXLY_CORRECT and BASH_COMPAT"
+assert_eq "$POUT" $'vars:\n0' "posix mode off, no compat level, neither variable left for a child"
+
 
 # ---------------------------------------------------------------------------
 printf '1..%d\n' "$TESTS"

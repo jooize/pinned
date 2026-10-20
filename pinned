@@ -206,7 +206,11 @@
 # before this side elevates. Privileged mode ignores all four (measured
 # 2026-10-20 on /bin/bash 3.2 and the store bash 5.3). It is part of the
 # source, not a build parameter: a packaging rewrites only the interpreter
-# path, and keeps the flag.
+# path, and keeps the flag. Two inputs survive -p, POSIXLY_CORRECT (posix
+# mode) and BASH_COMPAT (a compatibility level, 5.x), so the line below,
+# the first command in the file, clears both for this script and for every
+# child it starts (measured the same way on both versions).
+unset POSIXLY_CORRECT BASH_COMPAT; set +o posix
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
 set -euo pipefail
