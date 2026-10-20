@@ -131,8 +131,8 @@ The escaped set is U+0000\(enU+001F, U+007F\(enU+009F, U+00A0, U+00AD,
 U+034F, U+061C, U+115F\(enU+1160, U+17B4\(enU+17B5, U+180B\(enU+180E,
 U+2000\(enU+200F, U+2028\(enU+202F, U+205F\(enU+206F, U+3000, U+3164,
 U+FE00\(enU+FE0F, U+FEFF, U+FFA0, U+FFF9\(enU+FFFB, U+E0000\(enU+E007F and
-U+E0100\(enU+E01EF: tab and carriage return included, line feed excepted
-(it is the line break), and a plain space untouched.
+U+E0100\(enU+E01EF, and a plain space untouched.
+Valid UTF\-8 is decoded first, so only the bytes that fail are escaped.
 A literal backslash followed by
 .BR u{ ,
 or by
@@ -140,8 +140,22 @@ or by
 and a hex digit, is escaped too, as
 .BR \eu{5C} ,
 so an escape on screen can only ever be one.
-On a terminal each escape is reverse red, a style nothing else in pinned
-wears; under
+.PP
+Line feed is the line break.
+In a single\-line value (a subject, a path, a name, an argument) tab and
+carriage return show escaped.
+In a document read as lines (a diff body, a file shown whole) a tab is
+layout and shows as itself, and when a carriage return sits directly
+before every line feed the pairs draw as plain breaks and pinned says
+.B CRLF line endings
+once, outside the text: on the section rule over a file, and as a header
+line before the first hunk of that file in a diff.
+Any other carriage return shows escaped where it is.
+.PP
+On a terminal the escape of a hidden character is reverse red, a style
+nothing else in pinned wears.
+The other escapes (an invalid byte, the escaped backslash) show as
+exactly what they are, in the color around them; under
 .B NO_COLOR
 or off a tty the escape text alone carries the fact.
 The text is escaped from its raw bytes before any color is added, so no

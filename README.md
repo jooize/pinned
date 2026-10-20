@@ -633,10 +633,17 @@ one.
   selectors, tag characters) prints as an escape -- `\u{HEX}` in
   uppercase hex with no leading zeros (`\u{9}`, `\u{200B}`, `\u{E0041}`),
   and `\xHH` for each byte that is not valid UTF-8 -- never raw and never
-  dropped. Tab and CR escape, LF is the line break, a plain space is
-  itself. A literal backslash that would read as an escape (before `u{`,
-  or before `x` and a hex digit) is escaped too, as `\u{5C}`, so an
-  escape on screen can only be one. One escaper, run on the raw bytes
+  dropped. Valid UTF-8 is decoded first, so only failing bytes are
+  escaped. LF is the line break and a plain space is itself. In a
+  single-line value (a subject, a path, an argument) tab and CR escape;
+  in a diff body or a file shown whole a tab is layout, and a file whose
+  every LF has a CR before it is drawn with plain breaks and labeled
+  `CRLF line endings` once, outside the text (any other CR escapes). A
+  literal backslash that would read as an escape (before `u{`, or before
+  `x` and a hex digit) is escaped too, as `\u{5C}`, so an escape on
+  screen can only be one. Only the escape of a hidden character wears
+  reverse red; an invalid byte's `\xHH` and the escaped backslash show
+  in the color around them. One escaper, run on the raw bytes
   before any color, so no byte of the content can act on the terminal; if
   it fails, the review stops and nothing raw is shown in its place. The
   records keep their bytes. The full list is in `man pinned`, "Third-party
