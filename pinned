@@ -557,10 +557,17 @@ verify_ancestry() {
 # Digest_Spec pins THIS FILE's bytes and says nothing about the interpreter,
 # so the digest does not notice.
 #
-# Line 1 of this file already names /bin/bash, so a verbatim install passes
-# this check without anyone doing anything -- the guard is belt and braces
-# for the installs that did not come from a verbatim copy: one made before
-# the shebang was pinned, or one whose first line was hand-edited.
+# The interpreter must also start in privileged mode: the first line is
+# exactly `#!<interpreter> -p`, the shape line 1 of this file ships in and
+# the nix module keeps (see the comment above the PATH export). Anything
+# else -- no flag, another flag, a second argument, extra blanks -- is
+# refused, because a shebang's argument is one opaque word to the kernel
+# and only the exact spelling is known to mean what it says.
+#
+# Line 1 of this file already reads `#!/bin/bash -p`, so a verbatim install
+# passes this check without anyone doing anything -- the guard is belt and
+# braces for the installs that did not come from a verbatim copy: one made
+# before the shebang was pinned, or one whose first line was hand-edited.
 #
 # A provisioning-time guard is all this can be, and it is enough to be worth
 # writing: it cannot defend against an interpreter that has ALREADY been
@@ -595,6 +602,18 @@ verify_interpreter_pin() { # <installed-script>
       *)
         why="a relative interpreter: " why_v="$line" ;;
     esac
+  fi
+  if [ -z "$why" ] && [ "$line" != "#!$interp -p" ]; then
+    refused "a first line that is not exactly its interpreter and -p: " "$line"
+    say_err "        file:  " "$f"
+    echo "        Without -p, bash runs \$BASH_ENV, applies SHELLOPTS and BASHOPTS, and" >&2
+    echo "        imports functions from the environment before the script's first" >&2
+    echo "        line, so the invoking environment chooses code that runs before the" >&2
+    echo "        script elevates. The sudoers digest would pin these bytes as they are." >&2
+    echo "        Reinstall from a current checkout -- its first line reads" >&2
+    echo "        #!/bin/bash -p -- or make this install's first line its interpreter's" >&2
+    echo "        path and -p, then rerun setup." >&2
+    return 1
   fi
   [ -n "$why" ] || return 0
   if [ -n "$why_v" ]; then refused "$why" "$why_v"; else refused "$why"; fi

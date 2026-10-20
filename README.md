@@ -789,7 +789,8 @@ environment (one named `exec` replaces the builtin), all before the
 script's first line, so whatever set the invoking environment would
 choose code that runs before pinned elevates. Privileged mode ignores
 all four. On a system whose bash is not `/bin/bash`, edit the path on
-that line to its root-owned bash and keep ` -p`.
+that line to its root-owned bash and keep ` -p`. `setup` refuses a first
+line that is anything other than the interpreter followed by ` -p`.
 
 The staging keeps two invariants visible in the filesystem: the final
 name only ever holds bytes a human has read, and the execute bit only

@@ -4777,21 +4777,43 @@ assert_exit "$RC" 1 "absolute but absent interpreter: refused"
 assert_contains "$ERRF" "an interpreter that is not root-owned: " \
   "absent interpreter: fails closed like any unverifiable path"
 
-# The passing shape: absolute, root-owned, no env in sight.
-run_probe verify_interpreter_pin "$(write_shebang good.sh "#!$GOOD_BASH")"
-assert_exit "$RC" 0 "absolute root-owned interpreter: passes the guard"
+# The passing shape: absolute, root-owned, no env in sight, and -p.
+assert_eq "$(head -n1 "$SRC")" "#!/bin/bash -p" "the script ships its interpreter with -p"
+run_probe verify_interpreter_pin "$(write_shebang good.sh "#!$GOOD_BASH -p")"
+assert_exit "$RC" 0 "absolute root-owned interpreter and -p: passes the guard"
 assert_eq "$(wc -c <"$ERRF" | tr -d ' ')" "0" "passing install says nothing"
 
-# Shebang parsing is not a substring match: leading blanks and an interpreter
-# argument must not change which path is judged.
-run_probe verify_interpreter_pin "$(write_shebang good2.sh "#!  $(printf '\t')$GOOD_BASH -e")"
-assert_exit "$RC" 0 "leading blanks and an interpreter argument: still passes"
+# Without -p, bash reads BASH_ENV, SHELLOPTS, BASHOPTS and imported
+# functions from the invoker's environment before line 2: refused.
+run_probe verify_interpreter_pin "$(write_shebang bare.sh "#!$GOOD_BASH")"
+assert_exit "$RC" 1 "no -p: refused"
+assert_contains "$ERRF" "a first line that is not exactly its interpreter and -p: #!$GOOD_BASH" \
+  "no -p: says what it found, last"
+assert_contains "$ERRF" "        file:  $INTERP/bare.sh" "no -p: names the file on its own row"
+assert_contains "$ERRF" "Without -p, bash runs \$BASH_ENV, applies SHELLOPTS and BASHOPTS, and" \
+  "no -p: says what the flag stops"
+assert_contains "$ERRF" "#!/bin/bash -p -- or make this install's first line its interpreter's" \
+  "no -p: says how to fix it"
+
+# Only the exact spelling passes: the kernel hands the argument over as one
+# opaque word. Leading blanks, another flag, a second argument, doubled or
+# trailing blanks and a CR are all refused -- while the interpreter is still
+# judged by its path, so each of these reaches the -p check, not another.
+for s17 in "blank.sh|#!  $(printf '\t')$GOOD_BASH -p" "other.sh|#!$GOOD_BASH -e" \
+           "two.sh|#!$GOOD_BASH -p -e" "double.sh|#!$GOOD_BASH  -p" \
+           "trail.sh|#!$GOOD_BASH -p " "cr.sh|#!$GOOD_BASH -p$(printf '\r')"; do
+  run_probe verify_interpreter_pin "$(write_shebang "${s17%%|*}" "${s17#*|}")"
+  assert_exit "$RC" 1 "not exactly the interpreter and -p (${s17%%|*}): refused"
+  assert_contains "$ERRF" "        file:  $INTERP/${s17%%|*}" "as the -p shape, naming the file (${s17%%|*})"
+  assert_contains "$ERRF" "a first line that is not exactly its interpreter and -p: " \
+    "and by the -p check (${s17%%|*})"
+done
 
 # ...and a path that merely CONTAINS env is not an env shebang.
 ENVDIR="$INTERP/envs"
 mkdir -p "$ENVDIR"
 : > "$ENVDIR/bash"; chmod 755 "$ENVDIR/bash"
-run_probe verify_interpreter_pin "$(write_shebang good3.sh "#!$ENVDIR/bash")"
+run_probe verify_interpreter_pin "$(write_shebang good3.sh "#!$ENVDIR/bash -p")"
 assert_exit "$RC" 0 "an interpreter under a dir named envs: passes (not an env shebang)"
 
 # The call site: the guard must run BEFORE setup computes the digest it would

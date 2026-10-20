@@ -1256,6 +1256,9 @@ is not
 .I /bin/bash
 edits the path on that line and keeps
 .BR \-p .
+Setup refuses a first line that is anything other than the interpreter
+followed by
+.BR \-p .
 .SH EXIT STATUS
 Ceremonies exit 0 on success, 1 on usage or internal error, and 2 when
 the human declines.
