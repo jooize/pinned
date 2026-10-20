@@ -4471,7 +4471,7 @@ case "$action" in
       if [ "$action" = "review" ]; then
         preview_repos=() preview_tag="" skip_next=0 want_tag=0 file_mode=0 have_ev=0
         preview_step=0 preview_trust=0 preview_signed=0 preview_decl=""
-        preview_words="" want_words=0 preview_commits="" want_commits=0
+        preview_words="" want_words=0 preview_commits="" want_commits=0 want_file=0
         # Empty or the word the listing reads, like preview_decl's class.
         preview_msg=""
         # Counted here rather than re-derived at the gate: the gate promises a
@@ -4483,6 +4483,15 @@ case "$action" in
           if [ "$want_tag" -eq 1 ]; then preview_tag="$a"; want_tag=0; continue; fi
           if [ "$want_words" -eq 1 ]; then preview_words="$a"; want_words=0; continue; fi
           if [ "$want_commits" -eq 1 ]; then preview_commits="$a"; want_commits=0; continue; fi
+          # A --file path heads the ceremony's diff as its label, so one
+          # holding a line feed is refused here, before authentication, as
+          # the root side refuses it (see its --file arm).
+          if [ "$want_file" -eq 1 ]; then
+            case "$a" in
+              *"$NL"*) refused "a path holding a line feed cannot head a diff: " "$a"; exit 1 ;;
+            esac
+            want_file=0; continue
+          fi
           if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
           case "$a" in
             --signed-tag) have_ev=1; preview_signed=1; skip_next=1 ;;
@@ -4493,7 +4502,7 @@ case "$action" in
             --commits)
               [ -z "$preview_commits" ] || { echo "--commits may be given once" >&2; exit 1; }
               want_commits=1 ;;
-            --file) file_mode=1; preview_files=$((preview_files + 1)); skip_next=1 ;;
+            --file) file_mode=1; preview_files=$((preview_files + 1)); want_file=1 ;;
             --baseline|--baseline-store|--algo) skip_next=1 ;;
             --tag) have_ev=1; want_tag=1 ;;
             --trust) have_ev=1; preview_trust=1 ;;
@@ -5112,6 +5121,13 @@ do_approve() {
         shift ;;
       --file)
         [ $# -ge 2 ] || { echo "--file needs a path" >&2; exit 1; }
+        # The path heads the ceremony's diff as its label (approved: and
+        # candidate:), and a line feed there would let the path's own text
+        # pose as diff structure: refused before anything is read, as the
+        # diff verb refuses it. The preview refuses the same pre-sudo.
+        case "$2" in
+          *"$NL"*) refused "a path holding a line feed cannot head a diff: " "$2"; exit 1 ;;
+        esac
         files+=("$2"); file_base+=(""); file_ign+=(""); file_ign_none+=(0); file_store+=(""); file_keep+=(0); shift 2 ;;
       --baseline)
         [ $# -ge 2 ] || { echo "--baseline needs a path" >&2; exit 1; }

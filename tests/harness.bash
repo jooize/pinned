@@ -2723,6 +2723,28 @@ n
   assert_exit "$RC" 97 "two files reach the elevation too"
   assert_contains "$OUT" "review 2 files as root" "the gate counts both files"
 
+  # A --file path heads the ceremony's diff as its label, so a line feed in
+  # one is refused as the diff verb refuses it: pre-sudo, so it costs no
+  # authentication, and root-side, before anything is read. The path is a
+  # real file, so only the line feed can be what refuses.
+  printf 'lf\n' > "$SUB/lf"$'\n'"name.txt"
+  ANS='
+'
+  run_preview review --file "$SUB/real.txt" --file "$SUB/lf"$'\n'"name.txt"
+  assert_exit "$RC" 1 "a --file path holding a line feed refuses before the elevation"
+  assert_contains "$OUT" "✗ refused: a path holding a line feed cannot head a diff: $SUB/lf" \
+    "in the diff verb's words, the path last"
+  assert_missing "$OUT" "sudo -- " "and no sudo line is shown"
+  assert_missing "$OUT" "Enter run" "nor a gate"
+  ANS='y
+'
+  run_pinned review --file "$SUB/lf"$'\n'"name.txt"
+  assert_exit "$RC" 1 "the root side refuses it too"
+  assert_contains "$OUT" "✗ refused: a path holding a line feed cannot head a diff: $SUB/lf" \
+    "in the same words"
+  assert_missing "$OUT" "=== pinned: review" "before the ceremony begins"
+  assert_absent "$(slot_of "$SUB/lf"$'\n'"name.txt")" "and nothing is recorded"
+
   # Every argv element is escaped on the sudo line: a tab in a path (an
   # argument, a single-line field) shows as its escape, never raw.
   printf 'tab\n' > "$SUB/tab"$'\t'"name.txt"
