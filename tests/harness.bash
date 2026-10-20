@@ -1193,7 +1193,7 @@ assert_eq "$POUT" "" "and emits nothing, so no keys line can render"
 # buffers the keys block reads -- so a label follows the document's
 # STRUCTURE, and reformatting cannot move it. Fail-safe in every direction:
 # a side that does not parse, or a hunk with no parser row beside its changed
-# lines, keeps the plain header diff wrote.
+# lines, keeps the plain header the diff wrote.
 mkdir -p "$SUB/a/hunk"
 # Non-JSON content: plain headers, no error. The trailing-space needle is how
 # "nothing was appended" is asserted -- a labeled header would carry one.
@@ -1212,6 +1212,27 @@ run_pinned review --file "$SUB/a/hunk/plain.txt" --baseline "$FIX/hunk-plain.txt
 assert_exit "$RC" 0 "a non-JSON baseline diff reviews without error"
 assert_contains "$OUT" "@@ -1,3 +1,3 @@" "and prints its hunk header"
 assert_missing "$OUT" "@@ -1,3 +1,3 @@ " "with nothing appended: no label on unparseable content"
+
+# A lone CR inside a line is part of that line: the file diff splits at LF
+# only, as every repo diff does, so the change is one line with its CR shown
+# as an escape (Apple's diff split at the CR: an unchanged `a` above `-b`).
+printf 'a\rb\nc\n' > "$SUB/a/hunk/cr.txt"
+ANS='
+y
+'
+run_pinned review --file "$SUB/a/hunk/cr.txt"
+assert_exit "$RC" 0 "fixture: cr.txt first approval"
+cp "$SUB/a/hunk/cr.txt" "$FIX/hunk-cr.txt"
+printf 'a\rX\nc\n' > "$SUB/a/hunk/cr.txt"
+ANS='
+y
+'
+run_pinned review --file "$SUB/a/hunk/cr.txt" --baseline "$FIX/hunk-cr.txt"
+assert_exit "$RC" 0 "a lone CR inside a line reviews without error"
+assert_contains "$OUT" "change:     +1 -1" "as one changed line"
+assert_line "$OUT" "@@ -1,2 +1,2 @@" "in a two-line hunk, the CR splitting nothing"
+assert_line "$OUT" "-a${BS}u{D}b" "the old line whole, its CR escaped"
+assert_line "$OUT" "+a${BS}u{D}X" "and the new line"
 
 if command -v jq >/dev/null 2>&1; then
   # Three levels deep: the WHOLE path, not the top-level key the old
@@ -6049,14 +6070,16 @@ say "S28: diff shows a change from one file to another as review shows it"
 # One file-diff path for two callers: review --file against its baseline and
 # the diff verb. The old side holds a zero-width space; the new side changes
 # a tab-indented line and adds an invalid byte and a line. A second pair is
-# CRLF throughout. (No bare CR: Apple's diff splits a line at one, so its
-# rendering differs from GNU diff's, and that is diff's own line model.)
+# CRLF throughout, and a third holds a lone CR inside a line, which the diff
+# (git's, splitting at LF only) keeps inside that line.
 DD="$FIX/diffverb"
 mkdir -p "$DD"
 printf 'one\n\tindented\nzero%swidth\n' "$ZW" > "$DD/old"
 printf 'one\n\tindented more\nzero%swidth\377\nadded\n' "$ZW" > "$DD/new"
 printf 'x\r\ny\r\n' > "$DD/crlf-old"
 printf 'x\r\nz\r\n' > "$DD/crlf-new"
+printf 'a\rb\nc\n' > "$DD/cr-old"
+printf 'a\rX\nc\n' > "$DD/cr-new"
 assert_eq "$(grep -c '^  *file_diff_capture "' "$SRC")" 2 \
   "review --file and diff share one capture (file_diff_capture), never a fork"
 assert_eq "$(grep -c '^  *file_diff_show "' "$SRC")" 2 "and one body (file_diff_show)"
@@ -6101,6 +6124,35 @@ assert_exit "$RC" 0 "a CRLF pair is shown"
 assert_line "$OUT" "CRLF line endings" "its line endings are stated once, as a header line"
 assert_line "$OUT" "+z" "each CR LF draws as a plain break"
 assert_missing "$OUT" "${BS}u{D}" "with no carriage return escaped"
+
+ANS='
+'
+run_pinned diff "$DD/cr-old" "$DD/cr-new"
+assert_exit "$RC" 0 "a lone CR inside a line is shown"
+assert_line "$OUT" "change:     +1 -1" "as one changed line"
+assert_line "$OUT" "@@ -1,2 +1,2 @@" "in a two-line hunk, the CR splitting nothing"
+assert_line "$OUT" "-a${BS}u{D}b" "the old line whole, its CR escaped"
+assert_line "$OUT" "+a${BS}u{D}X" "and the new line"
+
+# What git prints and diff did not is put back in diff's shape: a binary
+# pair names the two labels, a hunk header carries no function context
+# (git appends the nearest unchanged line above the hunk), and an exit 1
+# that is not a diff (git cannot read a side) fails the capture.
+printf 'x\0y\n' > "$DD/bin-old"
+printf 'x\0z\n' > "$DD/bin-new"
+printf 'head\n1\n2\n3\n4\n' > "$DD/fn-old"
+printf 'head\n1\n2\nX\n4\n' > "$DD/fn-new"
+run_probe eval 'file_diff_capture "'"$DD"'/bin-old" "'"$DD"'/bin-new" "old: o" "new: n"
+  printf "%s" "$FD_DIFF"'
+assert_exit "$RC" 0 "a binary pair is captured"
+assert_eq "$POUT" "Binary files old: o and new: n differ" "as one line naming the two labels"
+run_probe eval 'file_diff_capture "'"$DD"'/fn-old" "'"$DD"'/fn-new" old new
+  printf "%s" "$FD_DIFF"'
+assert_line <(printf '%s\n' "$POUT") "@@ -3,3 +3,3 @@" "a hunk header ends at its @@"
+assert_eq "$(printf '%s\n' "$POUT" | head -n2)" "--- old"$'\n'"+++ new" \
+  "and git's header block is the two labels"
+run_probe eval 'file_diff_capture "'"$DD"'/old" "'"$DD"'/no-such" old new'
+assert_exit "$RC" 1 "git's exit 1 without a diff fails the capture"
 
 ANS='n
 '

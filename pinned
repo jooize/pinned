@@ -1718,9 +1718,9 @@ render_keys_block() {
 #
 # FAIL-SAFE, ALWAYS TO A PLAIN HEADER: no jq, a side that does not parse
 # (non-JSON content, or JSON that is malformed now), or no parser row beside a
-# hunk's changed lines leaves that "@@" line exactly as diff wrote it. No
-# option is passed to diff any more either, so no diff can answer "unknown
-# option" into an empty review.
+# hunk's changed lines leaves that "@@" line exactly as file_diff_git wrote
+# it. No option is passed to the diff for a label either, so no diff can
+# answer "unknown option" into an empty review.
 #
 # STILL NOT AUTHORITY ON ITS OWN: a label says WHERE a change sits, never WHAT
 # changed. Every changed line prints regardless, and the recorded digest comes
@@ -2088,22 +2088,89 @@ print_end_rule() {
 # (freeze_file), so everything below reads bytes no one can change between
 # two looks.
 
+# The engine under the file diff: git's own diff of the two frozen copies,
+# so a file diff splits lines where every repo diff does, at LF and nowhere
+# else. diff(1), first on this PATH, is Apple's, and it also splits at a lone
+# CR: `a<CR>b` changed to `a<CR>X` read as an unchanged `a` above a changed
+# `b`, a diff whose structure is wrong before anything renders it.
+#
+# NOT THROUGH sgit, on purpose: sgit runs in $repo and refuses every
+# rendering subcommand, and that guard stays whole rather than learning an
+# exception. This helper carries the same scrub itself -- env -i,
+# HOME=/var/empty, no global or system config, attributes from the empty
+# tree, no fsmonitor, --no-ext-diff --no-textconv -- and runs from /, which
+# is root-owned and has nothing above it to walk to, so no repository's
+# config or .gitattributes is found from wherever the caller stands.
+# --no-index needs no repository; the inputs are the frozen copies by
+# absolute path.
+#
+# Out comes the shape diff -U1 --label wrote, the one label_hunks,
+# diff_shape, color_diff and the escaper read: git's header block (`diff
+# --git`, mode and `index` lines, and `---`/`+++` naming the temp paths)
+# becomes `--- <old-label>` and `+++ <new-label>`; `Binary files ... differ`
+# names the labels, as diff's did, with no `---`/`+++` above it; and a hunk
+# header ends at its closing `@@`, without the function context git appends
+# (an unchanged line from above the hunk), so label_hunks' label is the only
+# thing after it. The labels reach awk through the environment: -v would
+# eat a backslash in a path.
+#
+# FAIL CLOSED: git answers 1 both for "different" and for some errors (a
+# file it cannot read), so its status alone is no verdict. The rewriting awk
+# answers in git's own terms from what it read -- 0 for no output, 1 for a
+# diff that opens on `diff --git` and reaches a hunk or a binary line, 2 for
+# anything else, a header line it does not know included -- and only a
+# matching pair, 0 and 0 or 1 and 1, returns 0. Anything else returns 1,
+# and what was printed is the caller's to discard. Statuses come from
+# PIPESTATUS, so the caller runs it under set +e, as file_diff_capture does.
+file_diff_git() { # <old-frozen> <new-frozen> <old-label> <new-label>
+  local _a="$1" _b="$2" _st
+  case "$_a" in /*) ;; *) _a="$PWD/$_a" ;; esac
+  case "$_b" in /*) ;; *) _b="$PWD/$_b" ;; esac
+  env -i PATH="$PATH" HOME=/var/empty \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+    git -C / --no-pager \
+    -c attr.tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904 \
+    -c core.fsmonitor=false \
+    diff --no-index --no-color --no-ext-diff --no-textconv -U1 -- "$_a" "$_b" \
+    | FD_OLD_LABEL="$3" FD_NEW_LABEL="$4" LC_ALL=C awk '
+      NR == 1 { if ($0 !~ /^diff --git /) { bad = 1; exit }; hdr = 1 }
+      hdr == 1 && /^@@ -/ {
+        print "--- " ENVIRON["FD_OLD_LABEL"]; print "+++ " ENVIRON["FD_NEW_LABEL"]
+        hdr = 2
+      }
+      hdr == 1 && /^Binary files / {
+        print "Binary files " ENVIRON["FD_OLD_LABEL"] " and " ENVIRON["FD_NEW_LABEL"] " differ"
+        hdr = 2; next
+      }
+      hdr == 1 {
+        if ($0 ~ /^(diff --git |old mode |new mode |index |--- |\+\+\+ )/) next
+        bad = 1; exit
+      }
+      /^@@ -/ && match($0, /^@@ -[0-9]+(,[0-9]+)? \+[0-9]+(,[0-9]+)? @@/) {
+        print substr($0, 1, RLENGTH); next
+      }
+      { print }
+      END { exit ((bad || hdr == 1) ? 2 : (NR > 0 ? 1 : 0)) }'
+  _st="${PIPESTATUS[0]}:${PIPESTATUS[1]}"
+  [ "$_st" = 0:0 ] || [ "$_st" = 1:1 ]
+}
+
 # The diff and its parts, computed BEFORE any gate announces it, so a diff
 # that cannot be made fails while nothing has been promised. Sets FD_DIFF
 # (the unified diff, hunks labeled), FD_SHAPE ("+A -D", the gate's and the
 # closing rule's spelling) and FD_KEYS (the keys block, or empty).
 #
-# -U1: unified context lines are UNCHANGED content by definition, and diff
-# prints every changed line at any -U level, so trimming context shortens
-# the read without ever hiding an edit. label_hunks then names each hunk
-# with the key path its changed lines sit under, read out of the same two
-# frozen buffers by jq's parser (see its comment); a side that does not
-# parse simply keeps diff's plain "@@" headers. The labels name each side
-# by role and path: the frozen copies are temp paths that name nothing.
+# -U1: unified context lines are UNCHANGED content by definition, and a
+# diff prints every changed line at any -U level, so trimming context
+# shortens the read without ever hiding an edit. label_hunks then names each
+# hunk with the key path its changed lines sit under, read out of the same
+# two frozen buffers by jq's parser (see its comment); a side that does not
+# parse simply keeps the plain "@@" headers. The labels name each side by
+# role and path: the frozen copies are temp paths that name nothing.
 #
-# FAIL CLOSED: diff answers 0 (the same) or 1 (different), and anything
-# else is trouble; so is a failing label_hunks (each status read from
-# PIPESTATUS, under set +e, since 1 is an answer here). Either returns 1 with
+# FAIL CLOSED: a diff file_diff_git does not vouch for (see its comment) is
+# trouble; so is a failing label_hunks (each status read from PIPESTATUS,
+# under set +e, since git's 1 is an answer there). Either returns 1 with
 # nothing shown, and the caller says what could not be compared. The keys
 # block fails safe instead: an empty row set (non-JSON, malformed JSON, or
 # no jq -- rc 1 from json_keys_changed) is NO block, never a wrong one. Its
@@ -2114,9 +2181,9 @@ print_end_rule() {
 file_diff_capture() { # <old-frozen> <new-frozen> <old-label> <new-label>
   local _fd_shape
   FD_DIFF="$(set +e
-    diff -U1 --label "$3" --label "$4" "$1" "$2" | label_hunks "$1" "$2"
+    file_diff_git "$1" "$2" "$3" "$4" | label_hunks "$1" "$2"
     _fd_st=("${PIPESTATUS[@]}")
-    [ "${_fd_st[0]}" -le 1 ] && [ "${_fd_st[1]}" -eq 0 ])" || return 1
+    [ "${_fd_st[0]}" -eq 0 ] && [ "${_fd_st[1]}" -eq 0 ])" || return 1
   _fd_shape="$(printf '%s\n' "$FD_DIFF" | diff_shape)"
   # The gate says the magnitude, so the shape's own "+A/-D lines" tail is
   # re-cut to the gate's spelling rather than counted a second time.
