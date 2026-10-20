@@ -3670,7 +3670,7 @@ ignored_keys_match() {
   else
     echo "note: the slot declares ignored keys but holds no approved copy, and no --baseline was given: $slot" >&2
     echo "      there is no witness to compare against (the byte-exact verdict stands; pass" >&2
-    echo "      verify --baseline <copy>, or re-approve with --store)" >&2
+    echo "      verify --baseline COPY, or re-approve with --store)" >&2
     return 1
   fi
   json_projectable "$approved" "the approved bytes" || return 1
@@ -3915,7 +3915,7 @@ do_setup() {
   echo
   echo "To approve a first repo, run:"
   echo
-  echo "  sudo pinned review <repo>"
+  echo "  sudo pinned review REPO"
 }
 
 if [ "$action" = "setup" ]; then
@@ -4804,7 +4804,7 @@ case "$action" in
           # --yes with a --file key is refused here like the root side does.
           if [ "$action" = signer ] && ! yes_answers_all "$@"; then
             for a in "$@"; do
-              [ "$a" = "--yes" ] && { echo "--yes takes the key on the command line: --key '<line>', not --file" >&2; exit 1; }
+              [ "$a" = "--yes" ] && { echo "--yes takes the key on the command line: --key 'LINE', not --file" >&2; exit 1; }
             done
           fi
           # Argv that can only ever reach a root-side argument error fails
@@ -4821,7 +4821,7 @@ case "$action" in
               esac
             done
             if [ "$has_key" -eq 0 ]; then
-              echo "signer $1 needs the key: --file <pubkey> or --key '<line>'" >&2
+              echo "signer $1 needs the key: --file PUBKEY or --key 'LINE'" >&2
               exit 1
             fi
           else
@@ -5251,8 +5251,8 @@ do_approve() {
       if [ ! -f "$signers" ]; then
         error "no allowed signers for this repo"
         echo "  install the signer's public key with the signer ceremony:" >&2
-        say_cmd "    per-repo: pinned signer add --file <pubkey> --principal <id> --repo " "$repo"
-        echo "    user:     pinned signer add --file <pubkey> --principal <id>" >&2
+        say_cmd "    per-repo: pinned signer add --file PUBKEY --principal ID --repo " "$repo"
+        echo "    user:     pinned signer add --file PUBKEY --principal ID" >&2
         echo "  obtain the key out of band (printed card, password manager," >&2
         echo "  existing trusted machine) -- never from this repo." >&2
         exit 1
@@ -7330,7 +7330,7 @@ do_cat() {
       echo "        a repo's content lives in git: read the approved rev from the slot (or a" >&2
       echo "        root-owned symlink at it), then ask git for the file:" >&2
       say_cmd "          pinned slot " "$path"
-      say_err "          git show <rev>:<file>, run in: " "$path"
+      say_err "          git show REV:FILE, run in: " "$path"
       exit 1 ;;
     tombstone)
       IFS= read -r line <"$slot_file" || line=""
@@ -7464,7 +7464,7 @@ do_rev() {
 
   if [ ! -e "$slot/release" ]; then
     refused "the slot declares no release name, so it is rev-only: $slot"
-    say_cmd "        one is added by: pinned declare --release <name> " "$path"
+    say_cmd "        one is added by: pinned declare --release NAME " "$path"
     exit 16
   fi
   [ -f "$slot/release" ] || {
@@ -8752,9 +8752,9 @@ do_signer() {
     exit 1
   fi
   [ -n "$keyfile" ] || [ -n "$keyline" ] \
-    || { echo "signer $sub needs --file <pubkey> or --key '<line>'" >&2; exit 1; }
+    || { echo "signer $sub needs --file PUBKEY or --key 'LINE'" >&2; exit 1; }
   if [ "$yes" -eq 1 ] && [ -n "$keyfile" ]; then
-    echo "--yes takes the key on the command line: --key '<line>', not --file" >&2
+    echo "--yes takes the key on the command line: --key 'LINE', not --file" >&2
     exit 1
   fi
   local line
@@ -8779,7 +8779,7 @@ do_signer() {
     entry="${line#* }"; keyblob="${entry%% *}"
     if [ "$sub" = "add" ]; then
       [ -n "$principal" ] || {
-        error "a bare public key needs --principal <identity>"
+        error "a bare public key needs --principal IDENTITY"
         echo "        (the principal is the label ssh-keygen -Y matches at verification)" >&2
         exit 1
       }

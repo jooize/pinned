@@ -404,7 +404,7 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
     one unprivileged command.
   - `review --file --ignore-json-key <key>` refuses a key the effective
     policy does not grant for that path, loudly, and names the exact
-    remediation (`sudo pinned ignorable add <key> --under <dir>`). The
+    remediation (`sudo pinned ignorable add KEY --under DIR`). The
     semantics are uniform: pinned cannot tell a human's argv from a calling
     tool's, so "a human typed it" is never a reason to allow it. The
     ceremony display then states the declared keys' grant provenance on one
@@ -746,7 +746,7 @@ user-space can no longer touch, then run only what you read:
     less /usr/local/sbin/pinned-unverified   # THE read that anchors trust
     sudo mv /usr/local/sbin/pinned-unverified /usr/local/sbin/pinned
     sudo chmod 755 /usr/local/sbin/pinned
-    sudo /usr/local/sbin/pinned setup        # or: review <repo> --trust
+    sudo /usr/local/sbin/pinned setup        # or: review REPO --trust
 
 The copy is verbatim, and one of the things you read on the first line
 is why: the shebang names `/bin/bash` absolutely rather than going
@@ -802,7 +802,7 @@ for that:
 1. Approve the config repo using the bootstrap above -- review
    creates the /var/db/pinned tree itself, so setup never runs:
 
-       sudo /usr/local/sbin/pinned review <repo> --trust
+       sudo /usr/local/sbin/pinned review REPO --trust
 
 2. Import the flake module and declare who may run it:
 
