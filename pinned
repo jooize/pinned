@@ -8864,7 +8864,7 @@ EOF
     done
     if [ "$ki" -lt 1 ] || [ -z "${words[$((ki + 1))]:-}" ]; then
       untrusted_var disp "$line"
-      printf '%sUNPARSEABLE%s  %s\n' "$C_RED$C_B" "$C_OFF" "$disp"
+      printf '%s✗ unparseable%s  %s\n' "$C_RED$C_B" "$C_OFF" "$disp"
       found=1
       continue
     fi
