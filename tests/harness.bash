@@ -6194,6 +6194,31 @@ assert_eq "$(printf '%s\n' "$POUT" | head -n2)" "--- old"$'\n'"+++ new" \
 run_probe eval 'file_diff_capture "'"$DD"'/old" "'"$DD"'/no-such" old new'
 assert_exit "$RC" 1 "git's exit 1 without a diff fails the capture"
 
+# git sniffs only its first 8000 bytes for a NUL, so a NUL past them reaches
+# the text diff raw. The rewriter keeps every byte of that line (awk ended
+# the line at the NUL, `ab<NUL>cd` becoming `ab`). Compared as bytes, from a
+# file: a shell variable cannot hold a NUL.
+awk 'BEGIN { for (i = 1; i <= 900; i++) printf "line %04d\n", i }' > "$DD/nul-head"
+{ cat "$DD/nul-head"; printf 'ab\0cd\ntail\n'; } > "$DD/nul-old"
+{ cat "$DD/nul-head"; printf 'ab\0ce\ntail\n'; } > "$DD/nul-new"
+printf -- '--- old\n+++ new\n@@ -900,3 +900,3 @@\n line 0900\n-ab\0cd\n+ab\0ce\n tail\n' > "$DD/nul-want"
+assert_eq "$(( $(wc -c <"$DD/nul-head") > 8000 ))" 1 "fixture: the NUL sits past git's 8000-byte sniff"
+run_probe eval 'set +e; file_diff_git "'"$DD"'/nul-old" "'"$DD"'/nul-new" old new >"'"$DD"'/nul-got"; exit $?'
+assert_exit "$RC" 0 "a NUL past 8000 bytes is a text diff, and the status pair holds"
+if cmp -s "$DD/nul-want" "$DD/nul-got"; then
+  ok "every byte of the NUL's line survives the rewrite"
+else
+  fail "every byte of the NUL's line survives the rewrite" "$(od -c "$DD/nul-got" | head -n 8)"
+fi
+# Fail closed: what the rewriter does not know as git's output is a 2 with
+# nothing printed, so a 1 from git never pairs with it.
+run_probe eval 'printf "not a diff\n" | env -i PATH="$PATH" FD_OLD_LABEL=o FD_NEW_LABEL=n perl -e "$FILE_DIFF_PL"'
+assert_exit "$RC" 2 "a stream that does not open on diff --git answers 2"
+assert_eq "$POUT" "" "and prints nothing"
+run_probe eval 'printf "diff --git a/x b/x\nsurprise\n@@ -1 +1 @@\n" | env -i PATH="$PATH" FD_OLD_LABEL=o FD_NEW_LABEL=n perl -e "$FILE_DIFF_PL"'
+assert_exit "$RC" 2 "an unknown header line answers 2"
+assert_eq "$POUT" "" "and prints nothing, not even the lines before it"
+
 ANS='n
 '
 run_pinned diff "$DD/old" "$DD/new"

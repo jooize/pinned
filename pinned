@@ -2152,17 +2152,53 @@ print_end_rule() {
 # names the labels, as diff's did, with no `---`/`+++` above it; and a hunk
 # header ends at its closing `@@`, without the function context git appends
 # (an unchanged line from above the hunk), so label_hunks' label is the only
-# thing after it. The labels reach awk through the environment: -v would
-# eat a backslash in a path.
+# thing after it. The labels reach the rewriter through the environment,
+# so no argument parsing can touch a byte of a path.
+#
+# PERL, NOT AWK, for the rewrite (FILE_DIFF_PL below): git sniffs only the
+# first 8000 bytes for a NUL, so a NUL past them reaches the text diff raw,
+# and awk ends a line there -- `ab<NUL>cd` came out as `ab`, the rest of the
+# line gone before the escaper could show it. Perl reads bytes and keeps
+# every one. It runs under env -i, as the escaper does, so no PERL5OPT or
+# PERL5LIB reaches it, and loads no module.
 #
 # FAIL CLOSED: git answers 1 both for "different" and for some errors (a
-# file it cannot read), so its status alone is no verdict. The rewriting awk
+# file it cannot read), so its status alone is no verdict. The rewriter
 # answers in git's own terms from what it read -- 0 for no output, 1 for a
 # diff that opens on `diff --git` and reaches a hunk or a binary line, 2 for
 # anything else, a header line it does not know included -- and only a
-# matching pair, 0 and 0 or 1 and 1, returns 0. Anything else returns 1,
-# and what was printed is the caller's to discard. Statuses come from
-# PIPESTATUS, so the caller runs it under set +e, as file_diff_capture does.
+# matching pair, 0 and 0 or 1 and 1, returns 0. Anything else returns 1. The
+# rewriter prints nothing until all of git's output has parsed, so a 2
+# comes with no output at all. Statuses come from PIPESTATUS, so the caller
+# runs it under set +e, as file_diff_capture does.
+#
+# Perl source: perl expands it, not the shell, and it holds no single quote.
+# shellcheck disable=SC2016
+FILE_DIFF_PL='
+  binmode STDIN;
+  binmode STDOUT;
+  my $lo = $ENV{FD_OLD_LABEL};
+  my $ln = $ENV{FD_NEW_LABEL};
+  exit 2 unless defined $lo && defined $ln;
+  my ($hdr, $n, $out) = (0, 0, "");
+  while (defined(my $l = <STDIN>)) {
+    $n++;
+    $l =~ s/\n\z//;
+    if ($n == 1) { exit 2 unless $l =~ /\Adiff --git /; $hdr = 1; }
+    if ($hdr == 1) {
+      if ($l =~ /\A\@\@ -/) { $out .= "--- $lo\n+++ $ln\n"; $hdr = 2; }
+      elsif ($l =~ /\ABinary files /) { $out .= "Binary files $lo and $ln differ\n"; $hdr = 2; next; }
+      elsif ($l =~ /\A(?:diff --git |old mode |new mode |index |--- |\+\+\+ )/) { next; }
+      else { exit 2; }
+    }
+    if ($l =~ /\A(\@\@ -[0-9]+(?:,[0-9]+)? \+[0-9]+(?:,[0-9]+)? \@\@)/) { $out .= "$1\n"; next; }
+    $out .= "$l\n";
+  }
+  exit 2 if $hdr == 1;
+  print $out or exit 2;
+  close STDOUT or exit 2;
+  exit($n > 0 ? 1 : 0);
+'
 file_diff_git() { # <old-frozen> <new-frozen> <old-label> <new-label>
   local _a="$1" _b="$2" _st
   case "$_a" in /*) ;; *) _a="$PWD/$_a" ;; esac
@@ -2173,25 +2209,7 @@ file_diff_git() { # <old-frozen> <new-frozen> <old-label> <new-label>
     -c attr.tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904 \
     -c core.fsmonitor=false \
     diff --no-index --no-color --no-ext-diff --no-textconv -U1 -- "$_a" "$_b" \
-    | FD_OLD_LABEL="$3" FD_NEW_LABEL="$4" LC_ALL=C awk '
-      NR == 1 { if ($0 !~ /^diff --git /) { bad = 1; exit }; hdr = 1 }
-      hdr == 1 && /^@@ -/ {
-        print "--- " ENVIRON["FD_OLD_LABEL"]; print "+++ " ENVIRON["FD_NEW_LABEL"]
-        hdr = 2
-      }
-      hdr == 1 && /^Binary files / {
-        print "Binary files " ENVIRON["FD_OLD_LABEL"] " and " ENVIRON["FD_NEW_LABEL"] " differ"
-        hdr = 2; next
-      }
-      hdr == 1 {
-        if ($0 ~ /^(diff --git |old mode |new mode |index |--- |\+\+\+ )/) next
-        bad = 1; exit
-      }
-      /^@@ -/ && match($0, /^@@ -[0-9]+(,[0-9]+)? \+[0-9]+(,[0-9]+)? @@/) {
-        print substr($0, 1, RLENGTH); next
-      }
-      { print }
-      END { exit ((bad || hdr == 1) ? 2 : (NR > 0 ? 1 : 0)) }'
+    | env -i PATH="$PATH" FD_OLD_LABEL="$3" FD_NEW_LABEL="$4" perl -e "$FILE_DIFF_PL"
   _st="${PIPESTATUS[0]}:${PIPESTATUS[1]}"
   [ "$_st" = 0:0 ] || [ "$_st" = 1:1 ]
 }
