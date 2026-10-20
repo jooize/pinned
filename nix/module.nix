@@ -23,26 +23,33 @@ let
 
   srcText = builtins.readFile ../pinned;
 
+  # Line 1, rewritten apart from the anchors below because it must match as
+  # the WHOLE first line and nowhere else. Both spellings pin the
+  # interpreter absolutely; this only swaps which absolute one. sudo passes
+  # the caller's full PATH through (probed live 2026-08-06 on the reference
+  # Mac: `sudo printenv PATH` returned the user's complete PATH), and env
+  # would resolve the interpreter from it BEFORE the script's own PATH
+  # export runs -- so an `env bash` shebang would let the invoker's
+  # environment pick root's interpreter. The source therefore ships
+  # /bin/bash, root-owned on stock macOS and stock Linux; NixOS has no
+  # /bin/bash, so the module points the line at the store bash: root-owned,
+  # immutable, present on both platforms. The -p is part of the source and
+  # stays: privileged mode keeps BASH_ENV, SHELLOPTS, BASHOPTS and imported
+  # functions out of the script's startup (see its comment above the PATH
+  # export). The match is a prefix of the file that ends in the line's
+  # newline, so it can neither land on a mention of the line in a comment
+  # nor pass on a first line that merely starts the same way (`-pe`, say).
+  shebang = {
+    from = "#!/bin/bash -p";
+    to = "#!${pkgs.bash}/bin/bash -p";
+  };
+
   # The script self-elevates by re-exec'ing $INSTALL_TARGET, and its
   # trusted PATH carries only the OS's root-owned directories -- each
   # packaging prepends its own root-owned prefix. Rewrite those anchor
   # lines to this module's configuration, and fail the eval loudly if
   # any anchor ever changes shape in the script.
   anchors = [
-    {
-      # Both spellings pin the interpreter absolutely; this only swaps
-      # which absolute one. sudo passes the caller's full PATH through
-      # (probed live 2026-08-06 on the reference Mac: `sudo printenv
-      # PATH` returned the user's complete PATH), and env would resolve
-      # the interpreter from it BEFORE the script's own PATH export runs
-      # -- so an `env bash` shebang would let the invoker's environment
-      # pick root's interpreter. The source therefore ships /bin/bash,
-      # root-owned on stock macOS and stock Linux; NixOS has no
-      # /bin/bash, so the module points the line at the store bash:
-      # root-owned, immutable, present on both platforms.
-      from = "#!/bin/bash";
-      to = "#!${pkgs.bash}/bin/bash";
-    }
     {
       # A constant in the script, never read from the environment (see its
       # comment there). Anchored on the whole line, newlines included, so the
@@ -73,10 +80,15 @@ let
       to = "\nPINNED_ROOT_ONLY_OWNERS=${lib.concatStringsSep " " cfg.rootOnlyOwners}\n";
     }
   ];
+  # Everything after line 1's text, its newline first, so an anchor that
+  # opens with a newline still matches on line 2.
+  body = lib.removePrefix shebang.from srcText;
   scriptText =
-    assert lib.assertMsg (lib.all (a: lib.hasInfix a.from srcText) anchors)
+    assert lib.assertMsg (lib.hasPrefix "${shebang.from}\n" srcText)
+      "pinned/nix: line 1 of ../pinned is not exactly `${shebang.from}`; update module.nix";
+    assert lib.assertMsg (lib.all (a: lib.hasInfix a.from body) anchors)
       "pinned/nix: an anchor line was not found in ../pinned; update module.nix";
-    builtins.replaceStrings (map (a: a.from) anchors) (map (a: a.to) anchors) srcText;
+    shebang.to + builtins.replaceStrings (map (a: a.from) anchors) (map (a: a.to) anchors) body;
 
   package = pkgs.writeScriptBin "pinned" scriptText;
 

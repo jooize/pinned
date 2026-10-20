@@ -271,7 +271,7 @@ need '^gate_answer() { # <rendered gate line>$' 1 'the shared gate helper'
 need '^ *drain_tty$'                                        14 'a drain before every ceremony tty read'
 need '^  saved="\$(stty -g </dev/tty 2>/dev/null)" || return 0$' 1 'drain_tty entry'
 need '^# ---- setup ---'                                    1 'library cut marker'
-need '^#!/bin/bash$'                                        1 'pinned shebang'
+need '^#!/bin/bash -p$'                                     1 'pinned shebang'
 # The preview stub's own anchors (see its construction below).
 need 'exec sudo -- "\$elev" "\$action" "\$@"'               3 'self-elevation exec sites'
 need '^        exec sudo -- "\$elev" "\$action" "\$@"$'        1 'the --words exec site'
@@ -282,7 +282,8 @@ need 'if \[ ! -t 0 \]; then'                                1 'no-tty refusal'
 # ...one of them being line 1. The script pins /bin/bash because sudo hands
 # root the caller's PATH (see the comment above its PATH export), but a
 # FIXTURE copy must run wherever the harness runs -- NixOS has no /bin/bash.
-# So the stub is pointed at whichever bash is executing this file, which also
+# So the stub is pointed at whichever bash is executing this file, keeping
+# -p so it starts the way the shipped script does, which also
 # makes the compatibility floor a deliberate choice rather than an accident:
 #     bash tests/harness.bash        the bash on your PATH
 #     /bin/bash tests/harness.bash   the 3.2 floor the script is written to
@@ -312,7 +313,7 @@ fi
 # preview one built further down) needs exactly these and a different
 # elevation seam -- two copies of this list would drift.
 STUB_SED=(
-    -e "1s#^\#!/bin/bash\$#\#!$HARNESS_BASH#"
+    -e "1s#^\#!/bin/bash -p\$#\#!$HARNESS_BASH -p#"
     -e "s#^PINNED_ROOT=/var/db/pinned\$#PINNED_ROOT='$PINNED_ROOT'#"
     -e "s#^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json\$#PINNED_MACHINE_POLICY='$PINNED_MACHINE_POLICY'#"
     -e 's/^  \[ "\$EUID" -eq 0 \] ||.*/  :/'
@@ -357,7 +358,7 @@ if ! grep -q '^drain_tty() {$' "$STUB" || ! grep -q '^  return 0$' "$STUB"; then
 fi
 if [ "$(grep -c 'if false; then' "$STUB")" != 2 ]; then bail "STUB SED FAILED: elevation gates"; fi
 if grep -q '^  logger -t pinned ' "$STUB"; then bail "STUB SED FAILED: logger survives"; fi
-if [ "$(head -n1 "$STUB")" != "#!$HARNESS_BASH" ]; then
+if [ "$(head -n1 "$STUB")" != "#!$HARNESS_BASH -p" ]; then
   bail "STUB SED FAILED: the stub shebang still reads $(head -n1 "$STUB")"
 fi
 

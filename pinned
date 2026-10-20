@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -p
 # pinned -- review-and-pin a git rev behind a human gate.
 #
 #   pinned review <repo> [--tag <t>] [--trust] [--backward|--diverged]
@@ -196,7 +196,17 @@
 # this script's compatibility floor) and on stock Linux. A packaging that
 # owns a root-owned prefix rewrites line 1 the same way it rewrites this
 # one: the nix module points it at the store bash, because NixOS has no
-# /bin/bash -- run a checkout there as `bash ./pinned`.
+# /bin/bash -- run a checkout there as `bash -p ./pinned`.
+#
+# The -p on line 1 is the same rule applied to the interpreter's own
+# startup. Without it, bash runs the file $BASH_ENV names, applies the
+# options SHELLOPTS and BASHOPTS carry, and imports shell functions from the
+# environment (BASH_FUNC_exec%% replaces `exec` itself) -- all before line 2,
+# so whoever set the invoking environment would choose code that runs here
+# before this side elevates. Privileged mode ignores all four (measured
+# 2026-10-20 on /bin/bash 3.2 and the store bash 5.3). It is part of the
+# source, not a build parameter: a packaging rewrites only the interpreter
+# path, and keeps the flag.
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
 set -euo pipefail

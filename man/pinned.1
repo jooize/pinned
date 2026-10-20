@@ -1243,6 +1243,19 @@ so a verbatim install passes; the check is there for an install made
 before the shebang was pinned, or one whose first line was hand-edited.
 The nix module rewrites that line to the store bash at build time, which
 satisfies the same rule.
+The line ends in
+.BR \-p :
+privileged mode, in which bash ignores
+.BR BASH_ENV ,
+.BR SHELLOPTS ,
+.B BASHOPTS
+and functions imported from the environment instead of acting on them
+before the script's first line.
+The nix module keeps the flag, and a hand install on a system whose bash
+is not
+.I /bin/bash
+edits the path on that line and keeps
+.BR \-p .
 .SH EXIT STATUS
 Ceremonies exit 0 on success, 1 on usage or internal error, and 2 when
 the human declines.

@@ -782,6 +782,15 @@ so naming it leaves nothing to resolve. `setup` re-checks this on the
 file it is about to digest-pin and refuses if the first line ever names
 `env`, a relative path, or an interpreter that is not root-owned.
 
+The ` -p` after the path is the same rule applied to bash's own startup.
+Without it, bash runs the file `BASH_ENV` names, applies the options in
+`SHELLOPTS` and `BASHOPTS`, and imports functions exported into the
+environment (one named `exec` replaces the builtin), all before the
+script's first line, so whatever set the invoking environment would
+choose code that runs before pinned elevates. Privileged mode ignores
+all four. On a system whose bash is not `/bin/bash`, edit the path on
+that line to its root-owned bash and keep ` -p`.
+
 The staging keeps two invariants visible in the filesystem: the final
 name only ever holds bytes a human has read, and the execute bit only
 ever exists under the final name -- staged bytes cannot be exec'd at
@@ -803,12 +812,13 @@ The direct route (running the checkout as root via setup or the
 pre-install fallback) still works and warns loudly; prefer this one.
 
 On a machine with no `/bin/bash` (NixOS is the one that matters here) a
-checkout cannot exec itself; run it as `bash ./pinned <verb>`, and as
-`sudo bash ./pinned setup`. Nothing is lost: the interpreter is
+checkout cannot exec itself; run it as `bash -p ./pinned <verb>`, and as
+`sudo bash -p ./pinned setup`. Nothing is lost: the interpreter is
 still named explicitly by the caller rather than resolved from a
-user-writable PATH, and the declarative install below is the intended
-route there anyway, since the module rewrites the first line to the
-store bash at build time.
+user-writable PATH, `-p` still keeps the environment out of its
+startup, and the declarative install below is the intended route there
+anyway, since the module rewrites the first line to the store bash at
+build time, keeping ` -p`.
 
 ## Declarative install (nix-darwin / NixOS)
 
@@ -836,12 +846,13 @@ for that:
    /etc/sudoers.d/pinned with an eval-time sha256 of the exact bytes
    it installs -- digest and binary derive from one source in one
    build, so they can never disagree. It rewrites the shebang to the
-   store bash at build time, which is the same interpreter pinning the
-   manual route does by hand, done by the packaging that knows its own
-   root-owned prefix. It also declares the group the script consumes
-   but never creates: `_<user>-pinned`, which makes that user's record
-   tier readable. The directory is not created here -- the script
-   provisions it root-side, so a manual install lands on the same path.
+   store bash at build time and keeps ` -p`, which is the same
+   interpreter pinning the manual route does by hand, done by the
+   packaging that knows its own root-owned prefix. It also declares
+   the group the script consumes but never creates: `_<user>-pinned`,
+   which makes that user's record tier readable. The directory is not
+   created here -- the script provisions it root-side, so a manual
+   install lands on the same path.
    `security.pinned.rootOnlyOwners` is the one widening of `verify`'s
    owner invariant (exit 30): accounts no user can act as, whose files
    are therefore as unwritable to the tier user as root's, baked into
