@@ -1337,7 +1337,25 @@ y
 '
 run_pinned review --file "$SUB/t/zw${ZW}.txt"
 assert_exit "$RC" 0 "fixture: a path holding a zero-width space is approved"
+# Refusals on stderr end on the path, escaped, like every row.
+ANS=""
+run_pinned tombstone "$SUB/t/zw${ZW}.txt"
+assert_exit "$RC" 1 "tombstone refuses the zero-width-space path while it exists"
+assert_contains "$OUT" "not what's live: $SUB/t/zw${BS}u{200B}.txt" "the refusal ends on the escaped path"
+assert_missing "$OUT" "$ZW" "and shows nothing raw"
+run_pinned tombstone "$SUB/t/zw${ZW}never.txt"
+assert_contains "$OUT" "nothing to tombstone: $SUB/t/zw${BS}u{200B}never.txt" \
+  "the no-slot refusal escapes the path too"
+assert_missing "$OUT" "$ZW" "and shows nothing raw"
+run_pinned rekey "$SUB/t/zw${ZW}.txt" "$SUB/t/zw${ZW}.txt"
+assert_contains "$OUT" "old and new name the same path: $SUB/t/zw${BS}u{200B}.txt" \
+  "a rekey refusal escapes the path"
+assert_missing "$OUT" "$ZW" "and shows nothing raw"
 rm -f "$SUB/t/zw${ZW}.txt"
+ANS=""
+run_preview tombstone "$SUB/t/zw${ZW}.txt"
+assert_contains "$OUT" "tombstone '$SUB/t/zw${BS}u{200B}.txt'" "the tombstone sudo line escapes the path"
+assert_missing "$OUT" "$ZW" "and the preview shows nothing raw"
 ANS='y
 '
 run_pinned tombstone "$SUB/t/zw${ZW}.txt"

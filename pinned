@@ -280,8 +280,14 @@ NL=$'\n' TAB=$'\t'
 
 # A refusal is a verdict, so it reads like `✓ approved:`: the glyph and a
 # past-tense label in red bold, the reason plain. Detail lines below it keep
-# the 8-space indent. Full caps are left to the `!!!` alarms.
-refused() { printf '%s✗ refused:%s %s\n' "$C2_RED$C2_B" "$C2_OFF" "$1" >&2; }
+# the 8-space indent. Full caps are left to the `!!!` alarms. A value the
+# refusal is about (a path, a name someone else chose) goes in $2: it ends
+# the line, escaped per untrusted-text (untrusted_var, below).
+refused() { # <text> [value]
+  local _rf_v=""
+  [ "$#" -lt 2 ] || untrusted_var _rf_v "$2" "" 2
+  printf '%s✗ refused:%s %s%s\n' "$C2_RED$C2_B" "$C2_OFF" "$1" "$_rf_v" >&2
+}
 
 # Separate gate for the two review-display highlighters ported from the
 # hardening repo's claude-shim.bash (color_diff, highlight_json): they keep
@@ -412,7 +418,7 @@ path_gone() { # path
   case "$err" in
     *": No such file or directory"|*": Not a directory") return 0 ;;
   esac
-  printf '%s\n' "${err:-stat failed without a message: $1}" >&2
+  if [ -n "$err" ]; then say_err "" "$err"; else say_err "stat failed without a message: " "$1"; fi
   return 2
 }
 
@@ -439,18 +445,20 @@ verify_root_owned_path() {
       case "$mode" in
         775|755|750|700|555|550|500) return 0 ;;
       esac
-      echo "ERROR: mode $mode (root:daemon), expected 775 or stricter: $path" >&2
+      say_err "ERROR: mode $mode (root:daemon), expected 775 or stricter: " "$path"
       return 1 ;;
     root:*) ;;
     *)
-      echo "ERROR: owned by $owner, expected owner root: $path" >&2
-      echo "       fix manually: sudo chown root:wheel $path && sudo chmod 755 $path" >&2
+      say_err "ERROR: owned by $owner, expected owner root: " "$path"
+      echo "       fix manually, root:wheel and mode 755:" >&2
+      say_err "         sudo chown root:wheel " "$path"
+      say_err "         sudo chmod 755 " "$path"
       return 1 ;;
   esac
   case "$mode" in
     755|750|700|555|550|500) ;;
     *)
-      echo "ERROR: mode $mode, expected 755 or stricter: $path" >&2
+      say_err "ERROR: mode $mode, expected 755 or stricter: " "$path"
       return 1
       ;;
   esac
@@ -466,13 +474,13 @@ verify_record_file() {
   case "$owner" in
     root:*) ;;
     *)
-      echo "ERROR: a record owned by $owner, expected owner root: $f" >&2
+      say_err "ERROR: a record owned by $owner, expected owner root: " "$f"
       return 1 ;;
   esac
   mode="$(stat_mode "$f")"
   case "$mode" in
     *[2367]?|*[2367])
-      echo "ERROR: a record with mode $mode (group/other-writable), refused: $f" >&2
+      say_err "ERROR: a record with mode $mode (group/other-writable), refused: " "$f"
       return 1 ;;
   esac
 }
@@ -527,9 +535,9 @@ verify_ancestry() {
 # catches an install carrying an unpinned interpreter while the machine is
 # still honest -- before the sudoers grant makes the gap reachable.
 verify_interpreter_pin() { # <installed-script>
-  local f="$1" line interp why=""
+  local f="$1" line interp why="" why_v=""
   if [ ! -f "$f" ]; then
-    echo "ERROR: not a regular file, so its interpreter cannot be read: $f" >&2
+    say_err "ERROR: not a regular file, so its interpreter cannot be read: " "$f"
     return 1
   fi
   IFS= read -r line <"$f" || line=""
@@ -547,17 +555,17 @@ verify_interpreter_pin() { # <installed-script>
   else
     case "$interp" in
       */env|env)
-        why="an env shebang: $line" ;;
+        why="an env shebang: " why_v="$line" ;;
       /*)
         verify_root_owned_path "$interp" \
-          || why="an interpreter that is not root-owned: $interp" ;;
+          || { why="an interpreter that is not root-owned: " why_v="$interp"; } ;;
       *)
-        why="a relative interpreter: $line" ;;
+        why="a relative interpreter: " why_v="$line" ;;
     esac
   fi
   [ -n "$why" ] || return 0
-  refused "$why"
-  echo "        file:  $f" >&2
+  if [ -n "$why_v" ]; then refused "$why" "$why_v"; else refused "$why"; fi
+  say_err "        file:  " "$f"
   echo "        The sudoers digest pins this script's bytes, not its interpreter, and" >&2
   echo "        sudo passes the caller's PATH through to the root process. An" >&2
   echo "        unpinned interpreter therefore lets the invoker choose which bash" >&2
@@ -845,6 +853,15 @@ untrusted_var() { # <var> <text> [resume-SGR] [stream]
   _uv_out="$(printf '%s' "$2" | untrusted_escape "$_uv_rv" "${_uv_rv:+$SGR_OFF${3:-}}" && printf x)" \
     || untrusted_fail
   printf -v "$1" '%s' "${_uv_out%x}"
+}
+
+# One plain line on stderr that ends on a value someone else chose (a path,
+# an argument, a record line): the text, then the value escaped for stderr.
+# Called directly, like untrusted_var, so a failing escaper ends the process.
+say_err() { # <text> <value>
+  local _se_v
+  untrusted_var _se_v "$2" "" 2
+  printf '%s%s\n' "$1" "$_se_v" >&2
 }
 
 # A body of third-party bytes (stdin) through the escaper in mode $1 (doc or
@@ -2413,8 +2430,8 @@ ancestry_gate() {
       [ -n "$declared" ] || return 0
       printf '%s✗ refused:%s nothing to override -- the candidate is a descendant of the pin\n' \
         "$C2_RED$C2_B" "$C2_OFF" >&2
-      echo "        pinned:      $old" >&2
-      echo "        candidate:   $new" >&2
+      say_err "        pinned:      " "$old"
+      say_err "        candidate:   " "$new"
       echo "        drop --$declared" >&2
       return 1 ;;
     backward) phrase="is backward of the pin" ;;
@@ -2428,14 +2445,14 @@ ancestry_gate() {
   else
     return 0
   fi
-  echo "        pinned:      $old" >&2
-  echo "        candidate:   $new" >&2
+  say_err "        pinned:      " "$old"
+  say_err "        candidate:   " "$new"
   if [ "$actual" = backward ]; then
     echo "        the commits between are being un-approved" >&2
   else
     echo "        the pinned line of history is being abandoned" >&2
   fi
-  echo "        declare it to proceed: pinned review $p --$actual" >&2
+  say_err "        declare it to proceed: pinned review --$actual " "$p"
   return 1
 }
 
@@ -2957,13 +2974,13 @@ require_hasher() {
   case "$1" in
     blake3)
       command -v b3sum >/dev/null 2>&1 || {
-        echo "ERROR: $1 declared, but the trusted PATH has no b3sum: $PATH" >&2
+        say_err "ERROR: $1 declared, but the trusted PATH has no b3sum: " "$PATH"
         echo "       install b3sum system-wide (a user-writable one would defeat the gate)" >&2
         return 1
       } ;;
     blake2b-*)
       command -v b2sum >/dev/null 2>&1 || {
-        echo "ERROR: $1 declared, but the trusted PATH has no b2sum: $PATH" >&2
+        say_err "ERROR: $1 declared, but the trusted PATH has no b2sum: " "$PATH"
         echo "       install GNU coreutils system-wide (a user-writable b2sum would defeat the gate)" >&2
         return 1
       } ;;
@@ -3011,7 +3028,7 @@ canon_path() {
   while :; do
     b="$(basename "$d")"; d="$(dirname "$d")"
     case "$b" in
-      ..) echo "ERROR: cannot resolve a .. below a missing directory: $p" >&2; return 1 ;;
+      ..) say_err "ERROR: cannot resolve a .. below a missing directory: " "$p"; return 1 ;;
       .)  : ;;
       *)  tail="$b${tail:+/}$tail" ;;
     esac
@@ -3020,7 +3037,7 @@ canon_path() {
     [ -e "$d" ] && break
   done
   d="$(readlink -f "$d" 2>/dev/null)" \
-    || { echo "ERROR: cannot resolve: $p" >&2; return 1; }
+    || { say_err "ERROR: cannot resolve: " "$p"; return 1; }
   printf '%s/%s\n' "${d%/}" "$tail"
 }
 
@@ -3044,11 +3061,11 @@ freeze_file() {
 resolve_repo() {
   [ $# -ge 1 ] || usage
   repo="$(readlink -f "$1")"
-  [ -n "$repo" ] && [ -d "$repo" ] || { echo "not a directory: ${1}" >&2; exit 1; }
+  [ -n "$repo" ] && [ -d "$repo" ] || { say_err "not a directory: " "$1"; exit 1; }
   # Let git's own stderr through -- swallowing it turned a safe.directory
   # refusal into a misleading "not a git work tree".
   sgit rev-parse --is-inside-work-tree >/dev/null \
-    || { echo "not a usable git work tree (git's own error is above): $repo" >&2; exit 1; }
+    || { say_err "not a usable git work tree (git's own error is above): " "$repo"; exit 1; }
   # A repo pin names a commit of the WHOLE repo -- there is no per-subdir
   # trust semantic, so a slot keyed on a subdirectory could only mislead:
   # deploy matches flake inputs by repo root, and a root slot plus a subdir
@@ -3057,8 +3074,8 @@ resolve_repo() {
   local top
   top="$(sgit rev-parse --show-toplevel)" || exit 1
   if [ "$repo" != "$(readlink -f "$top")" ]; then
-    echo "not the work-tree root: $repo" >&2
-    echo "       a pin names the whole repo; name its root: $top" >&2
+    say_err "not the work-tree root: " "$repo"
+    say_err "       a pin names the whole repo; name its root: " "$top"
     exit 1
   fi
   default_slot="$(slot_dir_for "$(tier_user)" "$repo")"
@@ -3122,8 +3139,8 @@ validate_ignore_key() {
 # remediation, everywhere. $1 = what needed it, for the message.
 require_jq() {
   command -v jq >/dev/null 2>&1 && return 0
-  echo "ERROR: no jq in the trusted PATH: $PATH" >&2
-  echo "       needed for: $1" >&2
+  say_err "ERROR: no jq in the trusted PATH: " "$PATH"
+  say_err "       needed for: " "$1"
   echo "       install jq system-wide (a user-writable one could falsify the comparison)" >&2
   return 1
 }
@@ -3274,12 +3291,13 @@ restate_gaps() {
 # say "as it is". A file that typed some of them gets only its keep/drop
 # lines, because --keep would ADD the kept keys to the ones it typed.
 restate_floor() {
-  local tier="$1" i=0 p one body="" gap_idx=" " suggest=1 a fi=-1 line
+  local tier="$1" i=0 p one body="" gap_idx=" " suggest=1 a fi=-1 line tok
   shift
   while [ "$i" -lt "${#rf_files[@]}" ]; do
     if p="$(canon_path "${rf_files[$i]}" 2>/dev/null)"; then
       one="$(restate_gaps "$(slot_dir_for "$tier" "$p")" "${rf_ign_stated[$i]}" "${rf_cust_stated[$i]}")"
       if [ -n "$one" ]; then
+        untrusted_var p "$p" "" 2
         body="$body        $p$NL$one$NL"
         gap_idx="$gap_idx$i "
         [ "${rf_typed[$i]}" -eq 0 ] || suggest=0
@@ -3294,10 +3312,12 @@ restate_floor() {
     line="pinned review"
     while [ "$#" -gt 0 ]; do
       a="$1"; shift
-      line="$line $(elevation_quote "$a")"
+      elevation_token tok "$a" "" 2
+      line="$line $tok"
       if [ "$a" = "--file" ] && [ "$#" -gt 0 ]; then
         fi=$((fi + 1))
-        line="$line $(elevation_quote "$1")"; shift
+        elevation_token tok "$1" "" 2
+        line="$line $tok"; shift
         case "$gap_idx" in *" $fi "*) line="$line --keep" ;; esac
       fi
     done
@@ -3468,16 +3488,19 @@ policy_check_declaration() { # $1 effective policy  $2 declared paths  $3 abs pa
       return 1 ;;
   esac
   names="$(policy_ungranted "$1" "$2" "$3")"
-  printf '%s✗ refused:%s the ignorable policy does not grant these keys for %s\n' \
-    "$C2_RED$C2_B" "$C2_OFF" "$3" >&2
+  refused "the ignorable policy does not grant these keys for this file: " "$3"
   while IFS= read -r k; do
-    [ -n "$k" ] && printf '          %s\n' "$k" >&2
+    [ -z "$k" ] || say_err "          " "$k"
   done <<EOF
 $names
 EOF
   echo "        grant them first -- each is its own root ceremony:" >&2
+  local k_disp under_disp
+  untrusted_var under_disp "$(dirname "$3")" "" 2
   while IFS= read -r k; do
-    [ -n "$k" ] && printf '          sudo pinned ignorable add %s --under %s\n' "$k" "$(dirname "$3")" >&2
+    [ -n "$k" ] || continue
+    untrusted_var k_disp "$k" "" 2
+    printf '          sudo pinned ignorable add %s --under %s\n' "$k_disp" "$under_disp" >&2
   done <<EOF
 $names
 EOF
@@ -3521,17 +3544,17 @@ EOF
 json_projectable() {
   local f="$1" side="$2" n_raw n_canon
   if [ "$(LC_ALL=C tr -d '\000' <"$f" | wc -c)" -ne "$(wc -c <"$f")" ]; then
-    echo "note: it holds NUL bytes, so it is not comparable as JSON (the byte-exact verdict stands): $side" >&2
+    say_err "note: it holds NUL bytes, so it is not comparable as JSON (the byte-exact verdict stands): " "$side"
     return 1
   fi
   if [ "$(jq -s 'length' <"$f" 2>/dev/null)" != 1 ]; then
-    echo "note: not exactly one JSON document (the byte-exact verdict stands): $side" >&2
+    say_err "note: not exactly one JSON document (the byte-exact verdict stands): " "$side"
     return 1
   fi
   n_raw="$(jq --stream -c . <"$f" 2>/dev/null | wc -l)"
   n_canon="$(jq -c . <"$f" 2>/dev/null | jq --stream -c . 2>/dev/null | wc -l)"
   if [ "$n_raw" -lt 1 ] || [ "$n_raw" -ne "$n_canon" ]; then
-    refused "duplicate object keys, and parsers disagree on which one wins: $side"
+    refused "duplicate object keys, and parsers disagree on which one wins: " "$side"
     echo "        so no structural comparison of it can be trusted (the byte-exact verdict stands)" >&2
     return 1
   fi
@@ -3548,7 +3571,7 @@ ignored_keys_match() {
   local slot="$1" label="$2" rec_digest="$3" live="$4" base="$5" path="$6"
   local approved="" paths pa pb rc=0 ungranted
   command -v jq >/dev/null 2>&1 || {
-    echo "note: the slot declares ignored keys, but the trusted PATH has no jq: $PATH" >&2
+    say_err "note: the slot declares ignored keys, but the trusted PATH has no jq: " "$PATH"
     echo "      slot:  $slot" >&2
     echo "      the byte-exact verdict stands (install jq system-wide to enable the comparison)" >&2
     return 1
@@ -3574,8 +3597,8 @@ ignored_keys_match() {
       return 1 ;;
     *)
       ungranted="$(policy_ungranted "$POL_EFF" "$IGN_PATHS" "$path" | tr '\n' ' ')"
-      echo "note: the slot records ignored key$(plural_s "$n_ungranted") the policy no longer grants here: $slot" >&2
-      echo "      keys:  ${ungranted% }" >&2
+      say_err "note: the slot records ignored key$(plural_s "$n_ungranted") the policy no longer grants here: " "$slot"
+      say_err "      keys:  " "${ungranted% }"
       echo "      the byte-exact verdict stands; re-approve, or grant them: pinned ignorable add" >&2
       return 1 ;;
   esac
@@ -3590,11 +3613,11 @@ ignored_keys_match() {
     approved="$slot/approved"
   elif [ -n "$base" ]; then
     if [ ! -f "$base" ]; then
-      echo "note: the --baseline is not a readable file (the byte-exact verdict stands): $base" >&2
+      say_err "note: the --baseline is not a readable file (the byte-exact verdict stands): " "$base"
       return 1
     fi
     if [ "$(hash_file "$label" "$base")" != "$rec_digest" ]; then
-      echo "note: the --baseline does not re-hash to the approved record (the byte-exact verdict stands): $base" >&2
+      say_err "note: the --baseline does not re-hash to the approved record (the byte-exact verdict stands): " "$base"
       return 1
     fi
     approved="$base"
@@ -3615,7 +3638,7 @@ ignored_keys_match() {
   pa="$(jq -S -c --argjson p "$paths" 'delpaths($p)' <"$approved" 2>/dev/null)" || return 1
   pb="$(jq -S -c --argjson p "$paths" 'delpaths($p)' <"$live" 2>/dev/null)" || return 1
   if [ -z "$pa" ] || [ "$pa" != "$pb" ]; then
-    echo "note: differences remain outside the declared ignored keys: $(ign_display "$paths")" >&2
+    say_err "note: differences remain outside the declared ignored keys: " "$(ign_display "$paths")"
     return 1
   fi
   # Report which declared keys actually moved -- the caller's whole reason
@@ -3678,14 +3701,14 @@ read_record() { # $1 = state file, $2 = declared label, $3 = accepted hex length
   case "$line" in
     *'  '*) ;;
     *)
-      echo "ERROR: a malformed record, naming no path (expected '<hex>  <path>'): $f" >&2
+      say_err "ERROR: a malformed record, naming no path (expected '<hex>  <path>'): " "$f"
       return 1 ;;
   esac
   rec_path="${line#*  }"
   line="${line%%  *}"
   case "$line" in
     *[!0-9a-f]*|'')
-      echo "ERROR: a corrupt record: $f" >&2
+      say_err "ERROR: a corrupt record: " "$f"
       return 1 ;;
   esac
   for n in $lens; do [ "${#line}" -eq "$n" ] && ok=1; done
@@ -3700,13 +3723,13 @@ read_record() { # $1 = state file, $2 = declared label, $3 = accepted hex length
     # the two have different exits -- corruption is hand-repair territory, a
     # respelling is a re-approval away.
     if [ "$(ascii_fold "$rec_path")" = "$(ascii_fold "$4")" ]; then
-      echo "ERROR: the record names another spelling of the path, whose case changed on disk: $f" >&2
-      echo "       record names:  $rec_path" >&2
-      echo "       path:          $4" >&2
+      say_err "ERROR: the record names another spelling of the path, whose case changed on disk: " "$f"
+      say_err "       record names:  " "$rec_path"
+      say_err "       path:          " "$4"
     else
-      echo "ERROR: a malformed record, naming another path: $f" >&2
-      echo "       record names:  $rec_path" >&2
-      echo "       path:          $4" >&2
+      say_err "ERROR: a malformed record, naming another path: " "$f"
+      say_err "       record names:  " "$rec_path"
+      say_err "       path:          " "$4"
     fi
     return 2
   }
@@ -3717,7 +3740,7 @@ read_record() { # $1 = state file, $2 = declared label, $3 = accepted hex length
 # REC_HEXLEN for callers that hash the live file against the record.
 read_pin_record() { # $1 = state file, $2 = declared label, $3 = the path asked about
   algo_hash_cmd "$2" >/dev/null 2>&1 || {
-    echo "ERROR: a record that declares an unknown algorithm, refused: $1" >&2
+    say_err "ERROR: a record that declares an unknown algorithm, refused: " "$1"
     return 1
   }
   REC_HEXLEN="$(algo_hex_len "$2")"
@@ -3891,27 +3914,21 @@ prog_disp() { # <var> <program-path-or-name>
   esac
 }
 
-# Quote a token for display: single-quote anything outside the pasteable safe
-# set, so a path with a space stays one copyable argument.
-elevation_quote() { # token
-  case "$1" in
-    *[!A-Za-z0-9_/.:=-]*) printf "'%s'" "$1" ;;
-    *)                    printf '%s' "$1" ;;
-  esac
-}
-
 # One token of a displayed command line, quoted and escaped into the variable
-# $1: a hidden character in an argument shows as its escape on the line the
-# human authenticates, never raw. $3 is the color the token prints in,
-# resumed after each escape. The quoting runs in this shell (printf -v), not
-# a command substitution, so a token's trailing newline is not stripped.
-elevation_token() { # <var> <token> [resume-SGR]
+# $1. Quoting: single quotes around anything outside the pasteable safe set,
+# so a path with a space stays one copyable argument. Escaping: a hidden
+# character in an argument shows as its escape on the line the human
+# authenticates, never raw. $3 is the color the token prints in, resumed
+# after each escape; $4 = 2 for stderr. The quoting runs in this shell
+# (printf -v), not a command substitution, so a token's trailing newline is
+# not stripped.
+elevation_token() { # <var> <token> [resume-SGR] [stream]
   local _et_q
   case "$2" in
     *[!A-Za-z0-9_/.:=-]*) printf -v _et_q "'%s'" "$2" ;;
     *)                    _et_q="$2" ;;
   esac
-  untrusted_var "$1" "$_et_q" "${3:-}"
+  untrusted_var "$1" "$_et_q" "${3:-}" "${4:-1}"
 }
 
 # The exact argv sudo is about to run, one flag-group per line so a long verb
@@ -4170,17 +4187,17 @@ case "$action" in
         rk_old="$(canon_path "$rk_old_arg")" || exit 1
         rk_new="$(canon_path "$rk_new_arg")" || exit 1
         if [ "$rk_old" = "$rk_new" ]; then
-          refused "old and new name the same path: $rk_old"
+          refused "old and new name the same path: " "$rk_old"
           exit 1
         fi
         rk_gone=0; path_gone "$rk_old" || rk_gone=$?
         if [ "$rk_gone" -eq 2 ]; then
-          refused "cannot tell whether the old path still exists, and a rekey follows only a move that happened: $rk_old"
+          refused "cannot tell whether the old path still exists, and a rekey follows only a move that happened: " "$rk_old"
           exit 1
         fi
         if [ "$rk_gone" -eq 1 ]; then
-          refused "the old path still exists, and you rekey a record whose content has already moved: $rk_old"
-          echo "        move the content first, or review the new path instead: $rk_new" >&2
+          refused "the old path still exists, and you rekey a record whose content has already moved: " "$rk_old"
+          say_err "        move the content first, or review the new path instead: " "$rk_new"
           exit 1
         fi
         # The root side's rows, in its order: each path ends its row, the
@@ -4233,7 +4250,7 @@ case "$action" in
         done
         [ "$dc_want" -eq 0 ] || { echo "--release needs a name" >&2; exit 1; }
         [ -n "$dc_repo" ] || usage
-        [ -d "$dc_repo" ] || { echo "not a directory: $dc_repo" >&2; exit 1; }
+        [ -d "$dc_repo" ] || { say_err "not a directory: " "$dc_repo"; exit 1; }
         if [ -n "$dc_tag" ] && [ "$dc_remove" -eq 1 ]; then usage; fi
         if [ -z "$dc_tag" ] && [ "$dc_remove" -eq 0 ]; then usage; fi
         if [ -n "$dc_tag" ] && ! validate_release_name "$dc_tag"; then
@@ -5010,7 +5027,7 @@ do_approve() {
   [ -z "$baseline_store" ] || { echo "--baseline-store applies to the --file ceremony only" >&2; exit 1; }
   [ "${#repo_args[@]}" -ge 1 ] || usage
   case "$sel_tag" in
-    -*) echo "invalid tag name: $sel_tag" >&2; exit 1 ;;
+    -*) say_err "invalid tag name: " "$sel_tag"; exit 1 ;;
   esac
   # A vouch adds nothing to a signature gate; refuse the no-op combination
   # rather than silently ignoring one flag.
@@ -5102,7 +5119,7 @@ do_approve() {
     local slot="$default_slot"
     if [ -n "$sel_tag" ]; then
       sgit check-ref-format "refs/tags/$sel_tag" \
-        || { echo "invalid tag name: $sel_tag" >&2; exit 1; }
+        || { say_err "invalid tag name: " "$sel_tag"; exit 1; }
       # An explicitly selected tag is also the DECLARED name; refuse
       # upfront if it cannot be declared (the fallback declaration from a
       # signed tag merely degrades to rev-only, but an explicit request
@@ -5182,7 +5199,7 @@ do_approve() {
       local t
       for t in "${tag_args[@]}"; do
         case "$t" in
-          -*) echo "invalid tag name: $t" >&2; exit 1 ;;
+          -*) say_err "invalid tag name: " "$t"; exit 1 ;;
         esac
       done
       # Per-slot signers take precedence; the user-tier file is the
@@ -5194,7 +5211,7 @@ do_approve() {
       if [ ! -f "$signers" ]; then
         echo "ERROR: no allowed signers for this repo" >&2
         echo "  install the signer's public key with the signer ceremony:" >&2
-        echo "    per-repo: pinned signer add --repo $repo --file <pubkey> --principal <id>" >&2
+        say_err "    per-repo: pinned signer add --file <pubkey> --principal <id> --repo " "$repo"
         echo "    user:     pinned signer add --file <pubkey> --principal <id>" >&2
         echo "  obtain the key out of band (printed card, password manager," >&2
         echo "  existing trusted machine) -- never from this repo." >&2
@@ -5389,7 +5406,7 @@ do_approve() {
           if [ "${want// /-}" != "$words_arg" ]; then
             printf '%serror: the words do not match %s; pin unchanged%s\n' \
               "$C2_RED$C2_B" "$hash" "$C2_OFF" >&2
-            printf '  review it the usual way: pinned review %s\n' "$repo" >&2
+            say_err "  review it the usual way: pinned review " "$repo"
             log_action approve "$repo" "$hash" words-mismatch
             exit 1
           fi
@@ -5402,7 +5419,7 @@ do_approve() {
           n_since="$(sgit rev-list --count "${old_hash}..${hash}")"
           if [ "$n_since" != "$commits_arg" ]; then
             refuse_commits_count "$n_since" "$commits_arg"
-            printf '  review it the usual way: pinned review %s\n' "$repo" >&2
+            say_err "  review it the usual way: pinned review " "$repo"
             log_action approve "$repo" "$hash" commits-mismatch
             exit 1
           fi
@@ -5747,7 +5764,7 @@ EOF
 # path -- the old appender's basename allowlist dies here.
 do_approve_files() {
   algo_hash_cmd "$file_algo" >/dev/null || {
-    echo "unsupported algorithm (use sha256, sha384, sha512, blake2b-256/384/512, blake3): $file_algo" >&2
+    say_err "unsupported algorithm (use sha256, sha384, sha512, blake2b-256/384/512, blake3): " "$file_algo"
     exit 1
   }
   require_hasher "$file_algo" || exit 1
@@ -5808,8 +5825,8 @@ do_approve_files() {
         failed=$((failed + 1)); continue ;;
     esac
     if [ ! -f "$path" ]; then
-      echo "ERROR: not a regular file: $path" >&2
-      echo "       a pinned file that is gone is retired with: pinned tombstone $path" >&2
+      say_err "ERROR: not a regular file: " "$path"
+      say_err "       a pinned file that is gone is retired with: pinned tombstone " "$path"
       failed=$((failed + 1)); continue
     fi
     slot="$(slot_dir_for "$inv" "$path")"
@@ -5841,7 +5858,7 @@ do_approve_files() {
       if read_ignored_paths "$slot" 2>/dev/null; then
         kept_ign="$IGN_PATHS"
       else
-        refused "--keep cannot keep the ignored keys, since their declaration is unreadable: $path"
+        refused "--keep cannot keep the ignored keys, since their declaration is unreadable: " "$path"
         echo "        list the keys to keep without --keep, or drop them with --ignore-none" >&2
         failed=$((failed + 1)); continue
       fi
@@ -5916,7 +5933,7 @@ do_approve_files() {
 
     # Freeze ONCE; display, diff, hash and record all derive from the
     # frozen copy (record == displayed buffer, by construction).
-    freeze_file "$path" || { echo "ERROR: cannot read $path" >&2; failed=$((failed + 1)); continue; }
+    freeze_file "$path" || { say_err "ERROR: cannot read: " "$path"; failed=$((failed + 1)); continue; }
     local fro="$FROZEN_COPY"
     new_digest="$(hash_file "$file_algo" "$fro")" || exit 1
 
@@ -6366,11 +6383,11 @@ do_tombstone() {
   path="$(canon_path "$path_arg")" || exit 1
   path_gone "$path" || gone=$?
   if [ "$gone" -eq 2 ]; then
-    refused "cannot tell whether this path still exists, and you tombstone only what's gone: $path"
+    refused "cannot tell whether this path still exists, and you tombstone only what's gone: " "$path"
     exit 1
   fi
   if [ "$gone" -eq 1 ]; then
-    refused "this path still exists, and you tombstone what's gone, not what's live: $path"
+    refused "this path still exists, and you tombstone what's gone, not what's live: " "$path"
     echo "        (retire the content first, or review the current content instead)" >&2
     exit 1
   fi
@@ -6381,7 +6398,7 @@ do_tombstone() {
   untrusted_var path_disp "$path" "$C_CYN"
   case "$slot_state" in
     none)
-      echo "no slot: never approved, so there is nothing to tombstone: $path" >&2
+      say_err "no slot: never approved, so there is nothing to tombstone: " "$path"
       exit 1 ;;
     tombstone)
       IFS= read -r line <"$slot_file" || line=""
@@ -6470,7 +6487,7 @@ do_rekey() {
   old="$(canon_path "$old_arg")" || exit 1
   new="$(canon_path "$new_arg")" || exit 1
   if [ "$old" = "$new" ]; then
-    refused "old and new name the same path: $old"
+    refused "old and new name the same path: " "$old"
     exit 1
   fi
   case "$new" in
@@ -6484,20 +6501,20 @@ do_rekey() {
   new_slot="$(slot_dir_for "$inv" "$new")"
 
   inspect_slot "$old_slot" || {
-    echo "       a malformed record cannot be moved; fix the slot by hand, or review the new path: $new" >&2
+    say_err "       a malformed record cannot be moved; fix the slot by hand, or review the new path: " "$new"
     exit 1
   }
   case "$slot_state" in
     none)
-      echo "no slot: never approved, so there is no record to re-key: $old" >&2
-      echo "       review the new path instead: $new" >&2
+      say_err "no slot: never approved, so there is no record to re-key: " "$old"
+      say_err "       review the new path instead: " "$new"
       exit 1 ;;
     tombstone)
       IFS= read -r line <"$slot_file" || line=""
-      refused "this path is tombstoned: $old"
-      echo "        $line" >&2
+      refused "this path is tombstoned: " "$old"
+      say_err "        " "$line"
       echo "        a tombstone marks the old path's own history; it does not travel --" >&2
-      echo "        review the new path instead: $new" >&2
+      say_err "        review the new path instead: " "$new"
       exit 1 ;;
   esac
   state="$slot_state" kind="$slot_kind" src="$slot_file"
@@ -6509,12 +6526,12 @@ do_rekey() {
   local old_gone=0
   path_gone "$old" || old_gone=$?
   if [ "$old_gone" -eq 2 ]; then
-    refused "cannot tell whether this path still exists, and a rekey follows only a move that happened: $old"
+    refused "cannot tell whether this path still exists, and a rekey follows only a move that happened: " "$old"
     exit 1
   fi
   if [ "$old_gone" -eq 1 ]; then
-    refused "this path still exists, and you rekey a record whose content has already moved: $old"
-    echo "        move the content first, or review the new path instead: $new" >&2
+    refused "this path still exists, and you rekey a record whose content has already moved: " "$old"
+    say_err "        move the content first, or review the new path instead: " "$new"
     exit 1
   fi
 
@@ -6525,8 +6542,8 @@ do_rekey() {
   if [ -d "$new_slot" ]; then
     inspect_slot "$new_slot" || exit 1
     if [ "$slot_state" != none ]; then
-      refused "the new path already has a record ($slot_state), and records do not merge: $new"
-      echo "        tombstone or review the new path explicitly: $new" >&2
+      refused "the new path already has a record ($slot_state), and records do not merge: " "$new"
+      say_err "        tombstone or review the new path explicitly: " "$new"
       exit 1
     fi
     if [ -e "$new_slot/signers" ]; then
@@ -6564,7 +6581,7 @@ do_rekey() {
       rev="$(read_rev "$old_slot" "$old")" || exit 1
       [ -n "$rev" ] || { echo "ERROR: a malformed record, holding no rev: $src" >&2; exit 1; }
       [ -d "$new" ] || {
-        refused "a repo record moves to a work tree, and this is not a directory: $new"
+        refused "a repo record moves to a work tree, and this is not a directory: " "$new"
         exit 1
       }
       # resolve_repo is the contract every repo verb resolves through: a
@@ -6575,8 +6592,8 @@ do_rekey() {
       # one whose object store HOLDS that commit. A work tree that does not
       # is a different repository wearing the new name.
       sgit cat-file -e "${rev}^{commit}" 2>/dev/null || {
-        refused "this work tree's object store does not hold the pinned rev: $new"
-        echo "        this is not the repository the record names, whose rev is $rev" >&2
+        refused "this work tree's object store does not hold the pinned rev: " "$new"
+        say_err "        this is not the repository the record names, whose rev is " "$rev"
         exit 1
       }
       ;;
@@ -6585,10 +6602,10 @@ do_rekey() {
       read_pin_record "$src" "$kind" "$old" || exit 1
       label="$REC_LABEL"; digest="$REC_DIGEST"
       [ -f "$new" ] || {
-        refused "a file record moves to a file, and this is not a regular file: $new"
+        refused "a file record moves to a file, and this is not a regular file: " "$new"
         exit 1
       }
-      freeze_file "$new" || { echo "ERROR: cannot read $new" >&2; exit 1; }
+      freeze_file "$new" || { say_err "ERROR: cannot read: " "$new"; exit 1; }
       # THE CHECK IS VERIFY ITSELF -- the gate's own verdict, run against the
       # OLD slot's record with the NEW path's frozen bytes. Reusing it is what
       # keeps rekey from holding a private opinion about what "matches" means: 0
@@ -6612,7 +6629,7 @@ do_rekey() {
         11)
           rekey_verify_said "$old" "$new" "$vout"
           refused "the content at the new path is not what the old path's record names"
-          echo "        a rekey carries the record verbatim; review the new path instead: $new" >&2
+          say_err "        a rekey carries the record verbatim; review the new path instead: " "$new"
           exit 1 ;;
         *)
           rekey_verify_said "$old" "$new" "$vout"
@@ -6848,7 +6865,7 @@ do_declare() {
   local rev
   rev="$(read_rev "$slot" "$repo")" || exit 1
   [ -n "$rev" ] || {
-    echo "nothing is pinned here; review it first: pinned review $repo" >&2
+    say_err "nothing is pinned here; review it first: pinned review " "$repo"
     exit 1
   }
 
@@ -7016,7 +7033,7 @@ do_verify() {
       --baseline)
         [ $# -ge 2 ] || { echo "--baseline needs the copy's path" >&2; exit 1; }
         baseline="$2"; shift 2 ;;
-      -*) echo "unknown verify option: $1" >&2; usage ;;
+      -*) say_err "unknown verify option: " "$1"; usage ;;
       *)  [ -z "$path" ] || { echo "verify takes one path" >&2; usage; }
           path="$1"; shift ;;
     esac
@@ -7038,30 +7055,30 @@ do_verify() {
       echo "ERROR: cannot read the tier (are you in group $(pin_group "$tier")?): $PINNED_ROOT/$tier" >&2
       exit 1
     fi
-    echo "no slot: $path" >&2
+    say_err "no slot: " "$path"
     exit 10
   fi
   inspect_slot "$slot" || exit 1
   local line
   case "$slot_state" in
     none)
-      echo "no slot: $path" >&2
+      say_err "no slot: " "$path"
       exit 10 ;;
     rev)
-      echo "ERROR: a repo slot (rev.$slot_kind), and verify covers file pins (use status): $path" >&2
+      say_err "ERROR: a repo slot (rev.$slot_kind), and verify covers file pins (use status): " "$path"
       exit 1 ;;
     tombstone)
       verify_record_file "$slot_file" || exit 1
       local ts_gone=0
       path_gone "$path" || ts_gone=$?
       if [ "$ts_gone" -eq 2 ]; then
-        echo "ERROR: cannot tell whether a tombstoned path is still absent, so it does not pass: $path" >&2
+        say_err "ERROR: cannot tell whether a tombstoned path is still absent, so it does not pass: " "$path"
         exit 1
       fi
       if [ "$ts_gone" -eq 1 ]; then
         IFS= read -r line <"$slot_file" || line=""
-        refused "tombstoned but present, retired content resurrected: $path"
-        echo "        $line" >&2
+        refused "tombstoned but present, retired content resurrected: " "$path"
+        say_err "        " "$line"
         exit 13
       fi
       exit 0 ;;
@@ -7080,7 +7097,7 @@ do_verify() {
   read_pin_record "$slot_file" "$slot_kind" "$path" || rec_rc=$?
   if [ "$rec_rc" -eq 2 ]; then
     echo "        re-approve to re-state the record for this path:" >&2
-    echo "        pinned review --file $path" >&2
+    say_err "        pinned review --file " "$path"
     exit 17
   fi
   [ "$rec_rc" -eq 0 ] || exit 1
@@ -7107,7 +7124,7 @@ do_verify() {
       echo "ERROR: a malformed slot, its approved copy not re-hashing to its own record: $slot/approved" >&2
       echo "  record $label:  $rec_digest" >&2
       echo "  copy   $label:  $copy_digest" >&2
-      echo "  re-approve the path to reset the slot: pinned review --file $path ..." >&2
+      say_err "  re-approve the path to reset the slot: pinned review --file " "$path"
       exit 1
     }
   fi
@@ -7117,21 +7134,21 @@ do_verify() {
   # caller's to catch at its freeze -- so 20 cannot arise there.
   local subject
   if [ -n "$frozen" ]; then
-    [ -f "$frozen" ] || { echo "ERROR: frozen copy is not a readable file: $frozen" >&2; exit 1; }
+    [ -f "$frozen" ] || { say_err "ERROR: frozen copy is not a readable file: " "$frozen"; exit 1; }
     subject="$frozen"
   else
     local gone=0
     path_gone "$path" || gone=$?
     if [ "$gone" -eq 2 ]; then
-      echo "ERROR: cannot tell whether this path exists, so it is not read as missing: $path" >&2
+      say_err "ERROR: cannot tell whether this path exists, so it is not read as missing: " "$path"
       exit 1
     fi
     if [ "$gone" -eq 0 ]; then
-      refused "pinned but missing: $path"
-      echo "        restore it, or retire it: pinned tombstone $path" >&2
+      refused "pinned but missing: " "$path"
+      say_err "        restore it, or retire it: pinned tombstone " "$path"
       exit 20
     fi
-    [ -f "$path" ] || { echo "ERROR: not a regular file: $path" >&2; exit 1; }
+    [ -f "$path" ] || { say_err "ERROR: not a regular file: " "$path"; exit 1; }
   fi
   # The invariant, always on the ORIGINAL path: owned by the tier user OR
   # root, and not group- or world-writable. Deliberately not a pinned VALUE
@@ -7159,23 +7176,23 @@ do_verify() {
     o="${owner%%:*}"
     if ! owner_admitted "$o" "$tier"; then
       if [ -n "$PINNED_ROOT_ONLY_OWNERS" ]; then
-        refused "owned by $o, expected $tier, root, or a root-only owner ($PINNED_ROOT_ONLY_OWNERS): $path"
+        refused "owned by $o, expected $tier, root, or a root-only owner ($PINNED_ROOT_ONLY_OWNERS): " "$path"
       else
-        refused "owned by $o, expected $tier (or root): $path"
+        refused "owned by $o, expected $tier (or root): " "$path"
       fi
       exit 30
     fi
     mode="$(stat_mode "$path")"
     case "$mode" in
       *[2367]?|*[2367])
-        refused "mode $mode (group/other-writable): $path"
-        echo "        fix: chmod go-w $path" >&2
+        refused "mode $mode (group/other-writable): " "$path"
+        say_err "        fix: chmod go-w " "$path"
         exit 30 ;;
     esac
   fi
 
   if [ -z "$frozen" ]; then
-    freeze_file "$path" || { echo "ERROR: cannot read $path" >&2; exit 1; }
+    freeze_file "$path" || { say_err "ERROR: cannot read: " "$path"; exit 1; }
     subject="$FROZEN_COPY"
   fi
   local live_digest
@@ -7191,7 +7208,7 @@ do_verify() {
        && ignored_keys_match "$slot" "$label" "$rec_digest" "$subject" "$baseline" "$path"; then
       exit 5
     fi
-    refused "does not match its approved record: $path"
+    refused "does not match its approved record: " "$path"
     echo "  approved $label:  $rec_digest" >&2
     echo "  live     $label:  $live_digest" >&2
     exit 11
@@ -7264,28 +7281,28 @@ do_cat() {
       echo "ERROR: cannot read the tier (are you in group $(pin_group "$tier")?): $PINNED_ROOT/$tier" >&2
       exit 1
     fi
-    echo "no slot: $path" >&2
+    say_err "no slot: " "$path"
     exit 10
   fi
   inspect_slot "$slot" || exit 1
   case "$slot_state" in
     none)
-      echo "no slot: $path" >&2
+      say_err "no slot: " "$path"
       exit 10 ;;
     rev)
       # Custody is a FILE-pin concept. A repo slot records a rev, and the
       # content behind that rev already lives in git, addressable by it --
       # there is nothing for pinned to hold a second copy of.
-      echo "ERROR: a repo slot (rev.$slot_kind), and cat serves file pins: $path" >&2
+      say_err "ERROR: a repo slot (rev.$slot_kind), and cat serves file pins: " "$path"
       echo "       a repo's content lives in git: read the approved rev from the slot (or a" >&2
       echo "       root-owned symlink at it), then ask git for the file:" >&2
-      echo "         pinned slot $path" >&2
-      echo "         git -C $path show <rev>:<file>" >&2
+      say_err "         pinned slot " "$path"
+      say_err "         git show <rev>:<file>, run in: " "$path"
       exit 1 ;;
     tombstone)
       IFS= read -r line <"$slot_file" || line=""
-      refused "tombstoned, so there is no approved content to serve: $path"
-      echo "        $line" >&2
+      refused "tombstoned, so there is no approved content to serve: " "$path"
+      say_err "        " "$line"
       exit 13 ;;
   esac
 
@@ -7295,19 +7312,20 @@ do_cat() {
   local gone=0
   path_gone "$path" || gone=$?
   if [ "$gone" -eq 2 ]; then
-    echo "ERROR: cannot tell whether this path exists, so it is not read as missing: $path" >&2
+    say_err "ERROR: cannot tell whether this path exists, so it is not read as missing: " "$path"
     exit 1
   fi
   if [ "$gone" -eq 0 ]; then
-    refused "pinned but missing, and custody does not serve a removed file: $path"
-    echo "        restore it, or retire it: pinned tombstone $path" >&2
+    refused "pinned but missing, and custody does not serve a removed file: " "$path"
+    say_err "        restore it, or retire it: pinned tombstone " "$path"
     exit 20
   fi
-  [ -f "$path" ] || { echo "ERROR: not a regular file: $path" >&2; exit 1; }
+  [ -f "$path" ] || { say_err "ERROR: not a regular file: " "$path"; exit 1; }
 
   if [ ! -e "$slot/approved" ]; then
     refused "the slot keeps no approved copy, so there is nothing to serve: $slot"
-    echo "        custody is opt-in: pinned review --file $path --store" >&2
+    untrusted_var path_disp "$path" "" 2
+    printf '        custody is opt-in: pinned review --file %s --store\n' "$path_disp" >&2
     exit 16
   fi
   [ -f "$slot/approved" ] || {
@@ -7321,7 +7339,8 @@ do_cat() {
     echo "ERROR: a malformed slot, its approved copy not re-hashing to its own record: $slot/approved" >&2
     echo "  record $REC_LABEL:  $REC_DIGEST" >&2
     echo "  copy   $REC_LABEL:  $copy_digest" >&2
-    echo "  re-approve the path to reset the slot: pinned review --file $path --store" >&2
+    untrusted_var path_disp "$path" "" 2
+    printf '  re-approve the path to reset the slot: pinned review --file %s --store\n' "$path_disp" >&2
     exit 1
   }
   # Only now, and raw. The bytes are the deliverable, so nothing decorates
@@ -7353,7 +7372,7 @@ do_rev() {
   for a in "$@"; do
     case "$a" in
       --release) release=1 ;;
-      -*) echo "unknown rev option: $a" >&2; usage ;;
+      -*) say_err "unknown rev option: " "$a"; usage ;;
       *)  [ -z "$path" ] || { echo "rev takes one repo path" >&2; usage; }
           path="$a" ;;
     esac
@@ -7370,21 +7389,21 @@ do_rev() {
       echo "ERROR: cannot read the tier (are you in group $(pin_group "$tier")?): $PINNED_ROOT/$tier" >&2
       exit 1
     fi
-    echo "no slot: $path" >&2
+    say_err "no slot: " "$path"
     exit 10
   fi
   inspect_slot "$slot" || exit 1
   case "$slot_state" in
     none)
-      echo "no slot: $path" >&2
+      say_err "no slot: " "$path"
       exit 10 ;;
     pin)
-      echo "ERROR: a file slot (pin.$slot_kind), and rev serves repo pins (verify or cat answer for a file): $path" >&2
+      say_err "ERROR: a file slot (pin.$slot_kind), and rev serves repo pins (verify or cat answer for a file): " "$path"
       exit 1 ;;
     tombstone)
       IFS= read -r line <"$slot_file" || line=""
-      refused "tombstoned, so there is no approved rev to serve: $path"
-      echo "        $line" >&2
+      refused "tombstoned, so there is no approved rev to serve: " "$path"
+      say_err "        " "$line"
       exit 13 ;;
     rev) ;;
   esac
@@ -7399,7 +7418,7 @@ do_rev() {
   rev="$(read_rev "$slot" "$path")" || rc=$?
   if [ "$rc" -eq 2 ]; then
     echo "        re-approve to re-state the record for this path:" >&2
-    echo "        pinned review $path" >&2
+    say_err "        pinned review " "$path"
     exit 17
   fi
   [ "$rc" -eq 0 ] || exit 1
@@ -7410,7 +7429,7 @@ do_rev() {
 
   if [ ! -e "$slot/release" ]; then
     refused "the slot declares no release name, so it is rev-only: $slot"
-    echo "        one is added by: pinned declare $path --release <name>" >&2
+    say_err "        one is added by: pinned declare --release <name> " "$path"
     exit 16
   fi
   [ -f "$slot/release" ] || {
@@ -7439,9 +7458,9 @@ do_words() {
   [ $# -eq 2 ] || usage
   resolve_repo "$1"
   local rev="$2" hash head_hash old_hash rec_rc=0 cls="" subj
-  case "$rev" in -*|'') echo "invalid rev: $rev" >&2; exit 1 ;; esac
+  case "$rev" in -*|'') say_err "invalid rev: " "$rev"; exit 1 ;; esac
   hash="$(sgit rev-parse -q --verify "${rev}^{commit}")" \
-    || { echo "not a commit in this repo: $rev" >&2; exit 1; }
+    || { say_err "not a commit in this repo: " "$rev"; exit 1; }
   read_rev "$default_slot" "$repo" >/dev/null 2>&1 || rec_rc=$?
   [ "$rec_rc" -ne 1 ] || read_rev "$default_slot" "$repo" >/dev/null || exit 1
   old_hash="$REC_DIGEST"
@@ -7685,15 +7704,15 @@ do_sign() {
   [ $# -eq 2 ] || usage
   local tag_name="$2"
   case "$tag_name" in
-    -*) echo "invalid tag name: $tag_name" >&2; exit 1 ;;
+    -*) say_err "invalid tag name: " "$tag_name"; exit 1 ;;
   esac
   resolve_repo "$1"
   sgit check-ref-format "refs/tags/$tag_name" \
-    || { echo "invalid tag name: $tag_name" >&2; exit 1; }
+    || { say_err "invalid tag name: " "$tag_name"; exit 1; }
 
   local hash
   hash="$(read_rev "$default_slot" "$repo")" || exit 1
-  [ -n "$hash" ] || { echo "nothing is pinned here; review it first: pinned review $repo" >&2; exit 1; }
+  [ -n "$hash" ] || { say_err "nothing is pinned here; review it first: pinned review " "$repo"; exit 1; }
 
   # An existing tag may be signed IF it already points at the pinned rev
   # (e.g. an unsigned release tag being promoted). Pointing anywhere else
@@ -7704,7 +7723,7 @@ do_sign() {
     local existing
     existing="$(sgit rev-parse "refs/tags/${tag_name}"'^{commit}')"
     if [ "$existing" != "$hash" ]; then
-      echo "ERROR: the tag exists at $existing, not the pinned $hash: $tag_name" >&2
+      say_err "ERROR: the tag exists at $existing, not the pinned $hash: " "$tag_name"
       echo "       refusing to move it -- pick another name, or review that rev first" >&2
       exit 1
     fi
@@ -8147,13 +8166,13 @@ do_list() {
       --repos) LW_REPOS=1; shift ;;
       --files) LW_FILES=1; shift ;;
       --stale) LW_STALE=1; shift ;;
-      *) echo "unknown list option: $1" >&2; usage ;;
+      *) say_err "unknown list option: " "$1"; usage ;;
     esac
   done
   case "$format" in
     text) ;;
     json) require_jq "list --format json" || exit 1 ;;
-    *) echo "unknown list format (text or json): $format" >&2; exit 1 ;;
+    *) say_err "unknown list format (text or json): " "$format"; exit 1 ;;
   esac
   # Neither type flag, or both, shows both.
   if [ "$LW_REPOS" -eq 1 ] && [ "$LW_FILES" -eq 1 ]; then LW_REPOS=0 LW_FILES=0; fi
@@ -8284,7 +8303,7 @@ do_show() {
         [ $# -ge 2 ] || { echo "--length needs a value (bits)" >&2; exit 1; }
         length="$2"; shift 2 ;;
       --) shift; break ;;
-      -*) echo "unknown option: $1" >&2; usage ;;
+      -*) say_err "unknown option: " "$1"; usage ;;
       *)  [ -z "$file" ] || { echo "show takes one file or repo" >&2; usage; }
           file="$1"; shift ;;
     esac
@@ -8348,7 +8367,7 @@ do_show() {
       echo "unsupported: b2sum computes BLAKE2b only; blake2b-256 gives the same 256-bit output" >&2
       exit 1 ;;
     *)
-      echo "unsupported algorithm (use sha256, sha384, sha512, blake2b-256/384/512, blake3): $algo" >&2
+      say_err "unsupported algorithm (use sha256, sha384, sha512, blake2b-256/384/512, blake3): " "$algo"
       exit 1 ;;
   esac
 
@@ -8378,19 +8397,19 @@ do_show() {
   case "$algo_name" in
     blake3)
       command -v b3sum >/dev/null 2>&1 || {
-        echo "blake3 requested, but the trusted PATH has no b3sum: $PATH" >&2
+        say_err "blake3 requested, but the trusted PATH has no b3sum: " "$PATH"
         echo "       install b3sum system-wide (a user-writable one would defeat the gate)" >&2
         exit 1
       } ;;
     blake2)
       command -v b2sum >/dev/null 2>&1 || {
-        echo "blake2b requested, but the trusted PATH has no b2sum: $PATH" >&2
+        say_err "blake2b requested, but the trusted PATH has no b2sum: " "$PATH"
         echo "       install GNU coreutils system-wide (a user-writable b2sum would defeat the gate)" >&2
         exit 1
       } ;;
   esac
 
-  [ -f "$file" ] || { echo "not a regular file: $file" >&2; exit 1; }
+  [ -f "$file" ] || { say_err "not a regular file: " "$file"; exit 1; }
 
   # NUL bytes cannot survive a shell variable, so the consumer wrapper could
   # never execute the file's literal bytes. Refuse rather than hash something
@@ -8406,7 +8425,7 @@ do_show() {
   # EXACTLY, and the digest below equals `shasum -a <algo> <file>`. Matching
   # the ordinary check matters: you can verify this tool with any other tool.
   local content hash nl
-  content="$(cat -- "$file"; printf x)" || { echo "cannot read: $file" >&2; exit 1; }
+  content="$(cat -- "$file"; printf x)" || { say_err "cannot read: " "$file"; exit 1; }
   content="${content%x}"
 
   # The path stands on its row, escaped; the section rule holds no value.
@@ -8489,7 +8508,7 @@ do_show_repo() {
   local hash head_hash tag diff_out ahead subj
   hash="$(read_rev "$default_slot" "$repo")" || exit 1
   [ -n "$hash" ] || {
-    echo "nothing is pinned here, and show re-displays a pin; review it first: pinned review $repo" >&2
+    say_err "nothing is pinned here, and show re-displays a pin; review it first: pinned review " "$repo"
     exit 1
   }
   # Availability up front: a rev the object store no longer holds (rewritten
@@ -8620,7 +8639,7 @@ do_signer() {
   case "$sub" in add|remove|list|path) ;; *) usage ;; esac
   # path answers with a name and parses no key, so it needs no ssh-keygen.
   [ "$sub" = "path" ] || command -v ssh-keygen >/dev/null 2>&1 \
-    || { echo "ERROR: no ssh-keygen in the trusted PATH: $PATH" >&2; exit 1; }
+    || { say_err "ERROR: no ssh-keygen in the trusted PATH: " "$PATH"; exit 1; }
 
   # --yes answers add/remove's y/N, and only with --key: the key line is
   # then on the command line. A --file key is content read after the
@@ -8641,7 +8660,7 @@ do_signer() {
       --principal)
         [ $# -ge 2 ] || { echo "--principal needs an identity" >&2; exit 1; }
         principal="$2"; shift 2 ;;
-      *) echo "unknown signer option: $1" >&2; usage ;;
+      *) say_err "unknown signer option: " "$1"; usage ;;
     esac
   done
 
@@ -8676,7 +8695,7 @@ do_signer() {
       target="$(policy_dir_for "$tier")/allowed_signers"
     fi
     if [ ! -f "$target" ]; then
-      echo "no signers file: $target" >&2
+      say_err "no signers file: " "$target"
       exit 1
     fi
     printf '%s\n' "$target"
@@ -8696,7 +8715,7 @@ do_signer() {
   fi
   local line
   if [ -n "$keyfile" ]; then
-    [ -f "$keyfile" ] || { echo "not a readable file: $keyfile" >&2; exit 1; }
+    [ -f "$keyfile" ] || { say_err "not a readable file: " "$keyfile"; exit 1; }
     IFS= read -r line <"$keyfile" || line=""
   else
     line="$keyline"
@@ -8790,9 +8809,9 @@ EOF
     printf '%s✓ added:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$fp"
     log_action signer-add "$target" "${fp##*SHA256:}"
   else
-    [ -f "$target" ] || { echo "no signers file: $target" >&2; exit 1; }
+    [ -f "$target" ] || { say_err "no signers file: " "$target"; exit 1; }
     if ! grep -qF "$keyblob" "$target"; then
-      echo "key not present in $target" >&2
+      say_err "key not present in the signers file: " "$target"
       exit 1
     fi
     ensure_tree "$inv"
@@ -8888,7 +8907,7 @@ do_ignorable() {
         [ $# -ge 2 ] || { echo "--under needs a directory" >&2; exit 1; }
         under="$2"; shift 2 ;;
       --yes) yes=1; shift ;;
-      -*) echo "unknown ignorable option: $1" >&2; usage ;;
+      -*) say_err "unknown ignorable option: " "$1"; usage ;;
       *)  [ -z "$key" ] || { echo "ignorable $sub takes one key" >&2; usage; }
           key="$1"; shift ;;
     esac
@@ -8940,12 +8959,14 @@ do_ignorable() {
   dup="$(jq -n --argjson e "$POL_USER" --argjson p "$path_json" --arg u "$under" \
     '[ $e[] | select(.path == $p and ((.under // "") == $u)) ] | length')"
   if [ -n "$under" ]; then scope_disp="under $under"; else scope_disp="everywhere"; fi
+  local scope_err
+  untrusted_var scope_err "$scope_disp" "" 2
 
   if [ "$sub" = add ]; then
     [ "$dup" -eq 0 ] || {
       # Two values, the key and its scope: each on a row of its own.
       refused "already granted"
-      printf '        key:    %s\n        scope:  %s\n' "$key" "$scope_disp" >&2
+      printf '        key:    %s\n        scope:  %s\n' "$key" "$scope_err" >&2
       echo "        a second identical entry would say nothing new; the entries are listed by: pinned ignorable list" >&2
       exit 1
     }
@@ -8961,7 +8982,7 @@ do_ignorable() {
   else
     [ "$dup" -gt 0 ] || {
       refused "no such grant to withdraw"
-      printf '        key:    %s\n        scope:  %s\n' "$key" "$scope_disp" >&2
+      printf '        key:    %s\n        scope:  %s\n' "$key" "$scope_err" >&2
       echo "        remove takes the exact entry -- same key and same scope; the entries are" >&2
       echo "        listed by: pinned ignorable list" >&2
       exit 1
@@ -8975,7 +8996,7 @@ do_ignorable() {
   # goes ahead, and a refusal prints none.
   if [ "$sub" = add ] && [ "$covered" -eq 0 ] && [ "$yes" -eq 1 ]; then
     refused "the machine policy does not cover this scope: $PINNED_MACHINE_POLICY"
-    printf '        key:    %s\n        scope:  %s\n' "$key" "$scope_disp" >&2
+    printf '        key:    %s\n        scope:  %s\n' "$key" "$scope_err" >&2
     echo "        the grant would be recorded but not effective; widen the machine policy first," >&2
     echo "        or run it without --yes to record it anyway (see: pinned ignorable list)" >&2
     exit 1
