@@ -3014,7 +3014,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   ANS=""
   run_pinned status "$REPO_DC"
   assert_exit "$RC" 0 "status exits 0 on a declared slot"
-  assert_contains "$OUT" "declared:   v1" "status shows the declared name"
+  assert_contains "$OUT" "release:    v1" "status shows the declared name"
   assert_missing "$OUT" "deploy syncs ref=" \
     "a live declaration is the normal state: its row alone, no detail line"
   ANS=""
@@ -3128,7 +3128,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   ANS=""
   run_pinned status "$REPO_DC"
   assert_exit "$RC" 0 "status answers over a slot holding both records"
-  assert_contains "$OUT" "declared:   v1" "status reads release"
+  assert_contains "$OUT" "release:    v1" "status reads release"
   assert_missing "$OUT" "legacy-name" "and never the old record"
   ANS=""
   run_pinned_split list --format json --under "$REPO_DC"

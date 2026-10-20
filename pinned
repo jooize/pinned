@@ -7562,10 +7562,10 @@ do_status() {
     local decl_tag="" decl_live
     if [ -f "$slot/release" ]; then IFS= read -r decl_tag <"$slot/release" || decl_tag=""; fi
     if [ -z "$decl_tag" ]; then
-      printf '%sdeclared:%s   (none)  %s(rev-only; deploy leaves ref= alone)%s\n' \
+      printf '%srelease:%s    (none)  %s(rev-only; deploy leaves ref= alone)%s\n' \
         "$C_DIM" "$C_OFF" "$C_DIM" "$C_OFF"
     elif ! validate_release_name "$decl_tag"; then
-      printf '%sdeclared:%s   %s✗ outside the declared-name grammar -- deploy will refuse%s\n' \
+      printf '%srelease:%s    %s✗ outside the declared-name grammar -- deploy will refuse%s\n' \
         "$C_DIM" "$C_OFF" "$C_RED$C_B" "$C_OFF"
     else
       decl_live="$(sgit rev-parse -q --verify "refs/tags/${decl_tag}"'^{commit}' 2>/dev/null || true)"
@@ -7574,13 +7574,13 @@ do_status() {
       # a live declaration is the normal one (deploy syncs ref= to it), so
       # it is the row alone; a stale one says what deploy will do about it.
       if [ "$decl_live" = "$hash" ]; then
-        printf '%sdeclared:%s   %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$decl_tag" "$C_OFF"
+        printf '%srelease:%s    %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$decl_tag" "$C_OFF"
       elif [ -z "$decl_live" ]; then
-        printf '%sdeclared:%s   %s\n' "$C_DIM" "$C_OFF" "$decl_tag"
+        printf '%srelease:%s    %s\n' "$C_DIM" "$C_OFF" "$decl_tag"
         printf '            %s✗ the live tag is missing from this checkout -- deploy will refuse%s\n' \
           "$C_RED$C_B" "$C_OFF"
       else
-        printf '%sdeclared:%s   %s\n' "$C_DIM" "$C_OFF" "$decl_tag"
+        printf '%srelease:%s    %s\n' "$C_DIM" "$C_OFF" "$decl_tag"
         printf '            %s✗ the live tag names %.10s, not the pin -- deploy will refuse%s\n' \
           "$C_RED$C_B" "$decl_live" "$C_OFF"
       fi
