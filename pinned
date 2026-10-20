@@ -910,6 +910,19 @@ say_cmd() { # <text> <word>
   say_err "$1" "$_sc_q"
 }
 
+# A command line for the reader to paste, each word quoted (shq) and joined by
+# one space, into the variable $1. The caller escapes the line for display
+# (untrusted_var), since the whole line is the value of the row it ends.
+shq_line() { # <var> <word>...
+  local _sl_var="$1" _sl_out="" _sl_w _sl_q
+  shift
+  for _sl_w in "$@"; do
+    shq _sl_q "$_sl_w"
+    _sl_out="${_sl_out:+$_sl_out }$_sl_q"
+  done
+  printf -v "$_sl_var" '%s' "$_sl_out"
+}
+
 # A body of third-party bytes (stdin) through the escaper in mode $1 (doc or
 # diff), then the colorizer $2 (empty: untrusted_mark, which only styles the
 # escapes), into UT_OUT; UT_CRLF is 1 when a doc's line endings are CRLF, for
@@ -7787,10 +7800,13 @@ do_sign() {
   # escaped: a ref name may hold a character that draws nothing.
   untrusted_var tag_disp "$tag_name"
   printf '%s✓ signed at %s%.10s%s%s:%s %s\n' "$C_GRN$C_B" "$C_OFF$C_CYN" "$hash" "$C_OFF" "$C_GRN$C_B" "$C_OFF" "$tag_disp"
-  local tag_q
-  shq tag_q "$tag_name"
-  untrusted_var tag_q "$tag_q" "$C_DIM"
-  printf '%s  consumers verify it against their allowed_signers: pinned review --signed-tag %s%s\n' "$C_DIM" "$tag_q" "$C_OFF"
+  # The command a consumer runs to approve by the signature: review takes
+  # the repo first, so the hint names this checkout, each word quoted and
+  # the line escaped.
+  local verify_cmd
+  shq_line verify_cmd pinned review "$repo" --signed-tag "$tag_name"
+  untrusted_var verify_cmd "$verify_cmd" "$C_DIM"
+  printf '%s  consumers verify it against their allowed_signers: %s%s\n' "$C_DIM" "$verify_cmd" "$C_OFF"
   log_action sign "$repo" "$hash"
 }
 

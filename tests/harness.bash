@@ -5909,7 +5909,7 @@ for sh in bash zsh fish; do
 done
 
 # ---------------------------------------------------------------------------
-say "S27: sign shows the tag name escaped"
+say "S27: sign shows the tag escaped and hands consumers the whole command"
 # A throwaway ssh key signs through a fixture git config (sign uses the
 # user's git config on purpose: it supplies the signing key). The repo path
 # holds a quote and a space, the tag a zero-width space.
@@ -5928,6 +5928,8 @@ if [ "$GIT_OK" -eq 1 ] && command -v ssh-keygen >/dev/null 2>&1; then
   assert_exit "$RC" 0 "sign signs the pinned rev"
   assert_contains "$OUT" "v1${BS}u{200B}" "the verdict shows the tag name escaped"
   assert_missing "$OUT" "$ZW" "and never raw"
+  assert_line "$OUT" "  consumers verify it against their allowed_signers: pinned review '$FIX/sign it'${BS}''s' --signed-tag 'v1${BS}u{200B}'" \
+    "the hint is the whole review command, the repo first, each word quoted"
   GIT_CONFIG_GLOBAL="$FIX/sign.gitconfig" run_pinned sign "$REPO_S" "v1${ZW}"
   assert_exit "$RC" 0 "re-signing in place succeeds"
   assert_line "$OUT" "note: the tag already points at the pinned rev; re-signing it in place: v1${BS}u{200B}" \
