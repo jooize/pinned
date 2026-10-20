@@ -721,13 +721,15 @@ untrusted_fail() {
 # One value for a row (a subject, a path, a name), escaped into the variable
 # $1. $3 is the color the row is in at that point, resumed after each escape
 # so the reverse red stops exactly where the escape does; $4 = 2 styles for
-# stderr. Printable ASCII with no backslash is its own escaped form, so it
-# skips the process (the case runs under LC_ALL=C: [:print:] is then the
-# ASCII range, whatever the caller's locale). Called directly, never inside a
-# command substitution, so untrusted_fail exits the process and not a subshell.
+# stderr, 0 for no style at all (a width count). Printable ASCII with no
+# backslash is its own escaped form, so it skips the process (the case runs
+# under LC_ALL=C: [:print:] is then the ASCII range, whatever the caller's
+# locale). Called directly, never inside a command substitution, so
+# untrusted_fail exits the process and not a subshell.
 untrusted_var() { # <var> <text> [resume-SGR] [stream]
   local _uv_rv="$C_RV" _uv_out LC_ALL=C
   [ "${4:-1}" != 2 ] || _uv_rv="$C2_RV"
+  [ "${4:-1}" != 0 ] || _uv_rv=''
   case "$2" in
     *[![:print:]]*|*\\*) ;;
     *) printf -v "$1" '%s' "$2"; return 0 ;;
@@ -3731,19 +3733,26 @@ fi
 # the path is rooted -- /run, /nix and /usr against /Users), the rest of the
 # directory plain, the basename bold blue (the program the human sets
 # running). A bare name has no directory and is bold blue whole. Scoped to
-# the program token: arguments stay plain.
-prog_disp() { # <program-path-or-name>
-  local dir first rest
-  case "$1" in
+# the program token: arguments stay plain. Into the variable $1, each part
+# escaped in its own color (the path is bytes this script did not choose).
+# Called directly, so a failing escaper ends the process (untrusted_var).
+prog_disp() { # <var> <program-path-or-name>
+  local _pd_dir _pd_first _pd_rest _pd_base
+  case "$2" in
     */*)
-      dir="${1%/*}/"
-      first="${dir#/}"
-      first="${first%%/*}"
-      case "$dir" in /*) first="/$first" ;; esac
-      rest="${dir#"$first"}"
-      printf '%s%s%s%s%s%s%s' "$C_CYN$C_B" "$first" "$C_OFF" "$rest" "$C_BLU" "${1##*/}" "$C_OFF" ;;
+      _pd_dir="${2%/*}/"
+      _pd_first="${_pd_dir#/}"
+      _pd_first="${_pd_first%%/*}"
+      case "$_pd_dir" in /*) _pd_first="/$_pd_first" ;; esac
+      _pd_rest="${_pd_dir#"$_pd_first"}"
+      untrusted_var _pd_first "$_pd_first" "$C_CYN$C_B"
+      untrusted_var _pd_rest "$_pd_rest"
+      untrusted_var _pd_base "${2##*/}" "$C_BLU"
+      printf -v "$1" '%s%s%s%s%s%s%s' "$C_CYN$C_B" "$_pd_first" "$C_OFF" "$_pd_rest" \
+        "$C_BLU" "$_pd_base" "$C_OFF" ;;
     *)
-      printf '%s%s%s' "$C_BLU" "$1" "$C_OFF" ;;
+      untrusted_var _pd_base "$2" "$C_BLU"
+      printf -v "$1" '%s%s%s' "$C_BLU" "$_pd_base" "$C_OFF" ;;
   esac
 }
 
@@ -3754,6 +3763,20 @@ elevation_quote() { # token
     *[!A-Za-z0-9_/.:=-]*) printf "'%s'" "$1" ;;
     *)                    printf '%s' "$1" ;;
   esac
+}
+
+# One token of a displayed command line, quoted and escaped into the variable
+# $1: a hidden character in an argument shows as its escape on the line the
+# human authenticates, never raw. $3 is the color the token prints in,
+# resumed after each escape. The quoting runs in this shell (printf -v), not
+# a command substitution, so a token's trailing newline is not stripped.
+elevation_token() { # <var> <token> [resume-SGR]
+  local _et_q
+  case "$2" in
+    *[!A-Za-z0-9_/.:=-]*) printf -v _et_q "'%s'" "$2" ;;
+    *)                    _et_q="$2" ;;
+  esac
+  untrusted_var "$1" "$_et_q" "${3:-}"
 }
 
 # The exact argv sudo is about to run, one flag-group per line so a long verb
@@ -3790,10 +3813,17 @@ elevation_quote() { # token
 # codes go into the DISPLAY string only; the exec sites build argv from the
 # variables, never from this. Continuation lines carry a trailing ` \` so the
 # whole block stays pasteable.
-elevation_cmd_disp() { # elev action args...
-  local elev="$1" act="$2"
-  shift 2
-  local fl=() fv=() lead="" seen=0 tok val fw=0
+#
+# EVERY TOKEN IS ESCAPED (elevation_token, prog_disp): the program path, the
+# leading positionals, each flag and each value are bytes the caller chose,
+# and a hidden character in one must show as its escape on the line the
+# human authenticates. The flag column is padded by the escaped width, the
+# width the reader sees. The block lands in the variable $1, built in this
+# shell, so a failing escaper ends the process before a partial line prints.
+elevation_cmd_disp() { # var elev action args...
+  local _ecd_var="$1" elev="$2" act="$3"
+  shift 3
+  local fl=() fv=() lead="" seen=0 tok val fw=0 tok_w tok_d
   while [ "$#" -gt 0 ]; do
     tok="$1"; shift
     case "$tok" in
@@ -3807,11 +3837,13 @@ elevation_cmd_disp() { # elev action args...
           esac
         fi
         fl+=("$tok"); fv+=("$val")
-        [ "${#tok}" -gt "$fw" ] && fw="${#tok}"
+        untrusted_var tok_w "$tok" "" 0
+        [ "${#tok_w}" -gt "$fw" ] && fw="${#tok_w}"
         ;;
       *)
         if [ "$seen" -eq 0 ]; then
-          lead="${lead:+$lead }$(elevation_quote "$tok")"
+          elevation_token tok_d "$tok"
+          lead="${lead:+$lead }$tok_d"
         else
           fl+=(""); fv+=("$tok")     # stray positional after a flag: own line
         fi
@@ -3819,7 +3851,9 @@ elevation_cmd_disp() { # elev action args...
     esac
   done
 
-  local out="${C_B}sudo${C_OFF} -- $(prog_disp "$elev") ${act}${lead:+ $lead}"
+  local prog
+  prog_disp prog "$elev"
+  local out="${C_B}sudo${C_OFF} -- ${prog} ${act}${lead:+ $lead}"
   # The flag that opens a group for this verb, if any. review is the one verb
   # that takes repeated per-subject groups (--file, then that file's
   # --baseline and --ignore-json-key); every other verb has a flat flag list
@@ -3832,7 +3866,7 @@ elevation_cmd_disp() { # elev action args...
   # row pads its flag 2 wider, exactly absorbing the step its subordinates
   # take, so every value on the block lands in the same place whichever level
   # its flag sits at. Without grouping there is one level and one width.
-  local n="${#fl[@]}" i=0 name padded vcol pw
+  local n="${#fl[@]}" i=0 name name_w name_d padded vcol pw
   while [ "$i" -lt "$n" ]; do
     name="${fl[$i]}"
     pw="$fw"
@@ -3847,23 +3881,26 @@ elevation_cmd_disp() { # elev action args...
       if [ -n "$group" ]; then pw=$((fw + 2)); fi
     fi
     # Pad OUTSIDE the color so values align: %-*s would count escape bytes.
-    printf -v padded '%*s' "$((pw - ${#name}))" ''
-    [ -z "$name" ] || padded="${C_BLU}${name}${C_OFF}${padded}"
+    untrusted_var name_w "$name" "" 0
+    untrusted_var name_d "$name" "$C_BLU"
+    printf -v padded '%*s' "$((pw - ${#name_w}))" ''
+    [ -z "$name" ] || padded="${C_BLU}${name_d}${C_OFF}${padded}"
     if [ -n "${fv[$i]}" ]; then
       case "$name" in
         --baseline|--baseline-store) vcol="$C_DIM" ;;
         *)          vcol="" ;;
       esac
-      out="$out \\"$'\n'"${ind}${padded}  ${vcol}$(elevation_quote "${fv[$i]}")${vcol:+$C_OFF}"
+      elevation_token tok_d "${fv[$i]}" "$vcol"
+      out="$out \\"$'\n'"${ind}${padded}  ${vcol}${tok_d}${vcol:+$C_OFF}"
     else
       # No value: emit the bare flag. Padding it would leave trailing blanks
       # before the ` \`, which survive a copy-paste and read as a truncated
       # value on the line the human is auditing.
-      out="$out \\"$'\n'"${ind}${C_BLU}${name}${C_OFF}"
+      out="$out \\"$'\n'"${ind}${C_BLU}${name_d}${C_OFF}"
     fi
     i=$((i + 1))
   done
-  printf '%s' "$out"
+  printf -v "$_ecd_var" '%s' "$out"
 }
 
 # The last line before sudo: what the authentication buys, and a pause to
@@ -4517,7 +4554,8 @@ case "$action" in
           printf '%sThe preview above was orientation only. The sudo ceremony re-derives\n' "$C_DIM"
           printf 'everything it displays, and nothing is pinned until you confirm there.%s\n\n' "$C_OFF"
         fi
-        printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
+        elevation_cmd_disp elev_cmd "$elev" "$action" "$@"
+        printf '  %s\n\n' "$elev_cmd"
         # What the gate counts is what the root side will actually do: the
         # files named on the command line, or the repos that survived the
         # preview's already-pinned skip. --words has no gate here: its caller
@@ -4543,7 +4581,8 @@ case "$action" in
         # authentication as the consent: whether sudo asks is the system's
         # policy, and a cached credential asks nothing.
         contract_line record "$@"
-        printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
+        elevation_cmd_disp elev_cmd "$elev" "$action" "$@"
+        printf '  %s\n\n' "$elev_cmd"
         if [ "$action" = "tombstone" ]; then
           elevation_gate "tombstone the record" "slot unchanged" "$@"
         elif [ "$action" = "rekey" ]; then
@@ -4637,7 +4676,8 @@ case "$action" in
           # confirms before writing.
           if [ "$elev" = "$INSTALL_TARGET" ]; then
             contract_line "$([ "$action" = signer ] && echo "key" || echo "grant")" "$@"
-            printf '  %s\n\n' "$(elevation_cmd_disp "$elev" "$action" "$@")"
+            elevation_cmd_disp elev_cmd "$elev" "$action" "$@"
+            printf '  %s\n\n' "$elev_cmd"
             # The verb reads off the sub-verb: what root does with the key or
             # the grant, in the words the ceremony itself uses.
             case "$action $1" in

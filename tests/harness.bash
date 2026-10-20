@@ -2639,6 +2639,20 @@ n
   assert_exit "$RC" 97 "two files reach the elevation too"
   assert_contains "$OUT" "review 2 files as root" "the gate counts both files"
 
+  # Every argv element is escaped on the sudo line: a tab in a path (an
+  # argument, a single-line field) shows as its escape, never raw.
+  printf 'tab\n' > "$SUB/tab"$'\t'"name.txt"
+  ANS='
+'
+  run_preview review --file "$SUB/tab"$'\t'"name.txt"
+  assert_exit "$RC" 97 "a path holding a tab reaches the elevation"
+  assert_contains "$OUT" "'$SUB/tab${BS}u{9}name.txt'" "the sudo line shows the tab as its escape"
+  if grep -q "$(printf '\t')" "$OUT"; then
+    fail "no raw tab reaches the sudo line"
+  else
+    ok "no raw tab reaches the sudo line"
+  fi
+
   # --- the display GROUPS each --file with the flags scoped to it -----------
   # --ignore-json-key binds POSITIONALLY to the --file it follows (arg parsing
   # refuses one that precedes any --file). A flat column of continuation lines
@@ -4276,6 +4290,9 @@ ANS=""
 run_preview rekey "$SUB/mv/zw${ZW}from.txt" "$SUB/mv/zw${ZW}to.txt"
 assert_contains "$OUT" "old:        gone  $SUB/mv/zw${BS}u{200B}from.txt" "the preview escapes the old path"
 assert_contains "$OUT" "new:              $SUB/mv/zw${BS}u{200B}to.txt" "and the new one"
+assert_contains "$OUT" "rekey '$SUB/mv/zw${BS}u{200B}from.txt' '$SUB/mv/zw${BS}u{200B}to.txt'" \
+  "the sudo line escapes both paths too"
+assert_missing "$OUT" "$ZW" "no raw zero-width space anywhere before sudo"
 ANS='y
 '
 run_pinned rekey "$SUB/mv/zw${ZW}from.txt" "$SUB/mv/zw${ZW}to.txt"
