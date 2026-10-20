@@ -2361,13 +2361,16 @@ ancestry_class() {
 # an abbreviated rev, so the width is deterministic.
 # $1 = class, $2 = pinned rev, $3 = candidate rev, $4 = merge base (diverged
 # only; empty when the two revs have no common ancestor in this checkout).
-# The transition's `→` is budgeted as two columns (it is ambiguous width):
-# the line is padded with a two-character stand-in, then the stand-in becomes
-# the arrow, so the ruled-off column is right wherever `→` draws two and one
-# column short where it draws one.
+# The transition's `→` counts as one column, as Ghostty draws it: the line
+# is padded in its ASCII form, where ` -> ` is one column wider than ` → `,
+# so a line holding it pads to one more, then the stand-in becomes the
+# arrow. The ruled-off column is right where `→` draws one column; where it
+# draws two (East Asian widths), that line's `!!!` sits one column right,
+# which cuts nothing.
 _alarm_line() {
-  local l
-  printf -v l '%-54s' "$1"
+  local l w=54
+  case "$1" in *" -> "*) w=55 ;; esac
+  printf -v l '%-*s' "$w" "$1"
   printf '%s!!! %s !!!%s\n' "$C_RED$C_B" "${l/ -> / → }" "$C_OFF"
 }
 print_ancestry_alarm() {

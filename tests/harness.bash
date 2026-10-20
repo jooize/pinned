@@ -2385,6 +2385,10 @@ y
   assert_before "$OUT" "candidate:  $G_C1" "!!! BACKWARD:" "the alarm sits between the rows and the question"
   assert_contains "$OUT" "!!! BACKWARD: ${G_C2:0:10} → ${G_C1:0:10}" "the alarm draws the move with an arrow"
   G_AL="$(grep -n -m1 '!!! BACKWARD:' "$OUT" | cut -d: -f1)"
+  # Ruled off to one column with the arrow counted as one, as Ghostty draws
+  # it: all three lines are the same number of characters.
+  assert_eq "$(sed -n "${G_AL},$((G_AL + 2))p" "$OUT" | perl -CS -nle 'print length' | sort -u | wc -l | tr -d ' ')" 1 \
+    "the alarm lines rule off at one column, the arrow counted as one"
   assert_eq "$(tail -n +"$G_AL" "$OUT" | grep -cE '^(--- |[0-9a-f]{7,}  )' || true)" 0 \
     "no listing row or section follows the alarm"
 
