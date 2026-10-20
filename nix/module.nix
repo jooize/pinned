@@ -61,8 +61,10 @@ let
       # The system profile is a root-owned symlink farm into /nix/store
       # (changing it needs root, same as /usr/bin); it goes first so a
       # machine with a newer git/coreutils uses them.
-      from = "export PATH=/usr/bin:/bin:/usr/sbin:/sbin";
-      to = "export PATH=/run/current-system/sw/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+      # Whole line, newlines included, like the anchors around it: the bare
+      # assignment could recur inside a comment that quotes it.
+      from = "\nexport PATH=/usr/bin:/bin:/usr/sbin:/sbin\n";
+      to = "\nexport PATH=/run/current-system/sw/bin:/usr/bin:/bin:/usr/sbin:/sbin\n";
     }
     {
       # The accounts whose files verify's owner invariant admits alongside
@@ -86,8 +88,11 @@ let
   scriptText =
     assert lib.assertMsg (lib.hasPrefix "${shebang.from}\n" srcText)
       "pinned/nix: line 1 of ../pinned is not exactly `${shebang.from}`; update module.nix";
-    assert lib.assertMsg (lib.all (a: lib.hasInfix a.from body) anchors)
-      "pinned/nix: an anchor line was not found in ../pinned; update module.nix";
+    # Exactly once each: replaceStrings rewrites every occurrence, so a
+    # second copy of an anchor line would be rewritten as silently as a
+    # missing one would be skipped.
+    assert lib.assertMsg (lib.all (a: builtins.length (lib.splitString a.from body) == 2) anchors)
+      "pinned/nix: an anchor line is not in ../pinned exactly once; update module.nix";
     shebang.to + builtins.replaceStrings (map (a: a.from) anchors) (map (a: a.to) anchors) body;
 
   package = pkgs.writeScriptBin "pinned" scriptText;
