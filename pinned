@@ -1377,7 +1377,7 @@ refuse_commits_count() {
 # stray empty line, so the separator before the handoff belongs to whoever
 # called us (see the hardening shim's claude wrapper).
 ceremony_banner() {
-  printf '%s=== pinned: review (authoritative) ===%s\n' "$C_B" "$C_OFF"
+  printf '%s=== pinned: review, as root ===%s\n' "$C_B" "$C_OFF"
 }
 
 # ---- review-display highlighters -------------------------------------------

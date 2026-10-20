@@ -624,8 +624,8 @@ before handing off), and two speakers sharing a screen must not read as
 one.
 
 - **Banners name the program and bracket authority.** The ceremony opens
-  with `=== pinned: review (authoritative) ===`; a caller's own preview
-  opens with its own name and says `(orientation preview)`. Everything
+  with `=== pinned: review, as root ===`, printed by the root process as
+  it takes the screen; a caller's own preview wears no `===`. Everything
   between a banner and the next one belongs to that speaker. One speaker
   per banner region -- pinned never prints inside a caller's block, and a
   caller never annotates inside pinned's.
