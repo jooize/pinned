@@ -130,6 +130,18 @@ let
 
   validUser = user: builtins.match "[A-Za-z_][A-Za-z0-9_-]*" user != null;
 
+  # A path spliced into sudoers (installPath) must hold nothing sudoers
+  # parses: no blank, comma, colon, equals sign, backslash, quote, `#` or
+  # newline, and no `*`, `?` or `[` that it would read as a wildcard. So
+  # the same narrow class as validUser, plus the `.`, `/` and `+` that
+  # store and profile paths use: absolute, every component a plain name,
+  # never `.` or `..`, and no trailing slash (sudoers reads a path ending in
+  # `/` as every command in that directory).
+  validPath = path:
+    builtins.match "(/[A-Za-z0-9._+-]+)+" path != null
+    && !(lib.elem "." (lib.splitString "/" path))
+    && !(lib.elem ".." (lib.splitString "/" path));
+
   # Every group this module owns, one definition feeding both provisioning
   # modes and both platforms: one read group per configured user.
   allGroups =
@@ -285,6 +297,10 @@ in
           # into the installed bytes verbatim.
           assertion = lib.all validUser cfg.rootOnlyOwners;
           message = "security.pinned.rootOnlyOwners: account names must match [A-Za-z_][A-Za-z0-9_-]* (they are spliced into the installed script)";
+        }
+        {
+          assertion = validPath cfg.installPath;
+          message = "security.pinned.installPath must be an absolute path of /-separated [A-Za-z0-9._+-] names, none `.` or `..`, with no trailing slash (it is spliced into sudoers)";
         }
         {
           # A stray key would otherwise be a silent no-op while its group
