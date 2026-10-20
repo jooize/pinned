@@ -461,8 +461,8 @@ verify_root_owned_path() {
     *)
       error "owned by $owner, expected owner root: " "$path"
       echo "        fix manually, root:wheel and mode 755:" >&2
-      say_err "          sudo chown root:wheel " "$path"
-      say_err "          sudo chmod 755 " "$path"
+      say_cmd "          sudo chown root:wheel " "$path"
+      say_cmd "          sudo chmod 755 " "$path"
       return 1 ;;
   esac
   case "$mode" in
@@ -872,6 +872,42 @@ say_err() { # <text> <value>
   local _se_v
   untrusted_var _se_v "$2" "" 2
   printf '%s%s\n' "$1" "$_se_v" >&2
+}
+
+# One word of a command line the reader may paste, quoted into the variable
+# $1 so that bash, zsh and fish all read it back as the same bytes: bare when
+# every character is one no shell treats specially and the first is not `=`
+# (zsh expands =name to a command's path), else in single quotes. A quote
+# inside is written '\'' and a backslash '\\', both outside the quotes: fish
+# reads \' and \\ as escapes even inside single quotes, and all three read an
+# unquoted \\ as one backslash. The caller escapes the result for display
+# (untrusted_var), so a word holding a hidden character shows its escape, and
+# a line that would not paste as shown never pretends to. printf -v, not a
+# command substitution, so a trailing newline is kept.
+shq() { # <var> <word>
+  local LC_ALL=C _sq_out="" _sq_c _sq_i
+  case "$2" in
+    =*|''|*[!A-Za-z0-9._/+@:,=-]*) ;;
+    *) printf -v "$1" '%s' "$2"; return 0 ;;
+  esac
+  for ((_sq_i = 0; _sq_i < ${#2}; _sq_i++)); do
+    _sq_c="${2:_sq_i:1}"
+    case "$_sq_c" in
+      "'")  _sq_out+="'\\''" ;;
+      \\)   _sq_out+="'\\\\'" ;;
+      *)    _sq_out+="$_sq_c" ;;
+    esac
+  done
+  printf -v "$1" "'%s'" "$_sq_out"
+}
+
+# A pasteable hint on stderr that ends on one word the reader's shell must
+# read back as given (a path, a key): the text, then the word quoted (shq)
+# and escaped for stderr. Called directly, like say_err.
+say_cmd() { # <text> <word>
+  local _sc_q
+  shq _sc_q "$2"
+  say_err "$1" "$_sc_q"
 }
 
 # A body of third-party bytes (stdin) through the escaper in mode $1 (doc or
@@ -2462,7 +2498,7 @@ ancestry_gate() {
   else
     echo "        the pinned line of history is being abandoned" >&2
   fi
-  say_err "        declare it to proceed: pinned review --$actual " "$p"
+  say_cmd "        declare it to proceed: pinned review --$actual " "$p"
   return 1
 }
 
@@ -2790,7 +2826,7 @@ ensure_tree() {
     [ -f "$old_decl" ] || continue
     if [ -e "$d/release" ]; then
       error "a slot holds both a tag and a release record, and release is the one that is read: " "$d"
-      say_err "        inspect both, remove the old one by hand, and re-run: rm " "$old_decl"
+      say_cmd "        inspect both, remove the old one by hand, and re-run: rm " "$old_decl"
       survivors=$((survivors + 1))
       continue
     fi
@@ -3503,11 +3539,13 @@ policy_check_declaration() { # $1 effective policy  $2 declared paths  $3 abs pa
 $names
 EOF
   echo "        grant them first -- each is its own root ceremony:" >&2
-  local k_disp under_disp
-  untrusted_var under_disp "$(dirname "$3")" "" 2
+  local k_disp under_disp wq
+  shq wq "$(dirname "$3")"
+  untrusted_var under_disp "$wq" "" 2
   while IFS= read -r k; do
     [ -n "$k" ] || continue
-    untrusted_var k_disp "$k" "" 2
+    shq wq "$k"
+    untrusted_var k_disp "$wq" "" 2
     printf '          sudo pinned ignorable add %s --under %s\n' "$k_disp" "$under_disp" >&2
   done <<EOF
 $names
@@ -3923,19 +3961,15 @@ prog_disp() { # <var> <program-path-or-name>
 }
 
 # One token of a displayed command line, quoted and escaped into the variable
-# $1. Quoting: single quotes around anything outside the pasteable safe set,
-# so a path with a space stays one copyable argument. Escaping: a hidden
-# character in an argument shows as its escape on the line the human
-# authenticates, never raw. $3 is the color the token prints in, resumed
-# after each escape; $4 = 2 for stderr. The quoting runs in this shell
-# (printf -v), not a command substitution, so a token's trailing newline is
-# not stripped.
+# $1. Quoting: shq, so a path with a space stays one copyable argument that
+# bash, zsh and fish read back as the same bytes. Escaping: a hidden character
+# in an argument shows as its escape on the line the human authenticates,
+# never raw. $3 is the color the token prints in, resumed after each escape;
+# $4 = 2 for stderr. The quoting runs in this shell (printf -v), not a
+# command substitution, so a token's trailing newline is not stripped.
 elevation_token() { # <var> <token> [resume-SGR] [stream]
   local _et_q
-  case "$2" in
-    *[!A-Za-z0-9_/.:=-]*) printf -v _et_q "'%s'" "$2" ;;
-    *)                    _et_q="$2" ;;
-  esac
+  shq _et_q "$2"
   untrusted_var "$1" "$_et_q" "${3:-}" "${4:-1}"
 }
 
@@ -5217,7 +5251,7 @@ do_approve() {
       if [ ! -f "$signers" ]; then
         error "no allowed signers for this repo"
         echo "  install the signer's public key with the signer ceremony:" >&2
-        say_err "    per-repo: pinned signer add --file <pubkey> --principal <id> --repo " "$repo"
+        say_cmd "    per-repo: pinned signer add --file <pubkey> --principal <id> --repo " "$repo"
         echo "    user:     pinned signer add --file <pubkey> --principal <id>" >&2
         echo "  obtain the key out of band (printed card, password manager," >&2
         echo "  existing trusted machine) -- never from this repo." >&2
@@ -5406,7 +5440,7 @@ do_approve() {
           want="$(commit_words "$hash")"
           if [ "${want// /-}" != "$words_arg" ]; then
             error "the words do not match $hash; pin unchanged"
-            say_err "  review it the usual way: pinned review " "$repo"
+            say_cmd "  review it the usual way: pinned review " "$repo"
             log_action approve "$repo" "$hash" words-mismatch
             exit 1
           fi
@@ -5419,7 +5453,7 @@ do_approve() {
           n_since="$(sgit rev-list --count "${old_hash}..${hash}")"
           if [ "$n_since" != "$commits_arg" ]; then
             refuse_commits_count "$n_since" "$commits_arg"
-            say_err "  review it the usual way: pinned review " "$repo"
+            say_cmd "  review it the usual way: pinned review " "$repo"
             log_action approve "$repo" "$hash" commits-mismatch
             exit 1
           fi
@@ -5825,7 +5859,7 @@ do_approve_files() {
     esac
     if [ ! -f "$path" ]; then
       error "not a regular file: " "$path"
-      say_err "        a pinned file that is gone is retired with: pinned tombstone " "$path"
+      say_cmd "        a pinned file that is gone is retired with: pinned tombstone " "$path"
       failed=$((failed + 1)); continue
     fi
     slot="$(slot_dir_for "$inv" "$path")"
@@ -6648,7 +6682,7 @@ do_rekey() {
       untrusted_var tag_disp "$tag" "" 2
       error "a release record outside the declared-name grammar [A-Za-z0-9._/+-]: " "$old_slot/release"
       echo "        name:  $tag_disp" >&2
-      echo "        clear it by hand, then re-run: rm $old_slot/release" >&2
+      say_cmd "        clear it by hand, then re-run: rm " "$old_slot/release"
       exit 1
     fi
   fi
@@ -6864,7 +6898,7 @@ do_declare() {
   local rev
   rev="$(read_rev "$slot" "$repo")" || exit 1
   [ -n "$rev" ] || {
-    say_err "nothing is pinned here; review it first: pinned review " "$repo"
+    say_cmd "nothing is pinned here; review it first: pinned review " "$repo"
     exit 1
   }
 
@@ -7096,7 +7130,7 @@ do_verify() {
   read_pin_record "$slot_file" "$slot_kind" "$path" || rec_rc=$?
   if [ "$rec_rc" -eq 2 ]; then
     echo "        re-approve to re-state the record for this path:" >&2
-    say_err "        pinned review --file " "$path"
+    say_cmd "        pinned review --file " "$path"
     exit 17
   fi
   [ "$rec_rc" -eq 0 ] || exit 1
@@ -7123,7 +7157,7 @@ do_verify() {
       error "a malformed slot, its approved copy not re-hashing to its own record: " "$slot/approved"
       echo "  record $label:  $rec_digest" >&2
       echo "  copy   $label:  $copy_digest" >&2
-      say_err "  re-approve the path to reset the slot: pinned review --file " "$path"
+      say_cmd "  re-approve the path to reset the slot: pinned review --file " "$path"
       exit 1
     }
   fi
@@ -7144,7 +7178,7 @@ do_verify() {
     fi
     if [ "$gone" -eq 0 ]; then
       refused "pinned but missing: " "$path"
-      say_err "        restore it, or retire it: pinned tombstone " "$path"
+      say_cmd "        restore it, or retire it: pinned tombstone " "$path"
       exit 20
     fi
     [ -f "$path" ] || { error "not a regular file: " "$path"; exit 1; }
@@ -7185,7 +7219,7 @@ do_verify() {
     case "$mode" in
       *[2367]?|*[2367])
         refused "mode $mode (group/other-writable): " "$path"
-        say_err "        fix: chmod go-w " "$path"
+        say_cmd "        fix: chmod go-w " "$path"
         exit 30 ;;
     esac
   fi
@@ -7295,7 +7329,7 @@ do_cat() {
       error "a repo slot (rev.$slot_kind), and cat serves file pins: " "$path"
       echo "        a repo's content lives in git: read the approved rev from the slot (or a" >&2
       echo "        root-owned symlink at it), then ask git for the file:" >&2
-      say_err "          pinned slot " "$path"
+      say_cmd "          pinned slot " "$path"
       say_err "          git show <rev>:<file>, run in: " "$path"
       exit 1 ;;
     tombstone)
@@ -7316,14 +7350,15 @@ do_cat() {
   fi
   if [ "$gone" -eq 0 ]; then
     refused "pinned but missing, and custody does not serve a removed file: " "$path"
-    say_err "        restore it, or retire it: pinned tombstone " "$path"
+    say_cmd "        restore it, or retire it: pinned tombstone " "$path"
     exit 20
   fi
   [ -f "$path" ] || { error "not a regular file: " "$path"; exit 1; }
 
   if [ ! -e "$slot/approved" ]; then
     refused "the slot keeps no approved copy, so there is nothing to serve: $slot"
-    untrusted_var path_disp "$path" "" 2
+    shq path_disp "$path"
+    untrusted_var path_disp "$path_disp" "" 2
     printf '        custody is opt-in: pinned review --file %s --store\n' "$path_disp" >&2
     exit 16
   fi
@@ -7338,7 +7373,8 @@ do_cat() {
     error "a malformed slot, its approved copy not re-hashing to its own record: " "$slot/approved"
     echo "  record $REC_LABEL:  $REC_DIGEST" >&2
     echo "  copy   $REC_LABEL:  $copy_digest" >&2
-    untrusted_var path_disp "$path" "" 2
+    shq path_disp "$path"
+    untrusted_var path_disp "$path_disp" "" 2
     printf '  re-approve the path to reset the slot: pinned review --file %s --store\n' "$path_disp" >&2
     exit 1
   }
@@ -7417,7 +7453,7 @@ do_rev() {
   rev="$(read_rev "$slot" "$path")" || rc=$?
   if [ "$rc" -eq 2 ]; then
     echo "        re-approve to re-state the record for this path:" >&2
-    say_err "        pinned review " "$path"
+    say_cmd "        pinned review " "$path"
     exit 17
   fi
   [ "$rc" -eq 0 ] || exit 1
@@ -7428,7 +7464,7 @@ do_rev() {
 
   if [ ! -e "$slot/release" ]; then
     refused "the slot declares no release name, so it is rev-only: $slot"
-    say_err "        one is added by: pinned declare --release <name> " "$path"
+    say_cmd "        one is added by: pinned declare --release <name> " "$path"
     exit 16
   fi
   [ -f "$slot/release" ] || {
@@ -7466,8 +7502,11 @@ do_words() {
   head_hash="$(sgit rev-parse 'HEAD^{commit}')"
   [ -z "$old_hash" ] || cls="$(ancestry_class "$repo" "$old_hash" "$hash")"
   # A release tag is reviewed with --tag, which resolves the tag, not HEAD.
-  local tag_opt=""
-  if sgit show-ref -q --verify "refs/tags/$rev" 2>/dev/null; then tag_opt=" --tag $rev"; fi
+  local tag_opt="" wq
+  if sgit show-ref -q --verify "refs/tags/$rev" 2>/dev/null; then
+    shq wq "$rev"
+    tag_opt=" --tag $wq"
+  fi
 
   print_repo_row "$C_DIM"
   subject_var subj "$hash" "$C_DIM"
@@ -7493,8 +7532,11 @@ do_words() {
       w="$(commit_words "$hash")"
       print_words_row "$w"
       if [ -n "$tag_opt" ] || [ "$head_hash" = "$hash" ]; then
-        printf '%sapprove:%s    pinned review %s%s --words %s --commits %s\n' "$C_DIM" "$C_OFF" \
-          "$repo" "$tag_opt" "${w// /-}" "$(sgit rev-list --count "${old_hash}..${hash}")"
+        # Each word quoted (shq), then the whole line escaped: the repo path
+        # and the tag are names someone else chose.
+        shq wq "$repo"
+        untrusted_var wq "pinned review $wq$tag_opt --words ${w// /-} --commits $(sgit rev-list --count "${old_hash}..${hash}")"
+        printf '%sapprove:%s    %s\n' "$C_DIM" "$C_OFF" "$wq"
       fi
       ;;
     '')       printf '%swords:%s      (none: a first approval reads the full tree)\n' "$C_DIM" "$C_OFF" ;;
@@ -7711,7 +7753,7 @@ do_sign() {
 
   local hash
   hash="$(read_rev "$default_slot" "$repo")" || exit 1
-  [ -n "$hash" ] || { say_err "nothing is pinned here; review it first: pinned review " "$repo"; exit 1; }
+  [ -n "$hash" ] || { say_cmd "nothing is pinned here; review it first: pinned review " "$repo"; exit 1; }
 
   # An existing tag may be signed IF it already points at the pinned rev
   # (e.g. an unsigned release tag being promoted). Pointing anywhere else
@@ -7742,7 +7784,10 @@ do_sign() {
   fi
   # The pinned hash is a field and may sit mid-line; the tag name ends it.
   printf '%s✓ signed at %s%.10s%s%s:%s %s\n' "$C_GRN$C_B" "$C_OFF$C_CYN" "$hash" "$C_OFF" "$C_GRN$C_B" "$C_OFF" "$tag_name"
-  printf '%s  consumers verify it against their allowed_signers: pinned review --signed-tag %s%s\n' "$C_DIM" "$tag_name" "$C_OFF"
+  local tag_q
+  shq tag_q "$tag_name"
+  untrusted_var tag_q "$tag_q" "$C_DIM"
+  printf '%s  consumers verify it against their allowed_signers: pinned review --signed-tag %s%s\n' "$C_DIM" "$tag_q" "$C_OFF"
   log_action sign "$repo" "$hash"
 }
 
@@ -8507,7 +8552,7 @@ do_show_repo() {
   local hash head_hash tag diff_out ahead subj
   hash="$(read_rev "$default_slot" "$repo")" || exit 1
   [ -n "$hash" ] || {
-    say_err "nothing is pinned here, and show re-displays a pin; review it first: pinned review " "$repo"
+    say_cmd "nothing is pinned here, and show re-displays a pin; review it first: pinned review " "$repo"
     exit 1
   }
   # Availability up front: a rev the object store no longer holds (rewritten

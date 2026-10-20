@@ -3140,7 +3140,7 @@ if [ "$GIT_OK" -eq 1 ]; then
   run_pinned declare "$REPO_DC" --release v1
   assert_exit "$RC" 1 "a slot holding both records refuses the ceremony"
   assert_contains "$OUT" "holds both a tag and a release record" "naming the survivor"
-  assert_contains "$OUT" "rm $DC_SLOT/tag" "and the hand-fix"
+  assert_contains "$OUT" "rm '$DC_SLOT/tag'" "and the hand-fix, its path quoted (a slot name holds %)"
   assert_eq "$(cat "$DC_SLOT/tag")" "legacy-name" "the old file is untouched"
   assert_eq "$(cat "$DC_SLOT/release")" "v1" "and so is the record"
   rm -f "$DC_SLOT/tag"
@@ -5865,6 +5865,45 @@ y
 else
   skip "S25 end to end" "no git fixture"
 fi
+
+# ---------------------------------------------------------------------------
+say "S26: a pasteable word reads back as the same bytes in bash, zsh and fish"
+# shq, lifted out of the script under test, quotes a word for a hint the
+# reader pastes. Fish reads \\ and \' as escapes even inside single quotes,
+# so a backslash is the case a plain single-quote wrapper gets wrong there.
+sed -n '/^shq() {/,/^}/p' "$STUB" > "$FIX/shq.bash"
+assert_eq "$(grep -c '^shq() {' "$FIX/shq.bash")" 1 "the quoting helper was found"
+# shellcheck source=/dev/null
+. "$FIX/shq.bash"
+shq SHQ_Q "/plain/p-1.2_x+y@h:p,q=r"
+assert_eq "$SHQ_Q" "/plain/p-1.2_x+y@h:p,q=r" "a word of safe characters stays bare"
+shq SHQ_Q "it's"
+assert_eq "$SHQ_Q" "'it'\\''s'" "an inner quote is written '\\''"
+shq SHQ_Q "=x"
+assert_eq "$SHQ_Q" "'=x'" "a leading = is quoted (zsh expands =name)"
+# $HOME`id` is literal on purpose: the shells must not expand it.
+# shellcheck disable=SC2016
+SHQ_WORDS=("/a b/c" "it's" "a${BS}${BS}b" "end${BS}" "x'${BS}'y" '$HOME`id`'
+  '*?[x]{a,b}~' "" "=x" $'caf\xc3\xa9/zw\xe2\x80\x8b.txt')
+SHQ_WHAT=("a space" "a quote" "two backslashes" "a trailing backslash"
+  "a backslash between quotes" "expansions" "globs, braces and a tilde"
+  "nothing (an empty word)" "a leading =" "UTF-8 and a zero-width space")
+for sh in bash zsh fish; do
+  if ! command -v "$sh" >/dev/null 2>&1; then
+    skip "S26 $sh half" "no $sh"
+    continue
+  fi
+  case "$sh" in
+    bash) sh_argv=(bash --norc --noprofile -c) ;;
+    zsh)  sh_argv=(zsh -f -c) ;;
+    fish) sh_argv=(fish --no-config -c) ;;
+  esac
+  for i in "${!SHQ_WORDS[@]}"; do
+    shq SHQ_Q "${SHQ_WORDS[$i]}"
+    got="$("${sh_argv[@]}" "printf '%s' $SHQ_Q; printf ." 2>&1)" || true
+    assert_eq "$got" "${SHQ_WORDS[$i]}." "$sh reads back a word holding ${SHQ_WHAT[$i]}"
+  done
+done
 
 # ---------------------------------------------------------------------------
 printf '1..%d\n' "$TESTS"
