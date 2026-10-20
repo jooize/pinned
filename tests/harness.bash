@@ -36,11 +36,11 @@
 # replaces sudo itself; its four extra seams are documented where it is built.
 # Every anchor is counted in the source BEFORE the sed (see need()), so a
 # drifting script aborts the harness loudly instead of silently testing a
-# no-op stub. INSTALL_TARGET is an honest environment override the script
-# already supports; PINNED_ROOT and PINNED_MACHINE_POLICY are compile-time
-# constants in the real script, so they are anchored and rewritten by the sed
-# like any other. Nothing here touches /var/db/pinned, /etc, or any live
-# system state.
+# no-op stub. INSTALL_TARGET, PINNED_ROOT and PINNED_MACHINE_POLICY are
+# compile-time constants in the real script, so they are anchored and
+# rewritten by the sed like any other (INSTALL_TARGET per stub copy: each one
+# bakes the elevation target its sections need). Nothing here touches
+# /var/db/pinned, /etc, or any live system state.
 #
 # canon_path / encode / decode / write_slot_state are unit-driven through a
 # PROBE: the stub truncated before its first action (a pure function library)
@@ -218,12 +218,15 @@ POUT=""
 # The preview stub's env seam (see run_preview); empty = a tty.
 NOTTY=""
 
-# Fixture paths for the two constants the sed below bakes into the stub. They
+# Fixture paths for the constants the sed below bakes into the stub. They
 # are plain shell variables here -- the harness uses them to build and inspect
-# fixture state; exporting them would do nothing, since the stub no longer
-# reads the environment for either.
+# fixture state; exporting them would do nothing, since the stub does not
+# read the environment for any of them.
 PINNED_ROOT="$FIX/pinroot"
-export INSTALL_TARGET="$FIX/no-such-install"
+# The main stub's elevation target: nothing there, so the every-invocation
+# re-verify of the installed copy has nothing to walk. The preview stubs bake
+# their own (see their construction).
+INSTALL_TARGET="$FIX/no-such-install"
 # The OPTIONAL machine tier of the ignorable policy, pointed at the fixture
 # instead of /etc/pinned so the harness never reads (or needs) machine state.
 # Absent by default: most sections want "no machine constraint".
@@ -246,6 +249,8 @@ need '^  \[ -n "\$inv" \] ||'                               1 'require_root sudo
 need '^    root:\*) ;;$'                                    2 'owner allowlists'
 need '^PINNED_ROOT=/var/db/pinned$'                         1 'pin-root constant'
 need '^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json$'   1 'machine-policy constant'
+# Rewritten per stub copy below, and by nix/module.nix at eval time.
+need '^INSTALL_TARGET=/usr/local/sbin/pinned$'              1 'install-target constant'
 # Not stubbed for the main copy -- the fixtures want the source default
 # (empty, so the owner invariant is tier-or-root). Anchored because two
 # things rewrite this exact line: nix/module.nix, which bakes the list at
@@ -330,6 +335,7 @@ STUB_SED=(
     -e 's#</dev/tty##g'
 )
 sed "${STUB_SED[@]}" \
+    -e "s#^INSTALL_TARGET=/usr/local/sbin/pinned\$#INSTALL_TARGET='$INSTALL_TARGET'#" \
     -e 's/if \[ "\$EUID" -ne 0 \]; then/if false; then/' \
     "$SRC" > "$STUB"
 chmod 755 "$STUB"
@@ -341,6 +347,9 @@ if grep -q '^PINNED_ROOT=/var/db/pinned$' "$STUB"; then
 fi
 if grep -q '^PINNED_MACHINE_POLICY=/etc/pinned/ignorable.json$' "$STUB"; then
   bail "STUB SED FAILED: the real machine policy path survives"
+fi
+if ! grep -q "^INSTALL_TARGET='$INSTALL_TARGET'\$" "$STUB"; then
+  bail "STUB SED FAILED: the install target was not baked"
 fi
 if grep -q '</dev/tty' "$STUB"; then bail "STUB SED FAILED: /dev/tty survives"; fi
 if ! grep -q '^drain_tty() {$' "$STUB" || ! grep -q '^  return 0$' "$STUB"; then
@@ -370,31 +379,47 @@ fi
 #      the owner/mode check on the target ITSELF stays live (allowlist seam)
 #   9. the no-tty refusal -> $PINNED_TEST_NOTTY, so both branches of a gate
 #      are drivable from one stub
+#  10. INSTALL_TARGET -> this very copy, so `elev == INSTALL_TARGET` holds and
+#      the pre-sudo display block is reached. A second copy, $PREVIEW_UNINST,
+#      bakes a target that does not exist instead, for the uninstalled-copy
+#      question; the script reads no target from the environment, so a
+#      different target is a different copy.
+PREVIEW_SED=(
+    -e 's/^        exec sudo -- "\$elev" "\$action" "\$@"$/        printf "words-exec:%s\\n" "$PWD" "$@"; exit 98/'
+    -e 's/exec sudo -- "\$elev" "\$action" "\$@"/exit 97/'
+    -e 's/verify_ancestry "\$elev" || exit 1/:/'
+    -e 's/^  verify_ancestry "\$INSTALL_TARGET" || exit 1$/  :/'
+    -e 's/if \[ ! -t 0 \]; then/if [ -n "${PINNED_TEST_NOTTY:-}" ]; then/'
+)
 PREVIEW="$FIX/pinned-preview"
-sed "${STUB_SED[@]}" \
-    -e 's/^        exec sudo -- "\$elev" "\$action" "\$@"$/        printf "words-exec:%s\\n" "$PWD" "$@"; exit 98/' \
-    -e 's/exec sudo -- "\$elev" "\$action" "\$@"/exit 97/' \
-    -e 's/verify_ancestry "\$elev" || exit 1/:/' \
-    -e 's/^  verify_ancestry "\$INSTALL_TARGET" || exit 1$/  :/' \
-    -e 's/if \[ ! -t 0 \]; then/if [ -n "${PINNED_TEST_NOTTY:-}" ]; then/' \
-    "$SRC" > "$PREVIEW"
-chmod 755 "$PREVIEW"
+PREVIEW_UNINST="$FIX/pinned-preview-uninstalled"
+build_preview() { # copy target
+  sed "${STUB_SED[@]}" "${PREVIEW_SED[@]}" \
+      -e "s#^INSTALL_TARGET=/usr/local/sbin/pinned\$#INSTALL_TARGET='$2'#" \
+      "$SRC" > "$1"
+  chmod 755 "$1"
 
-if grep -q 'exec sudo -- ' "$PREVIEW"; then
-  bail "PREVIEW SED FAILED: an exec sudo survives"
-fi
-if [ "$(grep -c '^ *exit 97$' "$PREVIEW")" != 2 ]; then
-  bail "PREVIEW SED FAILED: sudo markers"
-fi
-if [ "$(grep -c '; exit 98$' "$PREVIEW")" != 1 ]; then
-  bail "PREVIEW SED FAILED: the --words sudo marker"
-fi
-if grep -q 'if false; then' "$PREVIEW"; then
-  bail "PREVIEW SED FAILED: the elevation gate was stubbed out"
-fi
-if [ "$(grep -c 'PINNED_TEST_NOTTY' "$PREVIEW")" != 1 ]; then
-  bail "PREVIEW SED FAILED: no-tty seam"
-fi
+  if grep -q 'exec sudo -- ' "$1"; then
+    bail "PREVIEW SED FAILED: an exec sudo survives in $1"
+  fi
+  if [ "$(grep -c '^ *exit 97$' "$1")" != 2 ]; then
+    bail "PREVIEW SED FAILED: sudo markers in $1"
+  fi
+  if [ "$(grep -c '; exit 98$' "$1")" != 1 ]; then
+    bail "PREVIEW SED FAILED: the --words sudo marker in $1"
+  fi
+  if grep -q 'if false; then' "$1"; then
+    bail "PREVIEW SED FAILED: the elevation gate was stubbed out in $1"
+  fi
+  if [ "$(grep -c 'PINNED_TEST_NOTTY' "$1")" != 1 ]; then
+    bail "PREVIEW SED FAILED: no-tty seam in $1"
+  fi
+  if ! grep -q "^INSTALL_TARGET='$2'\$" "$1"; then
+    bail "PREVIEW SED FAILED: the install target was not baked in $1"
+  fi
+}
+build_preview "$PREVIEW" "$PREVIEW"
+build_preview "$PREVIEW_UNINST" "$FIX/not-installed"
 
 # The pure-function library: everything above the first action.
 sed '/^# ---- setup ---/,$d' "$STUB" > "$LIB"
@@ -429,12 +454,11 @@ run_pinned_split() { # verb args... -- like run_pinned, but stderr stays in \$ER
   "$STUB" "$@" <"$FIX/stdin" >"$OUT" 2>"$ERRF" || RC=$?
 }
 run_preview() { # verb args... -- run_pinned against the PREVIEW stub
-  # INSTALL_TARGET is this very stub, so `elev == INSTALL_TARGET` holds and
-  # the pre-sudo display block is reached. $NOTTY drives the env seam; empty
-  # means "a tty".
+  # INSTALL_TARGET is baked to this very stub (seam 10), so the pre-sudo
+  # display block is reached. $NOTTY drives the env seam; empty means "a tty".
   printf '%s' "$ANS" > "$FIX/stdin"
   RC=0
-  INSTALL_TARGET="$PREVIEW" PINNED_TEST_NOTTY="$NOTTY" \
+  PINNED_TEST_NOTTY="$NOTTY" \
     "$PREVIEW" "$@" <"$FIX/stdin" >"$OUT" 2>&1 || RC=$?
 }
 run_probe() { # fn args... -- stdout in \$POUT, stderr in \$ERRF
@@ -2928,19 +2952,41 @@ n
   assert_contains "$OUT" "run this setup? [y/N]" "setup's question names its object"
   printf 'n\n' > "$FIX/stdin"
   RC=0
-  INSTALL_TARGET="$FIX/not-installed" PINNED_TEST_NOTTY="" \
-    "$PREVIEW" tombstone "$FIX/ts-gone" <"$FIX/stdin" >"$OUT" 2>&1 || RC=$?
+  PINNED_TEST_NOTTY="" \
+    "$PREVIEW_UNINST" tombstone "$FIX/ts-gone" <"$FIX/stdin" >"$OUT" 2>&1 || RC=$?
   assert_exit "$RC" 2 "declining the uninstalled copy exits 2"
-  assert_eq "$(lines_before "$OUT" "run this copy?" 3 | cut -d'|' -f1)" "copy:       $PREVIEW" \
+  assert_eq "$(lines_before "$OUT" "run this copy?" 3 | cut -d'|' -f1)" "copy:       $PREVIEW_UNINST" \
     "the question about the uninstalled copy stands under its copy: row and the consequence"
   assert_contains "$OUT" "aborted; nothing ran" "and its decline says nothing ran"
   printf 'n\n' > "$FIX/stdin"
   RC=0
-  INSTALL_TARGET="$FIX/not-installed" PINNED_TEST_NOTTY="" \
-    "$PREVIEW" ignorable add model <"$FIX/stdin" >"$OUT" 2>&1 || RC=$?
+  PINNED_TEST_NOTTY="" \
+    "$PREVIEW_UNINST" ignorable add model <"$FIX/stdin" >"$OUT" 2>&1 || RC=$?
   assert_exit "$RC" 2 "declining the uninstalled copy for a policy verb exits 2"
-  assert_eq "$(lines_before "$OUT" "run this copy?" 2 | cut -d'|' -f1)" "copy:       $PREVIEW" \
+  assert_eq "$(lines_before "$OUT" "run this copy?" 2 | cut -d'|' -f1)" "copy:       $PREVIEW_UNINST" \
     "and asks about the copy on its row there too"
+
+  # The elevation target is baked, never read from the environment: any
+  # process running as the user can pre-set what a terminal inherits, and a
+  # target taken from there would choose which root-owned program sudo runs
+  # with pinned's arguments. An exported INSTALL_TARGET changes nothing,
+  # whether it names another root-owned program or the very copy running.
+  ANS=""
+  RC=0
+  printf '' > "$FIX/stdin"
+  INSTALL_TARGET=/bin/sh PINNED_TEST_NOTTY="" \
+    "$PREVIEW" tombstone "$FIX/ts-gone" --yes <"$FIX/stdin" >"$OUT" 2>&1 || RC=$?
+  assert_exit "$RC" 97 "an INSTALL_TARGET in the environment still reaches the baked elevation"
+  assert_shows_cmd "$OUT" "sudo -- $PREVIEW tombstone $FIX/ts-gone --yes" \
+    "the command names the baked target"
+  assert_missing "$OUT" "/bin/sh" "and never the program the environment named"
+  printf 'n\n' > "$FIX/stdin"
+  RC=0
+  INSTALL_TARGET="$PREVIEW_UNINST" PINNED_TEST_NOTTY="" \
+    "$PREVIEW_UNINST" tombstone "$FIX/ts-gone" <"$FIX/stdin" >"$OUT" 2>&1 || RC=$?
+  assert_exit "$RC" 2 "an environment naming the running copy does not pass it off as installed"
+  assert_contains "$OUT" "warning: pinned is not installed at $FIX/not-installed" \
+    "the warning names the baked target"
 else
   skip "S8i" "no git fixture"
 fi

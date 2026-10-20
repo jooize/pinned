@@ -1379,7 +1379,9 @@ Digest-pinned sudo grant, written by
 or by the nix module.
 .TP
 .I /usr/local/sbin/pinned
-Default manual install target.
+Manual install target, and the program the unprivileged side hands
+.BR sudo .
+A constant in the script, never read from the environment.
 The nix module installs
 .I /run/current-system/sw/bin/pinned
 instead.

@@ -205,9 +205,16 @@ set -euo pipefail
 # so a checkout between releases reports the release it descends from.
 PINNED_VERSION="0.29.0"
 
-# Where this script installs itself. Override-friendly (handy for testing);
-# a packaging that owns its own prefix rewrites this line at build time.
-: "${INSTALL_TARGET:=/usr/local/sbin/pinned}"
+# Where this script installs itself, and the one program the unprivileged
+# side hands sudo. A COMPILE-TIME CONSTANT, not an environment default: any
+# process running as the user can pre-set the environment a terminal
+# inherits, and a target read from it would let that process choose which
+# root-owned executable sudo runs with pinned's arguments (/bin/sh, say),
+# and the root-owned check passes such a target. No knob beats a guarded knob.
+# A packaging that owns its own prefix rewrites this line at build time, and
+# the test harness rewrites it in its sed-stubbed copies, so keep it on one
+# line in this shape.
+INSTALL_TARGET=/usr/local/sbin/pinned
 
 # Where trust state lives. A COMPILE-TIME CONSTANT, not an environment
 # default: nothing in the environment can re-point where pinned reads or

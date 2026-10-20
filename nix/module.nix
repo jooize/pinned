@@ -44,8 +44,11 @@ let
       to = "#!${pkgs.bash}/bin/bash";
     }
     {
-      from = '': "''${INSTALL_TARGET:=/usr/local/sbin/pinned}"'';
-      to = '': "''${INSTALL_TARGET:=${cfg.installPath}}"'';
+      # A constant in the script, never read from the environment (see its
+      # comment there). Anchored on the whole line, newlines included, so the
+      # rewrite cannot land on a mention of the line elsewhere in the source.
+      from = "\nINSTALL_TARGET=/usr/local/sbin/pinned\n";
+      to = "\nINSTALL_TARGET=${lib.escapeShellArg cfg.installPath}\n";
     }
     {
       # The system profile is a root-owned symlink farm into /nix/store
@@ -224,7 +227,7 @@ in
         invoked under sudo. The default is the system-profile path, which
         is stable across generations and always resolves to the current
         build. (Manual, non-nix installs are unaffected by this option:
-        they use the script's own default, /usr/local/sbin/pinned.)
+        they use the script's own constant, /usr/local/sbin/pinned.)
       '';
     };
 
