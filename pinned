@@ -1571,65 +1571,73 @@ diff_shape() {
 # permissions.deny, a hook added vs a hook rewritten: invisible in a unified
 # diff whose context is just neighboring array entries). Ported from the
 # drift index in the hardening repo's nix/claude-shim.bash (drift_keys):
-# flatten both sides to sorted "path = value" leaves via jq's tostream, diff
-# the flattenings, keep the KEY of every changed leaf. An array collapses to
-# its own name (permissions.allow[] -> permissions.allow) so one added entry
-# reads as one key with a count, not a cascade of leaves; a key changed on
-# both sides carries both counts. Sorted-input side effect: a
-# pure reordering shows no key here -- the byte diff below still shows it.
+# take both sides' leaves -- (path, value) pairs from jq's tostream -- as
+# multisets, and keep the KEY of every leaf one side holds more copies of
+# than the other. An array collapses to its own name (permissions.allow[] ->
+# permissions.allow) so one added entry reads as one key with a count, not a
+# cascade of leaves; a key changed on both sides carries both counts.
+# Multiset side effect: a pure reordering shows no key here -- the byte diff
+# below still shows it.
 #
-# A SUMMARY, NOT A PER-HUNK CLAIM: computed once from whole-document
-# flattenings of the two frozen buffers and printed once above the diff,
-# attached to no hunk -- so a hostile file that games diff's hunking cannot
-# make this line misattribute one hunk's change to another. Like the hunk
-# labels below it (see label_hunks, which reads the same parse this block's
-# flattening comes from), it orients and does not decide: every changed line
-# still prints, and the recorded digest comes from the frozen bytes, not from
-# anything summarized here.
+# A SUMMARY, NOT A PER-HUNK CLAIM: computed once from the whole documents
+# in the two frozen buffers and printed once above the diff, attached to no
+# hunk -- so a hostile file that games diff's hunking cannot make this line
+# misattribute one hunk's change to another. Like the hunk labels below it
+# (see label_hunks, which reads the same parse this block's leaves come
+# from), it orients and does not decide: every changed line still prints,
+# and the recorded digest comes from the frozen bytes, not from anything
+# summarized here.
 #
-# rc 1 (no jq, either side not JSON, no temp file) means "no structural
-# view": the ceremony prints no keys line and the byte diff stands alone.
-# jq stays OPTIONAL here -- require_jq is a hard gate only where
-# --ignore-json-key declares a tolerance.
-flatten_json_paths() {
-  jq -r 'tostream | select(length==2) |
-         ((.[0] | map(if type=="number" then "[]" else tostring end) | join("."))
-          | gsub("\\.\\[\\]"; "[]"))
-         + " = " + (.[1] | tojson)' "$1" 2>/dev/null | sort
-}
+# ONE jq RUN, NO LINE TOOL. Both sides are counted inside a single jq, which
+# holds every key as a string from parse to row, so no key is ever split
+# into lines on the way: a key holding a CR, a NUL or any other control
+# character is one key with its own count. (The version before this one
+# printed each side as sorted "path = value" text lines and diffed those: a
+# key holding a line feed became two false keys, a NUL made diff call the
+# text binary and the block vanish, a key holding ` = ` or `[]` was cut
+# there, and Apple's diff splits a line at a lone CR when it reads a file.)
+# A leaf counts once per copy one side has beyond the other -- what diff
+# found over two sorted lists, now by construction rather than by diff's
+# choice of alignment.
+#
+# The rows leave raw, and the escaper the caller runs them through
+# (file_diff_capture) shows a CR or any other control character in a key as
+# its \u{..} escape. A row is one line, so a key holding a line feed cannot
+# be one: its row is left out -- a missing key, never a false one, the rule
+# render_keys_block applies to a key holding a tab. The fold to an array's
+# name happens at the first index or at a component spelled [], which is how
+# label_hunks spells an index, so a hunk label stays findable as a row.
+# Rows come out in key order (jq compares strings by code point).
+#
+# rc 1 (no jq, either side not JSON) means "no structural view": the
+# ceremony prints no keys line and the byte diff stands alone. jq stays
+# OPTIONAL here -- require_jq is a hard gate only where --ignore-json-key
+# declares a tolerance. No temp file and no process substitution: nothing
+# to create, so nothing can leak on any exit path, whatever the caller's
+# errexit context.
 json_keys_changed() { # <old> <new> -> "<added>\t<removed>\t<key>" rows
   local old="$1" new="$2"
   command -v jq >/dev/null 2>&1 || return 1
   jq -e . "$old" >/dev/null 2>&1 || return 1
   jq -e . "$new" >/dev/null 2>&1 || return 1
-  # No temp files: diff reads both flattenings through process substitution, so
-  # there is nothing to create and nothing to clean up -- the function cannot leak
-  # a temp file on any exit path, no matter how a caller invokes it. (An earlier
-  # mktemp version was leak-free only because its sole caller sits on the LHS of
-  # `||`, which suppresses errexit through the function so its trailing `rm` was
-  # always reached; a future caller without that `||` would have leaked. Removing
-  # the files removes the dependency on the caller's errexit context.) Both inputs
-  # are validated JSON above, so a flatten cannot fail for content reasons; if one
-  # somehow emitted nothing the summary would be incomplete, never wrong -- fail
-  # safe to a missing key, never a false one.
-  { diff -U0 -- <(flatten_json_paths "$old") <(flatten_json_paths "$new") || true; } | LC_ALL=C awk '
-    /^(\+\+\+|---) / { next }
-    /^@@/            { next }
-    /^[+-]/ {
-      mark = substr($0, 1, 1)
-      key  = substr($0, 2)
-      sub(/ = .*$/, "", key)
-      sub(/\[\].*$/, "", key)
-      if (key == "") key = "[]"
-      if (!(key in seen)) { seen[key] = 1; order[++n] = key }
-      if (mark == "+") add[key]++; else del[key]++
-    }
-    END {
-      for (i = 1; i <= n; i++) {
-        k = order[i]
-        printf "%d\t%d\t%s\n", add[k] + 0, del[k] + 0, k
-      }
-    }'
+  jq -nr --slurpfile old "$old" --slurpfile new "$new" '
+    def leaves($side):
+      .[] | tostream | select(length == 2)
+      | {p: (.[0] | map(if type == "number" then null else . end)),
+         v: (.[1] | tojson), s: $side};
+    def key:
+      . as $p
+      | ([range(0; $p | length) | select($p[.] == null or $p[.] == "[]")] | .[0]) as $i
+      | (if $i == null then $p else $p[:$i] end) | join(".")
+      | if . == "" then "[]" else . end;
+    [($old | leaves(-1)), ($new | leaves(1))]
+    | group_by([.p, .v])
+    | map((map(.s) | add) as $n | select($n != 0)
+          | {k: (.[0].p | key), a: ([$n, 0] | max), d: ([0 - $n, 0] | max)})
+    | group_by(.k)[]
+    | {k: .[0].k, a: (map(.a) | add), d: (map(.d) | add)}
+    | select(.k | contains("\n") | not)
+    | "\(.a)\t\(.d)\t\(.k)"' 2>/dev/null
 }
 
 # The keys block: json_keys_changed rows in, one aligned block out, or nothing
@@ -1719,8 +1727,8 @@ render_keys_block() {
 # label.
 #
 # WHAT THE LABEL IS: the longest common prefix of those paths, spelled the way
-# the keys block above the diff spells its rows (flatten_json_paths plus
-# json_keys_changed) -- dotted components, an array folded to its own name
+# the keys block above the diff spells its rows (json_keys_changed) --
+# dotted components, an array folded to its own name
 # (sandbox.filesystem.allowRead, never [1]). Every label is therefore findable
 # as a row in the block above it. A hunk spanning siblings labels as their
 # parent, which is the truth, and duplicate keys label truthfully, since the

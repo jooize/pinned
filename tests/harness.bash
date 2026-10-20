@@ -1115,6 +1115,23 @@ if command -v jq >/dev/null 2>&1; then
   assert_exit "$RC" 0 "json_keys_changed answers 0 for two JSON documents"
   assert_eq "$POUT" "$(printf '1\t1\ta')" \
             "a key changed on both sides is one row carrying both counts"
+  # A key is a string from parse to row, never a text line on the way: a CR
+  # inside one stays inside its one row with its own counts, its neighbors
+  # are not dragged in, and a key holding a line feed, which no row can
+  # carry, is left out rather than split into two false keys.
+  printf '{"x":1,"a\\rb":1,"a":1}\n' > "$FIX/kc-cr-old.json"
+  printf '{"x":1,"a\\rb":2,"a":1,"c\\nd":1}\n' > "$FIX/kc-cr-new.json"
+  run_probe json_keys_changed "$FIX/kc-cr-old.json" "$FIX/kc-cr-new.json"
+  assert_exit "$RC" 0 "a key holding a CR: json_keys_changed answers 0"
+  assert_eq "$POUT" "$(printf '1\t1\ta\rb')" \
+            "the CR stays inside its one row with both counts, and the line-feed key is left out"
+  run_probe eval 'file_diff_capture "'"$FIX"'/kc-cr-old.json" "'"$FIX"'/kc-cr-new.json" old new
+    printf "%s" "$FD_KEYS"'
+  assert_exit "$RC" 0 "the capture takes a key holding a CR"
+  assert_eq "$(printf '%s\n' "$POUT" | head -n1)" "keys:   1 key · +1  -1" \
+            "the keys block counts it as the one key that changed"
+  assert_eq "$(printf '%s\n' "$POUT" | sed -n 2p)" "  a$(printf '\134')u{D}b       +1  -1" \
+            "and shows its CR as the escape, inside the row"
   mkdir -p "$SUB/a/keys"
   printf '{\n  "extra": true,\n  "model": "opus",\n  "permissions": {\n    "ask": ["a"]\n  }\n}\n' \
     > "$SUB/a/keys/set.json"
