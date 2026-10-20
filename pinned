@@ -627,7 +627,7 @@ page() {
 # content, the key names of a JSON summary, repo and file names -- may hold
 # characters that draw nothing, draw as something else, or reorder what
 # follows them. Every character on the hidden list shows as an escape, never
-# raw and never dropped:
+# raw and never dropped, except where the layout rules below make it layout:
 #
 #   \u{HEX}   a hidden code point, uppercase hex with no leading zeros
 #             (\u{9}, \u{200B}, \u{E0041})
@@ -636,21 +636,51 @@ page() {
 # The hidden list: U+0000-001F, U+007F-009F, U+00A0, U+00AD, U+034F, U+061C,
 # U+115F-1160, U+17B4-17B5, U+180B-180E, U+2000-200F, U+2028-202F,
 # U+205F-206F, U+3000, U+3164, U+FE00-FE0F, U+FEFF, U+FFA0, U+FFF9-FFFB,
-# U+E0000-E007F, U+E0100-E01EF. Tab and CR are on it; LF is the line break
-# itself, and a plain space is not on it. A literal backslash followed by
-# u{, or by x and a hex digit, is escaped too (as \u{5C}), so a backslash-u
-# on screen can only ever begin an escape: any `\` followed by `u{`, or by
-# `x` and a hex digit, in this output IS one, which is what lets the
-# colorizers find them (escat in AWK_UNTRUSTED) without being told where
-# they are. The braces delimit the hex, so no escape is a prefix of another.
+# U+E0000-E007F, U+E0100-E01EF. A plain space is not on it. A literal
+# backslash followed by u{, or by x and a hex digit, is escaped too (as
+# \u{5C}), so a backslash-u on screen can only ever begin an escape: any `\`
+# followed by `u{`, or by `x` and a hex digit, in this output IS one, which
+# is what lets the colorizers find them (escat in AWK_UNTRUSTED) without
+# being told where they are. The braces delimit the hex, so no escape is a
+# prefix of another. Valid UTF-8 is decoded first, so only the bytes that
+# fail are escaped: C3 A9 FF shows as an e-acute and then \xFF.
 #
-# ONE ESCAPER, untrusted_escape, and every display of third-party text goes
-# through it: untrusted_page for a body that is paged (diffs, file content),
-# untrusted_var for one value in a row, and the commit listing escapes its
-# whole git stream before it parses a byte. It reads the RAW bytes and runs
-# BEFORE any color, so this script's own SGR is never escaped and no ESC byte
-# of the content can reach the terminal. Stored and hashed data keep their
-# bytes: this is display only.
+# TWO KINDS OF ESCAPE. The escape of a hidden-list character is the one
+# thing that wears the reserved style (reverse red): the raw character could
+# make the text read as one thing and act as another. Every other escape is
+# KEPT -- an invalid byte (\xHH) and the self-escaped backslash (\u{5C}, the
+# escape of U+5C) -- and shows as exactly what it is, in the display's own
+# style for values, never the reserved one.
+#
+# LAYOUT. A line feed is the line break itself, everywhere. The rest depends
+# on what the text is:
+#   field  a single-line value (a subject, a file name, an argument, a path,
+#          a key name, the commit listing's stream): a tab and a carriage
+#          return show escaped, since either can move the text after it.
+#   doc    a document read as lines (a file's content): a tab is layout and
+#          shows as itself. When a carriage return sits directly before
+#          every line feed, that is the file's line-ending convention: each
+#          pair draws as one break and the escaper reports `CRLF line
+#          endings` for the caller to state once, outside the text (on the
+#          section rule over it). Any other carriage return shows escaped
+#          where it is.
+#   diff   a unified diff: its content lines are a document as above (a tab
+#          is layout), and the line-ending rule applies per file, over the
+#          content lines that end in a real line feed (one followed by `\ No
+#          newline at end of file` has none). A file whose every such line
+#          ends CR LF draws them as plain breaks and gets one header line,
+#          `CRLF line endings`, after its `+++` line and before its first
+#          hunk, where git's own extended headers sit. Header, hunk header
+#          and marker lines are git's single-line fields: a tab there stays
+#          escaped.
+#
+# ONE ESCAPER, UNTRUSTED_PL, and every display of third-party text goes
+# through it: untrusted_var for one value in a row (field), untrusted_render
+# for a body that is shown whole (doc or diff, then the colorizer), and the
+# commit listing escapes its whole git stream (field) before it parses a
+# byte. It reads the RAW bytes and runs BEFORE any color, so this script's
+# own SGR is never escaped and no ESC byte of the content can reach the
+# terminal. Stored and hashed data keep their bytes: this is display only.
 #
 # Perl, because the decoder must see every byte -- NUL, an invalid sequence,
 # a line of any length -- which awk cannot do portably (BWK awk ends a record
@@ -666,14 +696,17 @@ page() {
 # it, and a failure stops the process (untrusted_fail). There is no fallback
 # to the raw text.
 #
-# Reading each LF-terminated line is safe for UTF-8: LF never occurs inside
-# a multibyte sequence. Every byte value is matched by exactly one branch of
-# the substitution, so nothing passes through unexamined. $o and $c (argv)
-# wrap each escape; empty means the escape text alone.
+# Splitting at each LF is safe for UTF-8: LF never occurs inside a multibyte
+# sequence. Every byte value is matched by exactly one branch of the
+# substitution, so nothing passes through unexamined. argv: the mode (field,
+# doc, diff), then $o and $c, which wrap each hidden escape (empty means the
+# escape text alone; a kept escape is never wrapped). Doc mode writes one
+# byte before the text, C when the CRLF rule held and - when it did not.
 # Perl source: perl expands it, not the shell.
 # shellcheck disable=SC2016
 UNTRUSTED_PL='
-  my ($o, $c) = @ARGV;
+  my ($mode, $o, $c) = @ARGV;
+  $mode = "field" unless defined $mode;
   $o = "" unless defined $o;
   $c = "" unless defined $c;
   binmode STDIN;
@@ -701,14 +734,89 @@ UNTRUSTED_PL='
           : (($b[0] & 0x07) << 18) | (($b[1] & 0x3F) << 12) | (($b[2] & 0x3F) << 6) | ($b[3] & 0x3F);
     return hidden($p) ? esc($p) : $s;
   }
-  while (defined(my $l = <STDIN>)) {
-    $l =~ s/([\x20-\x5B\x5D-\x7E\n]+)|(\\(?=u\{|x[0-9A-Fa-f]))|(\\)|([\x00-\x09\x0B-\x1F\x7F])|([\xC2-\xDF][\x80-\xBF]|\xE0[\xA0-\xBF][\x80-\xBF]|[\xE1-\xEC\xEE\xEF][\x80-\xBF]{2}|\xED[\x80-\x9F][\x80-\xBF]|\xF0[\x90-\xBF][\x80-\xBF]{2}|[\xF1-\xF3][\x80-\xBF]{3}|\xF4[\x80-\x8F][\x80-\xBF]{2})|([\x80-\xFF])/defined $1 ? $1 : defined $2 ? esc(0x5C) : defined $3 ? "\\" : defined $4 ? esc(ord $4) : defined $5 ? mb($5) : $o . sprintf("\\x%02X", ord $6) . $c/ge;
-    print $l or exit 1;
+  # One line, its LF (if any) kept as the break. $tab true: a tab is layout.
+  sub line {
+    my ($l, $tab) = @_;
+    $l =~ s/([\x20-\x5B\x5D-\x7E\n]+)|(\\(?=u\{|x[0-9A-Fa-f]))|(\\)|(\t)|([\x00-\x08\x0B-\x1F\x7F])|([\xC2-\xDF][\x80-\xBF]|\xE0[\xA0-\xBF][\x80-\xBF]|[\xE1-\xEC\xEE\xEF][\x80-\xBF]{2}|\xED[\x80-\x9F][\x80-\xBF]|\xF0[\x90-\xBF][\x80-\xBF]{2}|[\xF1-\xF3][\x80-\xBF]{3}|\xF4[\x80-\x8F][\x80-\xBF]{2})|([\x80-\xFF])/defined $1 ? $1 : defined $2 ? "\\u{5C}" : defined $3 ? "\\" : defined $4 ? ($tab ? "\t" : esc(9)) : defined $5 ? esc(ord $5) : defined $6 ? mb($6) : sprintf("\\x%02X", ord $7)/ge;
+    return $l;
+  }
+  if ($mode eq "field") {
+    while (defined(my $l = <STDIN>)) { print line($l, 0) or exit 1; }
+    close STDOUT or exit 1;
+    exit 0;
+  }
+  my $s = do { local $/; <STDIN> };
+  $s = "" unless defined $s;
+  my @l = split /(?<=\n)/, $s;
+  if ($mode eq "doc") {
+    my $lf = grep { /\n\z/ } @l;
+    my $crlf = $lf && !grep { /\n\z/ && !/\r\n\z/ } @l;
+    print $crlf ? "C" : "-" or exit 1;
+    for my $l (@l) {
+      $l =~ s/\r\n\z/\n/ if $crlf;
+      print line($l, 1) or exit 1;
+    }
+    close STDOUT or exit 1;
+    exit 0;
+  }
+  exit 2 unless $mode eq "diff";
+  # Classify each line the way color_diff does, by the hunk counts and not by
+  # prefix alone: h header, @ hunk header, c content, m a backslash marker.
+  # A file (a section) starts at each run of header lines.
+  my (@k, @sec, %crlf, %lf, %bad, %first);
+  my ($hunk, $known, $ro, $rn, $n) = (0, 0, 0, 0, 0);
+  for my $i (0 .. $#l) {
+    my $t = $l[$i];
+    $t =~ s/\n\z//;
+    my $ch = substr($t, 0, 1);
+    my $kind;
+    if ($hunk) {
+      my $took = 1;
+      if ($ch eq "-" && ($ro > 0 || !$known)) { $kind = "c"; $ro--; }
+      elsif ($ch eq "+" && ($rn > 0 || !$known)) { $kind = "c"; $rn--; }
+      elsif ($ch eq "\\") { $kind = "m"; }
+      elsif (($ch eq " " || $t eq "") && (($ro > 0 && $rn > 0) || !$known)) { $kind = "c"; $ro--; $rn--; }
+      else { $took = 0; }
+      $hunk = 0 unless $took && (!$known || $ro > 0 || $rn > 0);
+    }
+    if (!defined $kind) {
+      if ($t =~ /^@@ -/) {
+        $kind = "@"; $known = 0;
+        if ($t =~ /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/) {
+          $ro = defined $1 ? $1 : 1; $rn = defined $2 ? $2 : 1; $known = 1;
+        }
+        $hunk = (!$known || $ro > 0 || $rn > 0) ? 1 : 0;
+      } elsif ($ch eq "\\") { $kind = "m"; }
+      else { $kind = "h"; }
+    }
+    $n++ if $kind eq "h" && ($i == 0 || $k[$i - 1] ne "h");
+    $k[$i] = $kind; $sec[$i] = $n;
+    $first{$n} = $i if $kind eq "@" && !defined $first{$n};
+  }
+  # A content line ends in a real LF unless a marker follows it.
+  my @real;
+  for my $i (0 .. $#l) {
+    next unless $k[$i] eq "c" && $l[$i] =~ /\n\z/;
+    next if $i < $#l && $k[$i + 1] eq "m";
+    $real[$i] = 1;
+    $lf{$sec[$i]}++;
+    $bad{$sec[$i]}++ unless $l[$i] =~ /\r\n\z/;
+  }
+  $crlf{$_} = 1 for grep { !$bad{$_} } keys %lf;
+  for my $i (0 .. $#l) {
+    print "CRLF line endings\n" or exit 1
+      if $crlf{$sec[$i]} && defined $first{$sec[$i]} && $first{$sec[$i]} == $i;
+    my $l = $l[$i];
+    $l =~ s/\r\n\z/\n/ if $real[$i] && $crlf{$sec[$i]};
+    print line($l, $k[$i] eq "c") or exit 1;
   }
   close STDOUT or exit 1;
 '
-untrusted_escape() { # [open-SGR close-SGR] -- raw bytes on stdin, escaped text on stdout
-  env -i PATH="$PATH" perl -e "$UNTRUSTED_PL" -- "${1:-}" "${2:-}"
+untrusted_pl() { # <mode> [open-SGR close-SGR] -- raw bytes on stdin, escaped text on stdout
+  env -i PATH="$PATH" perl -e "$UNTRUSTED_PL" -- "$@"
+}
+untrusted_escape() { # [open-SGR close-SGR] -- the field mode, one line or many
+  untrusted_pl field "${1:-}" "${2:-}"
 }
 
 # The one refusal for a display that cannot be rendered. It exits: nothing
@@ -739,33 +847,55 @@ untrusted_var() { # <var> <text> [resume-SGR] [stream]
   printf -v "$1" '%s' "${_uv_out%x}"
 }
 
-# A body of third-party bytes (stdin) through the escaper, then the colorizer
-# $1 (empty: untrusted_mark, which only styles the escapes), then the pager.
-# Both stages are captured BEFORE anything is paged, so a failure stops here
-# with nothing shown. The display always ends a line: a body without a final
-# newline would otherwise put the closing rule after its last byte, on a line
-# the content began. Feed it with a redirect or a here-string, never a pipe,
-# so it runs in this shell and untrusted_fail ends the process.
-untrusted_page() { # <colorizer or ""> -- raw bytes on stdin
-  local _up_out
-  _up_out="$(untrusted_escape && printf x)" || untrusted_fail
-  _up_out="${_up_out%x}"
-  case "$_up_out" in ''|*"$NL") ;; *) _up_out="$_up_out$NL" ;; esac
-  if [ -n "$HL_ON" ]; then
-    _up_out="$(printf '%s' "$_up_out" | "${1:-untrusted_mark}" && printf x)" || untrusted_fail
-    _up_out="${_up_out%x}"
+# A body of third-party bytes (stdin) through the escaper in mode $1 (doc or
+# diff), then the colorizer $2 (empty: untrusted_mark, which only styles the
+# escapes), into UT_OUT; UT_CRLF is 1 when a doc's line endings are CRLF, for
+# the caller to state on the section rule it prints next. Both stages are
+# captured BEFORE anything is shown, so a failure stops here with nothing on
+# screen. The display always ends a line: a body without a final newline
+# would otherwise put the closing rule after its last byte, on a line the
+# content began. Feed it with a redirect or a here-string, never a pipe, so
+# it runs in this shell and untrusted_fail ends the process.
+untrusted_render() { # <doc|diff> <colorizer or ""> -- raw bytes on stdin
+  UT_OUT="$(untrusted_pl "$1" && printf x)" || untrusted_fail
+  UT_OUT="${UT_OUT%x}"
+  UT_CRLF=''
+  if [ "$1" = doc ]; then
+    case "$UT_OUT" in
+      C*) UT_CRLF=1 ;;
+      -*) ;;
+      *)  untrusted_fail ;;
+    esac
+    UT_OUT="${UT_OUT#?}"
   fi
-  printf '%s' "$_up_out" | page || true
+  case "$UT_OUT" in ''|*"$NL") ;; *) UT_OUT="$UT_OUT$NL" ;; esac
+  if [ -n "$HL_ON" ]; then
+    UT_OUT="$(printf '%s' "$UT_OUT" | "${2:-untrusted_mark}" && printf x)" || untrusted_fail
+    UT_OUT="${UT_OUT%x}"
+  fi
+}
+# The rendered body, through the pager.
+untrusted_show() {
+  printf '%s' "$UT_OUT" | page || true
+}
+# A diff, rendered and paged in one step: its line-ending facts are in its
+# own header lines, so nothing has to be printed between the two.
+untrusted_page() { # <colorizer or ""> -- a unified diff on stdin
+  untrusted_render diff "$1"
+  untrusted_show
 }
 
 # The awk half every colorizer shares: find the escapes in escaped text and
-# style them. escat is the token at byte i, or ""; ex(s, c) is s with each
-# token in reverse red (RV, ended by RO) and the color c resumed after it;
-# escover is the start of the token covering byte p, or 0, so a colorizer
-# that splits a line never splits an escape (a token is at most 10 bytes,
-# \u{10FFFF}). With RV empty, ex is identity. The text is ASCII-only around
-# a token, so byte indexing under LC_ALL=C is exact. Braces are bracketed
-# and intervals spelled out: older awks lack {n}.
+# style them. escat is the token at byte i, or ""; kept(t) is true for an
+# escape that is not of a hidden character (\xHH, \u{5C}); hx(t, c) is the
+# token as it prints, in reverse red (RV, ended by RO) with the color c
+# resumed after it when it is hidden, bare when it is kept; ex(s, c) is s
+# with each token so printed; escover is the start of the token covering
+# byte p, or 0, so a colorizer that splits a line never splits an escape (a
+# token is at most 10 bytes, \u{10FFFF}). With RV empty, ex and hx are
+# identity. The text is ASCII-only around a token, so byte indexing under
+# LC_ALL=C is exact. Braces are bracketed and intervals spelled out: older
+# awks lack {n}.
 AWK_UNTRUSTED='
   function escat(s, i,   t, j) {
     if (substr(s, i, 1) != "\\") return ""
@@ -777,13 +907,15 @@ AWK_UNTRUSTED='
     if (t == "x") { t = substr(s, i, 4); return (t ~ /^\\x[0-9A-F][0-9A-F]$/) ? t : "" }
     return ""
   }
+  function kept(t) { return substr(t, 2, 1) == "x" || t == "\\u{5C}" }
+  function hx(t, c) { return (RV == "" || kept(t)) ? t : RV t RO c }
   function ex(s, c,   out, k, t) {
     if (RV == "") return s
     out = ""
     while ((k = index(s, "\\")) > 0) {
       t = escat(s, k)
       if (t == "") { out = out substr(s, 1, k); s = substr(s, k + 1); continue }
-      out = out substr(s, 1, k - 1) RV t RO c
+      out = out substr(s, 1, k - 1) hx(t, c)
       s = substr(s, k + length(t))
     }
     return out s
@@ -1612,7 +1744,7 @@ highlight_json() {
       while (i <= n) {
         c = substr(line, i, 1)
         if (c == "\\" && (e = escat(line, i)) != "") {   # an escape, between tokens
-          out = out RV e O; i += length(e)
+          out = out hx(e, ""); i += length(e)
         }
         else if (c == "\"") {                             # string -> key if a : follows
           s = c; i++
@@ -1680,7 +1812,7 @@ highlight_bash() {
         c = substr(line, i, 1)
         prev = (i > 1) ? substr(line, i - 1, 1) : ""
         if (c == "\\" && (e = escat(line, i)) != "") {              # an escape
-          out = out RV e O; i += length(e)
+          out = out hx(e, ""); i += length(e)
         }
         else if (c == "#" && (i == 1 || prev ~ /[ \t;(|&]/)) {      # comment
           out = out P ex(substr(line, i), P) O; break
@@ -1694,7 +1826,7 @@ highlight_bash() {
           out = out S c; i++
           while (i <= n) {
             d = substr(line, i, 1)
-            if (d == "\\" && (e = escat(line, i)) != "") { out = out RV e O S; i += length(e); continue }
+            if (d == "\\" && (e = escat(line, i)) != "") { out = out hx(e, S); i += length(e); continue }
             if (d == "\\") { out = out d substr(line, i + 1, 1); i += 2; continue }
             if (d == "\"") { out = out d; i++; break }
             if (d == "$" && (t = varat(line, i, n)) != "") { out = out K ex(t, K) O S; i += length(t); continue }
@@ -1737,7 +1869,7 @@ highlight_md() {
       n = length(s); i = 1; out = ""
       while (i <= n) {
         c = substr(s, i, 1)
-        if (c == "\\" && (e = escat(s, i)) != "") { out = out RV e O; i += length(e); continue }
+        if (c == "\\" && (e = escat(s, i)) != "") { out = out hx(e, ""); i += length(e); continue }
         if (c == "`") {
           j = index(substr(s, i + 1), "`")
           if (j > 0) { out = out S ex(substr(s, i, j + 1), S) O; i += j + 1; continue }
@@ -6111,15 +6243,19 @@ EOF
           declined=$((declined + 1))
           continue
         fi
-        # The section rule holds no value: the path is on the file: row.
-        printf '%s--- exactly the bytes being approved ---%s\n' "$C_B" "$C_OFF"
         # Escaped first, then syntax color where the suffix names a
         # highlighter and highlight_ok admits the content; the digest above
         # came from the file, not from this stream, and a highlighter only
-        # inserts SGR codes between the bytes it is given.
+        # inserts SGR codes between the bytes it is given. Rendered before
+        # the section rule, which states the line endings when they are
+        # CRLF: the one fact about the text that is drawn as layout.
         hl="$(highlighter_for "$path")"
         highlight_ok "$hl" <"$fro" || hl=""
-        untrusted_page "$hl" <"$fro"
+        untrusted_render doc "$hl" <"$fro"
+        # The section rule holds no value: the path is on the file: row.
+        printf '%s--- exactly the bytes being approved%s ---%s\n' "$C_B" \
+          "${UT_CRLF:+ (CRLF line endings)}" "$C_OFF"
+        untrusted_show
         print_end_rule file "$n_lines line$(plural_s "$n_lines")"
       fi
       echo
@@ -8273,14 +8409,17 @@ do_show() {
   # The path stands on its row, escaped; the section rule holds no value.
   local file_disp n_lines
   untrusted_var file_disp "$file"
-  printf '%sfile:%s       %s\n' "$C_DIM" "$C_OFF" "$file_disp"
-  printf '%s--- exactly the bytes being hashed ---%s\n' "$C_B" "$C_OFF"
   # The guard, the escaper and the highlighter are all fed $content, not the
   # file, so the single-read rule holds; the digest below still comes from
-  # $content too, never from the displayed stream.
+  # $content too, never from the displayed stream. Rendered before the
+  # section rule, which states the line endings when they are CRLF.
   hl="$(highlighter_for "$file")"
   highlight_ok "$hl" <<<"$content" || hl=""
-  untrusted_page "$hl" < <(printf '%s' "$content")
+  untrusted_render doc "$hl" < <(printf '%s' "$content")
+  printf '%sfile:%s       %s\n' "$C_DIM" "$C_OFF" "$file_disp"
+  printf '%s--- exactly the bytes being hashed%s ---%s\n' "$C_B" \
+    "${UT_CRLF:+ (CRLF line endings)}" "$C_OFF"
+  untrusted_show
   # The closing rule, so the digest below -- this display's verdict -- sits
   # after the last byte of the file and never beside it.
   nl=''

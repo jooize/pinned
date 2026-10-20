@@ -5674,6 +5674,102 @@ run_probe eval 'untrusted_var v "plain subject (no escapes)"; printf "%s" "$v"'
 assert_eq "$POUT" "plain subject (no escapes)" "printable ASCII is its own escaped form"
 assert_eq "$(grep -c '7;31m' "$SRC")" 1 "reverse red is defined once and worn by nothing else"
 
+# TWO KINDS OF ESCAPE: only the escape of a hidden-list character wears the
+# reserved style. A kept escape -- an invalid byte, the self-escaped
+# backslash -- shows as exactly what it is, in the row's own color.
+ESC_KEPT="a$(printf '\377') ${BS}u{41} $(printf '\342\200\213')d"
+export ESC_KEPT
+run_probe eval 'C_RV="$SGR_RV"; untrusted_var v "$ESC_KEPT" "<c>"; printf "%s" "$v"'
+assert_eq "$POUT" "a${BS}xFF ${BS}u{5C}u{41} "$'\033[7;31m'"${BS}u{200B}"$'\033[0m'"<c>d" \
+  "a kept escape takes no style, a hidden one wears reverse red"
+ESC_MARKED="${BS}xFF ${BS}u{5C}u{1} ${BS}u{200B}"
+export ESC_MARKED
+run_probe eval 'HL_ON=1; printf "%s\n" "$ESC_MARKED" | untrusted_mark'
+assert_eq "$POUT" "${BS}xFF ${BS}u{5C}u{1} "$'\033[7;31m'"${BS}u{200B}"$'\033[0m' \
+  "the colorizers style hidden escapes only"
+# Decode first: only the bytes that fail are escaped.
+ESC_OUT="$(printf '\303\251\377' | "$PROBE" untrusted_escape)"
+assert_eq "$ESC_OUT" "$(printf '\303\251')${BS}xFF" "C3 A9 FF shows as e-acute, then \\xFF"
+
+# LAYOUT. A document read as lines (doc mode) shows a tab as itself; when
+# every LF has a CR before it, the pairs draw as plain breaks and the mode's
+# first byte says C; any other CR is escaped where it is.
+TAB=$'\t' CR=$'\r'
+ESC_OUT="$(printf 'a\tb\r\nc\r\n' | "$PROBE" untrusted_pl doc; printf x)"
+assert_eq "${ESC_OUT%x}" "Ca${TAB}b"$'\n'"c"$'\n' "doc: a tab is layout, CRLF pairs are breaks, and the mode says CRLF"
+ESC_OUT="$(printf 'a\r\nb\n' | "$PROBE" untrusted_pl doc; printf x)"
+assert_eq "${ESC_OUT%x}" "-a${BS}u{D}"$'\n'"b"$'\n' "doc: mixed endings escape every CR and claim nothing"
+ESC_OUT="$(printf 'a\r\nb\r\r\nc\r' | "$PROBE" untrusted_pl doc; printf x)"
+assert_eq "${ESC_OUT%x}" "Ca"$'\n'"b${BS}u{D}"$'\n'"c${BS}u{D}" \
+  "doc: a CR not directly before an LF stays escaped, in a CRLF file too"
+ESC_OUT="$(printf 'a\tb\r\n' | "$PROBE" untrusted_escape)"
+assert_eq "$ESC_OUT" "a${BS}u{9}b${BS}u{D}" "field: a tab and a CR stay escaped"
+
+# A diff: the rule holds per file, over content lines with a real LF; a
+# CRLF file gets one header line before its first hunk. Header lines are
+# single-line fields, so their tabs stay escaped.
+cat >"$FIX/crlf.diff" <<EOF
+diff --git a/c.txt b/c.txt
+--- a/c.txt
++++ b/c.txt
+@@ -1,2 +1,2 @@ ctx${TAB}x
+ one${CR}
+-two${CR}
++t${TAB}wo${CR}
+diff --git a/m.txt b/m.txt
+--- a/m.txt
++++ b/m.txt
+@@ -1,2 +1,2 @@
+ p${CR}
+-q
++Q
+diff --git a/n.txt b/n.txt
+--- a/n.txt
++++ b/n.txt
+@@ -1,2 +1,2 @@
+ a${CR}
+-b${CR}
+\\ No newline at end of file
++B${CR}
+\\ No newline at end of file
+EOF
+cat >"$FIX/crlf.want" <<EOF
+diff --git a/c.txt b/c.txt
+--- a/c.txt
++++ b/c.txt
+CRLF line endings
+@@ -1,2 +1,2 @@ ctx${BS}u{9}x
+ one
+-two
++t${TAB}wo
+diff --git a/m.txt b/m.txt
+--- a/m.txt
++++ b/m.txt
+@@ -1,2 +1,2 @@
+ p${BS}u{D}
+-q
++Q
+diff --git a/n.txt b/n.txt
+--- a/n.txt
++++ b/n.txt
+CRLF line endings
+@@ -1,2 +1,2 @@
+ a
+-b${BS}u{D}
+\\ No newline at end of file
++B${BS}u{D}
+\\ No newline at end of file
+EOF
+RC=0
+"$PROBE" untrusted_pl diff <"$FIX/crlf.diff" >"$OUT" 2>"$ERRF" || RC=$?
+assert_exit "$RC" 0 "the escaper exits 0 in diff mode"
+if cmp -s "$OUT" "$FIX/crlf.want"; then
+  ok "diff: CRLF per file, mixed endings escaped, a CR before a missing newline escaped, content tabs are layout"
+else
+  fail "diff: CRLF per file, mixed endings escaped, a CR before a missing newline escaped, content tabs are layout" \
+    "$(diff "$FIX/crlf.want" "$OUT" || true)"
+fi
+
 if [ "$GIT_OK" -eq 1 ]; then
   # End to end: a hidden character in a subject and in the diff reaches the
   # ceremony display only as its escape.
@@ -5699,9 +5795,39 @@ y
     ok "no hidden character reaches the display raw"
   fi
 
+  # The diff body is a document: a tab shows as itself, and a file whose
+  # every line ends CR LF says so once, in its own header block.
+  printf 'one\r\ntwo\r\n' > "$REPO_E/w.bat"
+  printf 'x\ty\n' > "$REPO_E/t.txt"
+  bgit "$REPO_E" add w.bat t.txt; bgit "$REPO_E" commit -q -m "e2 crlf and tab"
+  ANS='
+y
+'
+  run_pinned review "$REPO_E"
+  assert_exit "$RC" 0 "review over a CRLF file and a tab exits 0"
+  assert_eq "$(awk '/^\+\+\+ b\/w\.bat$/ { getline; print; exit }' "$OUT")" "CRLF line endings" \
+    "the CRLF file's header block states its line endings"
+  assert_eq "$(grep -cxF -e '+one' "$OUT")" 1 "and its lines draw as plain breaks"
+  assert_missing "$OUT" "${BS}u{D}" "no CR escape where every line ends CR LF"
+  assert_contains "$OUT" "+x${TAB}y" "a tab in the diff body shows as itself"
+  if LC_ALL=C grep -q "$CR" "$OUT"; then fail "no raw CR reaches the display"; else ok "no raw CR reaches the display"; fi
+
+  # The file view states it on the section rule over the text.
+  printf 'a\r\nb\r\n' > "$FIX/show-crlf.bat"
+  ANS=""
+  run_pinned show "$FIX/show-crlf.bat"
+  assert_exit "$RC" 0 "show of a CRLF file exits 0"
+  assert_contains "$OUT" "--- exactly the bytes being hashed (CRLF line endings) ---" \
+    "the section rule states the line endings"
+  assert_missing "$OUT" "${BS}u{D}" "and the lines draw as plain breaks"
+  printf 'a\r\nb\n' > "$FIX/show-mixed.txt"
+  run_pinned show "$FIX/show-mixed.txt"
+  assert_contains "$OUT" "--- exactly the bytes being hashed ---" "mixed endings claim nothing on the rule"
+  assert_contains "$OUT" "a${BS}u{D}" "and the lone CR shows escaped"
+
   # FAIL CLOSED: an escaper that fails stops the ceremony. Nothing is shown
   # raw in its place and nothing is recorded.
-  sed 's/^  env -i PATH="\$PATH" perl -e "\$UNTRUSTED_PL" -- "\${1:-}" "\${2:-}"$/  return 3/' \
+  sed 's/^  env -i PATH="\$PATH" perl -e "\$UNTRUSTED_PL" -- "\$@"$/  return 3/' \
     "$STUB" > "$FIX/pinned-noesc"
   chmod 755 "$FIX/pinned-noesc"
   assert_eq "$(grep -c '^  return 3$' "$FIX/pinned-noesc")" 1 "the failing-escaper stub took its seam"
