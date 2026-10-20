@@ -642,10 +642,15 @@ command -v git >/dev/null 2>&1 || {
 # page, nothing to dismiss) while long content still gets the alternate
 # screen and real scrollback. No -X: the alternate screen is wanted.
 # cat when non-interactive or less is absent. Never $PAGER/user config --
-# the pager sits between reviewed bytes and eyes.
+# the pager sits between reviewed bytes and eyes. Enforced, not a promise:
+# env -i with HOME=/var/empty, so no lesskey file (which can bind a key to
+# a shell command), LESS or LESSOPEN from the caller reaches a root less,
+# and LESSSECURE=1 turns off the shell, pipe, edit, preprocessor and
+# lesskey features outright. LESSCHARSET says what the escaper writes.
 page() {
   if [ -t 1 ] && command -v less >/dev/null 2>&1; then
-    less -RF
+    env -i PATH="$PATH" HOME=/var/empty TERM="${TERM:-dumb}" \
+      LESSSECURE=1 LESSCHARSET=utf-8 less -RF
   else
     cat
   fi
