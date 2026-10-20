@@ -4626,7 +4626,7 @@ case "$action" in
             if [ -n "$preview_pin" ]; then
               printf '%spinned:%s     %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$preview_pin" "$C_OFF"
               if [ -n "$ancestry_mb" ]; then
-                printf '%smerge base:%s %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$ancestry_mb" "$C_OFF"
+                printf '%sancestor:%s   %s%s%s\n' "$C_B" "$C_OFF" "$C_CYN" "$ancestry_mb" "$C_OFF"
               fi
               if [ "$preview_pin" != "$preview_head" ]; then
                 echo
@@ -5334,7 +5334,7 @@ do_approve() {
       if [ -n "$old_hash" ]; then
         printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
         if [ -n "$ancestry_mb" ]; then
-          printf '%smerge base:%s %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$ancestry_mb" "$C_OFF"
+          printf '%sancestor:%s   %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$ancestry_mb" "$C_OFF"
         fi
         # Free orientation on any machine with the clone (that is, every
         # machine review runs on); the signature stays the gate.
@@ -5428,7 +5428,7 @@ do_approve() {
       if [ -n "$old_hash" ]; then
         printf '%spinned:%s     %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$old_hash" "$C_OFF"
         if [ -n "$ancestry_mb" ]; then
-          printf '%smerge base:%s %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$ancestry_mb" "$C_OFF"
+          printf '%sancestor:%s   %s%s%s\n' "$C_DIM" "$C_OFF" "$C_CYN" "$ancestry_mb" "$C_OFF"
         fi
         echo
         print_ancestry_listing "$ancestry_cls" "$old_hash" "$hash" "$ancestry_mb" \

@@ -2447,7 +2447,7 @@ y
   assert_exit "$RC" 0 "a declared diverged move proceeds"
   assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_X" "the declared diverged move recorded the pin"
   assert_contains "$OUT" "!!! DIVERGED:" "the ceremony raises the diverged alarm"
-  assert_contains "$OUT" "merge base: $G_C1" "the display names the merge base"
+  assert_contains "$OUT" "ancestor:   $G_C1" "the display names the common ancestor on its ancestor: row"
   assert_contains "$OUT" "commits being un-approved (leaving the pinned line)" \
     "the display names the abandoned range"
   assert_contains "$OUT" "commits arriving on the new line" "the display names the arriving range"

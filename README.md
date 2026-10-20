@@ -244,9 +244,9 @@ Approval history: `log show --predicate 'eventMessage CONTAINS "pinned:"'`
   reality contradicts refuses too, naming the class that actually holds
   -- declared, never inferred. A declared move shows its commits in the
   direction that makes them readable: the reversed range for backward,
-  and the merge base plus both sides for diverged (an empty
-  `pin..candidate` listing would say nothing about what is being
-  withdrawn, which is the one thing a review may never do). Its
+  and the common ancestor (its `ancestor:` row) plus both sides for
+  diverged (an empty `pin..candidate` listing would say nothing about
+  what is being withdrawn, which is the one thing a review may never do). Its
   full-caps alarm is a verdict, so it prints below the diff's closing
   rule, directly above the question. The floor holds for signature evidence too: a
   signature says who vouched, never which way the pin is moving, so a
