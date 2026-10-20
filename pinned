@@ -2598,7 +2598,7 @@ print_ancestry_alarm() {
       _alarm_line "$l"
       _alarm_line "The candidate is NOT on the pinned line of history:"
       if [ -n "${4:-}" ]; then
-        _alarm_line "$(printf 'that line is being ABANDONED at merge base %.10s' "$4")"
+        _alarm_line "$(printf 'that line is being ABANDONED at ancestor %.10s' "$4")"
         _alarm_line "(history rewrite or side branch)."
       else
         _alarm_line "that line is being ABANDONED, and the two revs share"

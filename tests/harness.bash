@@ -2507,6 +2507,9 @@ y
   assert_eq "$(rev_in "$G_SLOT/rev.git")" "$G_X" "the declared diverged move recorded the pin"
   assert_contains "$OUT" "!!! DIVERGED:" "the ceremony raises the diverged alarm"
   assert_contains "$OUT" "ancestor:   $G_C1" "the display names the common ancestor on its ancestor: row"
+  assert_contains "$OUT" "that line is being ABANDONED at ancestor ${G_C1:0:10}" \
+    "and the alarm names it by the same word"
+  assert_missing "$OUT" "merge base" "git's plumbing word appears nowhere"
   assert_contains "$OUT" "commits being un-approved (leaving the pinned line)" \
     "the display names the abandoned range"
   assert_contains "$OUT" "commits arriving on the new line" "the display names the arriving range"
