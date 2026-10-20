@@ -7743,7 +7743,7 @@ do_sign() {
   [ "$EUID" -ne 0 ] || { echo "run sign without sudo (it needs your SSH agent)" >&2; exit 1; }
   inv="$(id -un)"
   [ $# -eq 2 ] || usage
-  local tag_name="$2"
+  local tag_name="$2" tag_disp
   case "$tag_name" in
     -*) say_err "invalid tag name: " "$tag_name"; exit 1 ;;
   esac
@@ -7768,7 +7768,8 @@ do_sign() {
       echo "        refusing to move it -- pick another name, or review that rev first" >&2
       exit 1
     fi
-    echo "note: the tag already points at the pinned rev; re-signing it in place: $tag_name"
+    untrusted_var tag_disp "$tag_name"
+    printf 'note: the tag already points at the pinned rev; re-signing it in place: %s\n' "$tag_disp"
     force="-f"
   fi
 
@@ -7782,8 +7783,10 @@ do_sign() {
   else
     git -C "$repo" --no-pager tag -s -m "signed by $inv via pinned" "$tag_name" "$hash"
   fi
-  # The pinned hash is a field and may sit mid-line; the tag name ends it.
-  printf '%s✓ signed at %s%.10s%s%s:%s %s\n' "$C_GRN$C_B" "$C_OFF$C_CYN" "$hash" "$C_OFF" "$C_GRN$C_B" "$C_OFF" "$tag_name"
+  # The pinned hash is a field and may sit mid-line; the tag name ends it,
+  # escaped: a ref name may hold a character that draws nothing.
+  untrusted_var tag_disp "$tag_name"
+  printf '%s✓ signed at %s%.10s%s%s:%s %s\n' "$C_GRN$C_B" "$C_OFF$C_CYN" "$hash" "$C_OFF" "$C_GRN$C_B" "$C_OFF" "$tag_disp"
   local tag_q
   shq tag_q "$tag_name"
   untrusted_var tag_q "$tag_q" "$C_DIM"

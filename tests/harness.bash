@@ -139,6 +139,9 @@ assert_contains() { # file needle label
 assert_missing() { # file needle label
   if grep -qF -e "$2" "$1"; then fail "$3" "unexpected '$2' in output"; else ok "$3"; fi
 }
+assert_line() { # file line label -- the needle is one whole line of the output
+  if grep -qxF -e "$2" "$1"; then ok "$3"; else fail "$3" "no line '$2' in output"; fi
+}
 # The self-elevation handoff argv is pretty-printed one flag-group per line
 # (trailing ` \`, aligned padding) so a long review reads as a list. This joins
 # those continuation lines back into one logical, single-spaced command so the
@@ -5904,6 +5907,35 @@ for sh in bash zsh fish; do
     assert_eq "$got" "${SHQ_WORDS[$i]}." "$sh reads back a word holding ${SHQ_WHAT[$i]}"
   done
 done
+
+# ---------------------------------------------------------------------------
+say "S27: sign shows the tag name escaped"
+# A throwaway ssh key signs through a fixture git config (sign uses the
+# user's git config on purpose: it supplies the signing key). The repo path
+# holds a quote and a space, the tag a zero-width space.
+if [ "$GIT_OK" -eq 1 ] && command -v ssh-keygen >/dev/null 2>&1; then
+  REPO_S="$FIX/sign it's"
+  mkdir -p "$REPO_S"
+  bgit "$REPO_S" init -q
+  printf 's0\n' > "$REPO_S/s.txt"
+  bgit "$REPO_S" add s.txt; bgit "$REPO_S" commit -q -m "s0"
+  seed_rev "$REPO_S" "$(bgit "$REPO_S" rev-parse 'HEAD^{commit}')"
+  ssh-keygen -q -t ed25519 -N '' -C sign@test -f "$FIX/signkey"
+  printf '[user]\n\tsigningkey = %s\n\tname = t\n\temail = t@test\n[gpg]\n\tformat = ssh\n' \
+    "$FIX/signkey" > "$FIX/sign.gitconfig"
+  ANS=""
+  GIT_CONFIG_GLOBAL="$FIX/sign.gitconfig" run_pinned sign "$REPO_S" "v1${ZW}"
+  assert_exit "$RC" 0 "sign signs the pinned rev"
+  assert_contains "$OUT" "v1${BS}u{200B}" "the verdict shows the tag name escaped"
+  assert_missing "$OUT" "$ZW" "and never raw"
+  GIT_CONFIG_GLOBAL="$FIX/sign.gitconfig" run_pinned sign "$REPO_S" "v1${ZW}"
+  assert_exit "$RC" 0 "re-signing in place succeeds"
+  assert_line "$OUT" "note: the tag already points at the pinned rev; re-signing it in place: v1${BS}u{200B}" \
+    "the note ends on the tag name, escaped"
+else
+  skip "S27" "no git fixture or no ssh-keygen"
+fi
+
 
 # ---------------------------------------------------------------------------
 printf '1..%d\n' "$TESTS"
