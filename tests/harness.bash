@@ -2036,6 +2036,41 @@ why this commit exists
   assert_missing "$OUT" 'FORGED SUBJECT' "no planted text reaches a subject-only listing"
   assert_missing "$OUT" 'why this commit exists' "and no ordinary body either"
 
+  # A BODY IS A DOCUMENT, A SUBJECT A FIELD. A tab in a body is layout and
+  # prints raw; a tab in a subject stays escaped. A body whose every line
+  # ends CR LF draws each pair as one break, under one dim `CRLF line
+  # endings` line in the subject column; a body with mixed endings keeps
+  # its carriage returns escaped. --cleanup=verbatim keeps the bytes.
+  printf 'k1\n' > "$REPO_D/k.txt"
+  bgit "$REPO_D" add k.txt
+  bgit "$REPO_D" commit -q --cleanup=verbatim -F <(printf 'd11 tab body\n\nkey:\tvalue\n\tindented\n')
+  printf 'l1\n' > "$REPO_D/l.txt"
+  bgit "$REPO_D" add l.txt
+  bgit "$REPO_D" commit -q --cleanup=verbatim -F <(printf 'd12 subject\twith a tab\n')
+  printf 'm1\n' > "$REPO_D/m.txt"
+  bgit "$REPO_D" add m.txt
+  bgit "$REPO_D" commit -q --cleanup=verbatim -F <(printf 'd13 crlf body\r\n\r\nfirst\tline\r\n\r\nsecond line\r\n')
+  printf 'n1\n' > "$REPO_D/n.txt"
+  bgit "$REPO_D" add n.txt
+  bgit "$REPO_D" commit -q --cleanup=verbatim -F <(printf 'd14 mixed body\n\nline one\r\nline two\n')
+  D_DOCC="$(bgit "$REPO_D" rev-parse 'HEAD^{commit}')"
+  RC=0
+  repo="$REPO_D" "$PROBE" print_commit_range "$D_FORGEC" "$D_DOCC" '' messages \
+    >"$OUT" 2>"$ERRF" || RC=$?
+  assert_exit "$RC" 0 "the listing exits 0 over bodies with tabs and CRs"
+  assert_line "$OUT" "key:	value" "a tab inside a body line is layout, printed raw"
+  assert_line "$OUT" "	indented" "and so is a tab that indents a body line"
+  assert_contains "$OUT" "  d12 subject${BS}u{9}with a tab" "a tab in a subject stays escaped"
+  D_ROWLEN="$(grep -E '^[0-9a-f]+  .*  d13 crlf body$' "$OUT" | sed 's/d13 crlf body$//' | awk '{ print length($0) }')"
+  assert_eq "$(next_line "$OUT" "$(grep -E '  d13 crlf body$' "$OUT")")" \
+    "$(printf '%*s' "$D_ROWLEN" '')CRLF line endings" \
+    "a CRLF body is stated once, on a line under its row in the subject column"
+  assert_line "$OUT" "first	line" "each CR LF in it draws as a plain break"
+  assert_line "$OUT" "second line" "with nothing escaped at the line ends"
+  assert_eq "$(grep -c 'CRLF line endings' "$OUT")" 1 "the statement is made once, for that body only"
+  assert_line "$OUT" "line one${BS}u{D}" "a body with mixed endings keeps its carriage return escaped"
+  assert_line "$OUT" "line two" "beside its plain line"
+
   # End to end: the flag rides the ceremony, not just the helper.
   ANS='
 y

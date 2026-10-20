@@ -702,7 +702,9 @@ page() {
 # through it: untrusted_var for one value in a row (field), untrusted_render
 # for a body that is shown whole (doc or diff, then the colorizer), and the
 # commit listing escapes its whole git stream (field) before it parses a
-# byte. It reads the RAW bytes and runs BEFORE any color, so this script's
+# byte, then lays each message body out as a doc from that escaped text (a
+# tab escape back to a tab, a CR LF body's line ends stated once; see
+# print_commit_range). It reads the RAW bytes and runs BEFORE any color, so this script's
 # own SGR is never escaped and no ESC byte of the content can reach the
 # terminal. Stored and hashed data keep their bytes: this is display only.
 #
@@ -2321,6 +2323,16 @@ subject_var() { # <var> <rev> [resume-SGR] [fallback]
 # as `git log` does; a commit with no body gets no blank, and the last body
 # in a listing gets none either.
 #
+# A BODY IS A DOCUMENT, A SUBJECT A FIELD (the escaper's doc and field
+# layouts, applied after the parse). In a body a tab is layout and prints
+# as itself. When a carriage return sits directly before every line feed of
+# a body, that is the body's line-ending convention: each pair draws as one
+# break, and a dim `CRLF line endings` line under the commit's row, in the
+# subject's column, states it once, outside the text (a body line starts at
+# column zero, so it cannot stand there). Any other carriage return stays
+# escaped where it is. A subject is one line: a tab in it stays escaped,
+# since it could push the text after it into another column.
+#
 # Counts pluralize ("1 file", "2 files") without breaking alignment: the
 # count right-aligns in its own digit column and the noun left-aligns
 # beside it, so the ones digits stack exactly like the signed +/- numbers
@@ -2413,11 +2425,25 @@ print_commit_range() {
       # %h picks its own length per commit, so the hash gets a column too.
       if (length(hsh[n]) > hw) hw = length(hsh[n])
     }
+    # A body line as a document: each tab escape back to the tab it was.
+    # Token-aware, so the escaped TEXT of a tab escape (\u{5C}u{9}) stays
+    # text: every backslash in escaped text begins an escape.
+    function tabs(s,   out, k, t) {
+      out = ""
+      while ((k = index(s, "\\")) > 0) {
+        t = escat(s, k)
+        if (t == "") { out = out substr(s, 1, k); s = substr(s, k + 1); continue }
+        out = out substr(s, 1, k - 1) (t == tab ? "\t" : t)
+        s = substr(s, k + length(t))
+      }
+      return out s
+    }
     BEGIN {
       sep = "\\u{2}"
       st  = "\\u{1}" nonce sep
       en  = "\\u{1}" nonce "\\u{3}"
       tab = "\\u{9}"
+      cr  = "\\u{D}"
     }
     {
       line = $0
@@ -2455,6 +2481,8 @@ print_commit_range() {
       if (fw < 1) fw = 1
       if (iw < 1) iw = 1
       if (dw < 1) dw = 1
+      # The subject column, where the dim detail line under a row starts.
+      col = length(pre) + hw + 2 + nw + 1 + fw + 2 + iw + 1 + 1 + dw + 1 + 2
       for (j = 1; j <= n; j++) {
         out = pre cyn sprintf("%-" hw "s", hsh[j]) off "  "
         if (mrg[j])
@@ -2469,10 +2497,22 @@ print_commit_range() {
         # The subject whole, last on its row: nothing follows it.
         print out "  " ex(sbj[j], "")
         if (!msg) continue
+        # CRLF: every line of the body ends in an escaped carriage return
+        # (the body was split at its line feeds, so each line had one).
+        crlf = (bn[j] > 0)
+        for (i = 1; crlf && i <= bn[j]; i++) {
+          k = length(bdy[j, i]) - length(cr) + 1
+          if (k < 1 || substr(bdy[j, i], k) != cr) crlf = 0
+        }
+        if (crlf) printf "%" col "s%sCRLF line endings%s\n", "", dim, off
         # The body, at column zero and as its author laid it out -- blank
-        # lines inside it included. The blank after it belongs to the NEXT
-        # row; the listing never ends on one.
-        for (i = 1; i <= bn[j]; i++) print ex(bdy[j, i], "")
+        # lines inside it included, tabs as layout. The blank after it
+        # belongs to the NEXT row; the listing never ends on one.
+        for (i = 1; i <= bn[j]; i++) {
+          b = bdy[j, i]
+          if (crlf) b = substr(b, 1, length(b) - length(cr))
+          print ex(tabs(b), "")
+        }
         if (bn[j] > 0 && j < n) print ""
       }
     }

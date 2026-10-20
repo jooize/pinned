@@ -144,12 +144,16 @@ so an escape on screen can only ever be one.
 Line feed is the line break.
 In a single\-line value (a subject, a path, a name, an argument) tab and
 carriage return show escaped.
-In a document read as lines (a diff body, a file shown whole) a tab is
-layout and shows as itself, and when a carriage return sits directly
-before every line feed the pairs draw as plain breaks and pinned says
+In a document read as lines (a diff body, a file shown whole, a commit
+body under
+.BR \-\-messages )
+a tab is layout and shows as itself, and when a carriage return sits
+directly before every line feed the pairs draw as plain breaks and pinned
+says
 .B CRLF line endings
-once, outside the text: on the section rule over a file, and as a header
-line before the first hunk of that file in a diff.
+once, outside the text: on the section rule over a file, as a header
+line before the first hunk of that file in a diff, and on a dim line
+under a commit's row, in the subject's column, for its body.
 Any other carriage return shows escaped where it is.
 .PP
 On a terminal the escape of a hidden character is reverse red, a style
@@ -489,6 +493,11 @@ listing; the default is the subject only.
 A body prints at column zero, as its author wrote it: unwrapped,
 unindented, trailers included, one blank line before the next commit,
 its hidden characters escaped like every other third-party text.
+The body is a document: a tab in it is layout, and a body whose every
+line ends in a carriage return and line feed draws them as plain breaks
+under a dim
+.B CRLF line endings
+line; the subject stays a single\-line value, its tab escaped.
 The diff below the listing carries no commit messages at all, so a
 commit that explains itself only in its body is read here or nowhere.
 Combines with every other

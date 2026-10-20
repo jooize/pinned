@@ -49,7 +49,9 @@ the nix module; a manual install copies it onto `fish_complete_path` / `fpath`.
                                       the default;
                                       --messages: print each commit's whole
                                       message under its subject in the
-                                      commits listing; the default is the
+                                      commits listing, the body as a
+                                      document (tabs as layout, CRLF
+                                      stated once); the default is the
                                       subject only)
     pinned review <repo> [--tag <tag>] --words <w1-w2-w3-w4-w5-w6> --commits <n>
                                       approve a forward move without the
@@ -654,9 +656,10 @@ one.
   dropped. Valid UTF-8 is decoded first, so only failing bytes are
   escaped. LF is the line break and a plain space is itself. In a
   single-line value (a subject, a path, an argument) tab and CR escape;
-  in a diff body or a file shown whole a tab is layout, and a file whose
-  every LF has a CR before it is drawn with plain breaks and labeled
-  `CRLF line endings` once, outside the text (any other CR escapes). A
+  in a diff body, a file shown whole or a commit body under `--messages`
+  a tab is layout, and a file or body whose every LF has a CR before it
+  is drawn with plain breaks and labeled `CRLF line endings` once,
+  outside the text (any other CR escapes). A
   literal backslash that would read as an escape (before `u{`, or before
   `x` and a hex digit) is escaped too, as `\u{5C}`, so an escape on
   screen can only be one. Only the escape of a hidden character wears
