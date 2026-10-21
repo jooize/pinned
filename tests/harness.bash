@@ -5333,8 +5333,10 @@ if LC_ALL=C grep -q $'\033' "$OUT"; then fail "HL_ON off: color_diff adds no esc
 # coloring stays off.
 assert_eq "$(grep -c '"\$diff_out" | page' "$SRC")" 0 "no git diff is paged uncolored"
 assert_eq "$(grep -c '| color_diff | page' "$SRC")" 0 "no diff reaches the pager without the escaper"
-assert_eq "$(grep -c 'untrusted_page color_diff <<<' "$SRC")" 5 \
+assert_eq "$(grep -cE 'untrusted_page color_diff <"\$(FD_)?DIFF_FILE"' "$SRC")" 5 \
   "every reviewed diff (three review paths, the baseline diff, show) goes through the escaper, then color_diff"
+assert_eq "$(grep -c 'untrusted_page color_diff <<<' "$SRC")" 0 \
+  "and from a file, never a shell variable, which drops a NUL"
 assert_contains "$SRC" '-c color.diff=never diff --no-ext-diff --no-textconv' "sgit_diff renders without git's coloring"
 
 hl_run "" highlight_bash "$HLD/hook.bash"
@@ -6147,7 +6149,7 @@ assert_before "$OUT" "+added" "--- end of diff: " "below the last line of the di
 # Colored, through the library (HL_ON forced, as S21 does): the hidden
 # escape wears reverse red, the kept one none.
 run_probe eval 'HL_ON=1; freeze_file "'"$DD"'/old"; o="$FROZEN_COPY"; freeze_file "'"$DD"'/new"
-  file_diff_capture "$o" "$FROZEN_COPY" old new; untrusted_render diff color_diff <<<"$FD_DIFF"
+  file_diff_capture "$o" "$FROZEN_COPY" old new; untrusted_render diff color_diff <"$FD_DIFF_FILE"
   printf "%s" "$UT_OUT"'
 assert_contains <(printf '%s' "$POUT") $'\033[7;31m'"${BS}u{200B}"$'\033[0m' \
   "colored, the hidden escape wears reverse red"
@@ -6183,11 +6185,11 @@ printf 'x\0z\n' > "$DD/bin-new"
 printf 'head\n1\n2\n3\n4\n' > "$DD/fn-old"
 printf 'head\n1\n2\nX\n4\n' > "$DD/fn-new"
 run_probe eval 'file_diff_capture "'"$DD"'/bin-old" "'"$DD"'/bin-new" "old: o" "new: n"
-  printf "%s" "$FD_DIFF"'
+  cat "$FD_DIFF_FILE"'
 assert_exit "$RC" 0 "a binary pair is captured"
 assert_eq "$POUT" "Binary files old: o and new: n differ" "as one line naming the two labels"
 run_probe eval 'file_diff_capture "'"$DD"'/fn-old" "'"$DD"'/fn-new" old new
-  printf "%s" "$FD_DIFF"'
+  cat "$FD_DIFF_FILE"'
 assert_line <(printf '%s\n' "$POUT") "@@ -3,3 +3,3 @@" "a hunk header ends at its @@"
 assert_eq "$(printf '%s\n' "$POUT" | head -n2)" "--- old"$'\n'"+++ new" \
   "and git's header block is the two labels"
@@ -6210,6 +6212,16 @@ if cmp -s "$DD/nul-want" "$DD/nul-got"; then
 else
   fail "every byte of the NUL's line survives the rewrite" "$(od -c "$DD/nul-got" | head -n 8)"
 fi
+# And all the way to the screen: the capture keeps the diff in a file, so
+# the escaper meets the NUL and shows it, where a shell variable dropped it
+# and drew `abcd`, a line the file does not hold.
+ANS='
+'
+run_pinned diff "$DD/nul-old" "$DD/nul-new"
+assert_exit "$RC" 0 "a late NUL is shown"
+assert_line "$OUT" "-ab${BS}u{0}cd" "the old line with its NUL escaped"
+assert_line "$OUT" "+ab${BS}u{0}ce" "and the new line"
+assert_missing "$OUT" "abcd" "never with the NUL dropped"
 # Fail closed: what the rewriter does not know as git's output is a 2 with
 # nothing printed, so a 1 from git never pairs with it.
 run_probe eval 'printf "not a diff\n" | env -i PATH="$PATH" FD_OLD_LABEL=o FD_NEW_LABEL=n perl -e "$FILE_DIFF_PL"'

@@ -2097,6 +2097,20 @@ sgit_diff() {
   _sgit_diff_ok=1 sgit -c color.diff=never diff --no-ext-diff --no-textconv "$@"
 }
 
+# sgit_diff_file <git diff args>: the same diff, into a file in the private
+# workdir; sets DIFF_FILE. Never a shell variable: bash drops every NUL a
+# command substitution reads, and git sends a NUL past its 8000-byte sniff
+# on as text, so the line would show without it (see file_diff_capture).
+# A git failure ends the run here, before anything is shown as reviewable:
+# an explicit exit, not set -e, which a caller under `||` switches off
+# (approve_step_walk is one).
+sgit_diff_file() {
+  [ -n "$workdir" ] || workdir="$(mktemp -d)"
+  FREEZE_N=$((FREEZE_N + 1))
+  DIFF_FILE="$workdir/diff.$FREEZE_N"
+  sgit_diff "$@" >"$DIFF_FILE" || exit 1
+}
+
 # The size of a two-rev diff in one phrase, "N files +A -D": the spelling
 # the step summary's total, the no-shared-history gate and every repo diff's
 # closing rule share. Binary files count as changed files and contribute
@@ -2215,9 +2229,17 @@ file_diff_git() { # <old-frozen> <new-frozen> <old-label> <new-label>
 }
 
 # The diff and its parts, computed BEFORE any gate announces it, so a diff
-# that cannot be made fails while nothing has been promised. Sets FD_DIFF
-# (the unified diff, hunks labeled), FD_SHAPE ("+A -D", the gate's and the
-# closing rule's spelling) and FD_KEYS (the keys block, or empty).
+# that cannot be made fails while nothing has been promised. Sets
+# FD_DIFF_FILE (the unified diff, hunks labeled), FD_SHAPE ("+A -D", the
+# gate's and the closing rule's spelling) and FD_KEYS (the keys block, or
+# empty).
+#
+# THE DIFF LIVES IN A FILE, NEVER A SHELL VARIABLE: bash drops every NUL a
+# command substitution reads, so `ab<NUL>cd` would show as `abcd` -- a line
+# the file does not hold. The file sits beside the frozen copies in the
+# private workdir (freeze_file), so it is exactly as reachable as the bytes
+# it was made from, and the escaper reads every byte of it. label_hunks
+# runs its awk only over two sides that parse as JSON, which no NUL can.
 #
 # -U1: unified context lines are UNCHANGED content by definition, and a
 # diff prints every changed line at any -U level, so trimming context
@@ -2239,11 +2261,14 @@ file_diff_git() { # <old-frozen> <new-frozen> <old-label> <new-label>
 # substitution, so that exit ends the process and not a subshell.
 file_diff_capture() { # <old-frozen> <new-frozen> <old-label> <new-label>
   local _fd_shape
-  FD_DIFF="$(set +e
-    file_diff_git "$1" "$2" "$3" "$4" | label_hunks "$1" "$2"
+  [ -n "$workdir" ] || workdir="$(mktemp -d)"
+  FREEZE_N=$((FREEZE_N + 1))
+  FD_DIFF_FILE="$workdir/diff.$FREEZE_N"
+  (set +e
+    file_diff_git "$1" "$2" "$3" "$4" | label_hunks "$1" "$2" >"$FD_DIFF_FILE"
     _fd_st=("${PIPESTATUS[@]}")
-    [ "${_fd_st[0]}" -eq 0 ] && [ "${_fd_st[1]}" -eq 0 ])" || return 1
-  _fd_shape="$(printf '%s\n' "$FD_DIFF" | diff_shape)"
+    [ "${_fd_st[0]}" -eq 0 ] && [ "${_fd_st[1]}" -eq 0 ]) || return 1
+  _fd_shape="$(diff_shape <"$FD_DIFF_FILE")"
   # The gate says the magnitude, so the shape's own "+A/-D lines" tail is
   # re-cut to the gate's spelling rather than counted a second time.
   FD_SHAPE="${_fd_shape#*, }"; FD_SHAPE="${FD_SHAPE% lines}"
@@ -2283,7 +2308,7 @@ file_diff_gate() { # <decision clause>
 file_diff_show() { # <section rule text>
   printf '%s--- %s ---%s\n' "$C_B" "$1" "$C_OFF"
   [ -z "$FD_KEYS" ] || printf '%s\n' "$FD_KEYS"
-  untrusted_page color_diff <<<"$FD_DIFF"
+  untrusted_page color_diff <"$FD_DIFF_FILE"
   print_end_rule diff "$FD_SHAPE"
 }
 
@@ -3364,7 +3389,8 @@ canon_path() {
   printf '%s/%s\n' "${d%/}" "$tail"
 }
 
-# Private scratch for frozen copies; removed on exit. freeze_file is THE
+# Private scratch for frozen copies (and the diffs drawn from them, see
+# file_diff_capture); removed on exit. freeze_file is THE
 # single read of a subject file -- display, diff, hash and emit all
 # derive from the frozen copy, never a second look at the live path
 # (TOCTOU closure). Sets FROZEN_COPY.
@@ -5480,7 +5506,7 @@ do_approve() {
       verify_ancestry "$slot" || exit 1
     fi
 
-    local hash old_hash diff_out step_rc ancestry_cls ancestry_mb rec_rc=0 rec_stale subj tag_disp
+    local hash old_hash step_rc ancestry_cls ancestry_mb rec_rc=0 rec_stale subj tag_disp
     # Uncaptured, so REC_DIGEST / REC_PATH survive: a record naming a former
     # spelling of this path (2) is readable and repaired below, every other
     # refusal (1) stays a refusal -- re-read unsilenced so it says why.
@@ -5807,8 +5833,8 @@ do_approve() {
           # Capture first so a git failure aborts (set -e) BEFORE anything is
           # shown as reviewable; then page. Early pager quit (SIGPIPE) is the
           # reviewer's own act -- the diff itself already succeeded.
-          diff_out="$(sgit_diff "$old_hash" "$hash")"
-          untrusted_page color_diff <<<"$diff_out"
+          sgit_diff_file "$old_hash" "$hash"
+          untrusted_page color_diff <"$DIFF_FILE"
           print_end_rule diff "$totals"
           # The rows the question decides about, then the lattice's alarm
           # (nothing for a forward move), directly above the question.
@@ -5841,9 +5867,9 @@ do_approve() {
         printf '%s--- full tree (diff from empty) ---%s\n' "$C_B" "$C_OFF"
         # 4b825d... is git's well-known empty tree; this shows every approved byte.
         local totals
-        diff_out="$(sgit_diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
+        sgit_diff_file 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash"
         totals="$(diff_totals 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
-        untrusted_page color_diff <<<"$diff_out"
+        untrusted_page color_diff <"$DIFF_FILE"
         print_end_rule diff "$totals"
         echo
         print_candidate_rows "$hash"
@@ -5954,7 +5980,7 @@ print_batch_summary() {
 # or the --tag selector's commit).
 approve_step_walk() {
   local slot="$1" old_hash="$2" hash="$3"
-  local line c k m prev approved=0 answer diff_out rem totals log_out gate_line
+  local line c k m prev approved=0 answer rem totals log_out gate_line
   local -a commits=()
 
   # Captured first so a git failure aborts (set -e) before the walk claims to
@@ -6008,9 +6034,9 @@ EOF
     # Capture first so a git failure aborts (set -e) BEFORE anything is shown
     # as reviewable; then page. Early pager quit (SIGPIPE) is the reviewer's
     # own act -- the diff itself already succeeded.
-    diff_out="$(sgit_diff "$prev" "$c")"
+    sgit_diff_file "$prev" "$c"
     totals="$(diff_totals "$prev" "$c")"
-    untrusted_page color_diff <<<"$diff_out"
+    untrusted_page color_diff <"$DIFF_FILE"
     print_end_rule diff "$totals"
     echo
     print_candidate_rows "$c"
@@ -8817,7 +8843,7 @@ EOF
 # by a user-space attacker. There is nothing to write, so nothing to elevate.
 do_show_repo() {
   resolve_repo "$1"
-  local hash head_hash tag diff_out ahead subj
+  local hash head_hash tag ahead subj
   hash="$(read_rev "$default_slot" "$repo")" || exit 1
   [ -n "$hash" ] || {
     say_cmd "nothing is pinned here, and show re-displays a pin; review it first: pinned review " "$repo"
@@ -8870,8 +8896,8 @@ do_show_repo() {
   # the pin names, exactly what a first approval displays. Capture first so a
   # git failure aborts (set -e) BEFORE anything is shown as reviewable; then
   # page. Early pager quit (SIGPIPE) is the reader's own act.
-  diff_out="$(sgit_diff 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
-  untrusted_page color_diff <<<"$diff_out"
+  sgit_diff_file 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash"
+  untrusted_page color_diff <"$DIFF_FILE"
   print_end_rule diff "$(diff_totals 4b825dc642cb6eb9a060e54bf8d69288fbee4904 "$hash")"
 
   # Syslog is audit history, not a record: the file half logs the same way,
