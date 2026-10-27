@@ -217,7 +217,7 @@ set -euo pipefail
 
 # The release this file IS. Bumped in the release commit the tag points at,
 # so a checkout between releases reports the release it descends from.
-PINNED_VERSION="0.29.0"
+PINNED_VERSION="0.29.1"
 
 # Where this script installs itself, and the one program the unprivileged
 # side hands sudo. A COMPILE-TIME CONSTANT, not an environment default: any
