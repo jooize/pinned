@@ -747,7 +747,12 @@ one.
   or user config, since the pager sits between reviewed bytes and eyes.
   `-F` means one-screen content prints inline and never takes over the
   alternate screen; longer content gets the alternate screen and real
-  scrollback.
+  scrollback. The pager runs in a clean environment, so the caller's
+  `TERMINFO` and `TERMINFO_DIRS` never reach it: it finds the terminal's
+  description in the system database, after the root-owned directories
+  the `PAGER_TERMINFO_DIRS=` line names (empty in the source; the nix
+  module puts the system profile's terminfo there). A terminal without
+  an entry in either gets less's dumb mode.
 - **Structural views are derived; the raw byte diff is authoritative.**
   Section labels, changed-key summaries and the gate's `change:     +12 -4` row orient
   a reader; they can lie about where a change sits

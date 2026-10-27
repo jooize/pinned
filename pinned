@@ -257,6 +257,18 @@ PINNED_ROOT=/var/db/pinned
 # one line in this shape.
 PINNED_ROOT_ONLY_OWNERS=
 
+# Where the root pager looks up the terminal's description (terminfo), ahead
+# of the system's own database: a colon-separated list of root-owned
+# directories. page() runs less under env -i, which drops the caller's
+# TERMINFO and TERMINFO_DIRS (a user process can set either, and the entry
+# chooses the control sequences a root less writes). A terminal newer than
+# the OS database (TERM=xterm-ghostty on macOS) then has no entry, and less
+# runs in dumb mode: "terminal is not fully functional", no paging. EMPTY IN
+# THE SOURCE: a manual install searches the system database only; the nix
+# module bakes in the system profile's terminfo directory, root-owned like
+# the PATH prefix it adds. The system database stays searched after it.
+PAGER_TERMINFO_DIRS=
+
 # The OPTIONAL machine tier of the ignorable policy. Absent = no machine
 # constraint (the user tier stands alone); the FILE is the interface, so a
 # configuration manager can declare it (nix: environment.etc) without this
@@ -680,9 +692,13 @@ command -v git >/dev/null 2>&1 || {
 # a shell command), LESS or LESSOPEN from the caller reaches a root less,
 # and LESSSECURE=1 turns off the shell, pipe, edit, preprocessor and
 # lesskey features outright. LESSCHARSET says what the escaper writes.
+# Terminfo comes from PAGER_TERMINFO_DIRS, then the system database (the
+# trailing empty entry), never from the caller.
 page() {
+  local ti=()
+  [ -n "$PAGER_TERMINFO_DIRS" ] && ti=(TERMINFO_DIRS="$PAGER_TERMINFO_DIRS:")
   if [ -t 1 ] && command -v less >/dev/null 2>&1; then
-    env -i PATH="$PATH" HOME=/var/empty TERM="${TERM:-dumb}" \
+    env -i PATH="$PATH" HOME=/var/empty TERM="${TERM:-dumb}" ${ti[@]+"${ti[@]}"} \
       LESSSECURE=1 LESSCHARSET=utf-8 less -RF
   else
     cat

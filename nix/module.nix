@@ -81,6 +81,13 @@ let
       from = "\nPINNED_ROOT_ONLY_OWNERS=\n";
       to = "\nPINNED_ROOT_ONLY_OWNERS=${lib.concatStringsSep " " cfg.rootOnlyOwners}\n";
     }
+    {
+      # The root pager's terminfo, from the same root-owned system profile
+      # as the PATH prefix above, so a terminal whose entry the system
+      # profile installs pages normally (see the constant's comment).
+      from = "\nPAGER_TERMINFO_DIRS=\n";
+      to = "\nPAGER_TERMINFO_DIRS=/run/current-system/sw/share/terminfo\n";
+    }
   ];
   # Everything after line 1's text, its newline first, so an anchor that
   # opens with a newline still matches on line 2.
