@@ -692,8 +692,8 @@ one.
   the arrow hanging in the gutter so the new value starts in the old
   one's column:
 
-      ✓ declared: v1.2
-                → /var/db/pinned/<user>/slots/<enc>/release
+      ✓ record re-stated, same rev: /Users/x/Site
+                                  → /Users/x/site
 - **`pinned list` rows** read state first, as one word (`current`,
   `changed`, `gone`, `broken`) padded to the widest word in the section,
   then a repo's short hash, and the name last. A state that says more

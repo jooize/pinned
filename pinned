@@ -3003,8 +3003,8 @@ show_slot() {
 # `→` as one column, as Ghostty draws it; where it draws two, the second
 # value lands one column right, which misleads nothing.
 #
-#   ✓ declared: v1.2
-#             → /var/db/pinned/<user>/slots/<enc>/release
+#   ✓ record re-stated, same rev: /Users/x/Site
+#                               → /Users/x/site
 print_verdict_to() { # <SGR> <verdict> <value> <target>
   printf '%s✓ %s:%s %s\n' "$1" "$2" "$C_OFF" "$3"
   printf '%*s%s→%s %s\n' "$(( ${#2} + 2 ))" '' "$C_DIM" "$C_OFF" "$4"
@@ -5522,7 +5522,7 @@ do_approve() {
       verify_ancestry "$slot" || exit 1
     fi
 
-    local hash old_hash step_rc ancestry_cls ancestry_mb rec_rc=0 rec_stale subj tag_disp
+    local hash old_hash step_rc ancestry_cls ancestry_mb rec_rc=0 rec_stale subj tag_disp repo_disp
     # Uncaptured, so REC_DIGEST / REC_PATH survive: a record naming a former
     # spelling of this path (2) is readable and repaired below, every other
     # refusal (1) stays a refusal -- re-read unsilenced so it says why.
@@ -5922,8 +5922,15 @@ do_approve() {
     # approve answered `y` and returned to the prompt in silence -- which reads
     # exactly like a no-op in the one place a user most needs to know a record
     # was written.
-    printf '%s✓ approved %s%s%s%s:%s %s\n' "$C_GRN$C_B" "$C_OFF$C_CYN" "$hash" "$C_OFF" "$C_GRN$C_B" "$C_OFF" \
-      "$(show_slot "$slot")/rev.git"
+    #
+    # The verdict names what was approved -- the short hash, then the repo,
+    # the unbounded value last -- not where the record lives: a 40-character
+    # hash and the encoded slot path made one line that always wrapped, and
+    # the slot is storage (`pinned slot` prints it). The full hash is on the
+    # candidate row above.
+    untrusted_var repo_disp "$repo"
+    printf '%s✓ approved:%s %s%s%s %sin%s %s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "${hash:0:10}" "$C_OFF" \
+      "$C_DIM" "$C_OFF" "$repo_disp"
     # The declared release name (optional `release` record, repo slots
     # only): deploy syncs the input's ref= to it after cross-checking the
     # live tag still names the pinned rev. The --tag selector is the
@@ -5942,7 +5949,7 @@ do_approve() {
         rm -f "$slot/release"
       else
         write_note "$slot" release "$decl_tag"
-        print_verdict_to "$C_GRN" declared "$decl_tag" "$(show_slot "$slot")/release"
+        printf '%s✓ declared:%s %s\n' "$C_GRN" "$C_OFF" "$decl_tag"
       fi
     else
       rm -f "$slot/release"
@@ -6080,7 +6087,7 @@ EOF
     printf '%s✓ pin advanced:%s %s%s%s\n' "$C_GRN$C_B" "$C_OFF" "$C_CYN" "$c" "$C_OFF"
     if [ -n "$sel_tag" ] && [ "$c" = "$hash" ]; then
       write_note "$slot" release "$sel_tag"
-      print_verdict_to "$C_GRN" declared "$sel_tag" "$(show_slot "$slot")/release"
+      printf '%s✓ declared:%s %s\n' "$C_GRN" "$C_OFF" "$sel_tag"
     fi
     prev="$c"
     approved=$((approved + 1))
@@ -7297,7 +7304,9 @@ do_declare() {
     log_action declare "$repo" "$old_tag"
   else
     write_note "$slot" release "$name"
-    print_verdict_to "$C_GRN$C_B" declared "$name" "$(show_slot "$slot")/release"
+    # The name ends the verdict; the release row above already showed the
+    # transition. The record's path is storage, so it is not repeated here.
+    printf '%s✓ declared:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$name"
     log_action declare "$repo" "$name"
   fi
 }

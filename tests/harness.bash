@@ -1715,7 +1715,8 @@ y
     "after the diff the question stands under the repo and the candidate"
   assert_contains "$OUT" "--- end of diff: 1 file +1 -0 ---" \
     "the full-tree review leaves a closing rule with its totals"
-  assert_contains "$OUT" "rev.git" "ceremony names the record it wrote"
+  assert_contains "$OUT" "✓ approved: ${HEAD_HASH:0:10} in $REPO_FIX" \
+    "ceremony confirms what it approved: the short hash, then the repo"
   # LABEL OWNERSHIP: a source prefix names whose fact a row states, so the
   # revision under ceremony -- which is nobody's record yet -- is the
   # candidate, not a bare "commit".
@@ -2224,7 +2225,7 @@ y
   # sitting's totals, exactly.
   assert_contains "$OUT" "total: 4 files +5 -1" "the summary totals the approved range"
   assert_missing  "$OUT" "remaining:" "a completed walk has nothing remaining"
-  assert_missing  "$OUT" "✓ approved " "the walk replaces the single-approval line"
+  assert_missing  "$OUT" "✓ approved:" "the walk replaces the single-approval line"
 
   # --- yes then no: the pin rests where reading stopped --------------------
   seed_rev "$REPO_E" "$E_BASE"
@@ -3147,8 +3148,8 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_contains "$OUT" "ref=refs/tags/v1" "the deploy row states the effect on the anchor"
   assert_file "$DC_SLOT/release" "the declaration was written"
   # (The verdict follows the unechoed answer on the question's line.)
-  assert_eq "$(grep -A1 -e '✓ declared: v1$' "$OUT" | sed -n 2p)" "          → $DC_SLOT/release" \
-    "the verdict names the record on the line under the name, the arrow in the gutter"
+  assert_contains "$OUT" "✓ declared: v1" "the verdict ends on the declared name"
+  assert_missing "$OUT" "→ $DC_SLOT/release" "and does not name the record's storage path"
   assert_eq "$(cat "$DC_SLOT/release")" "v1" "and holds exactly the name"
   assert_eq "$(rev_in "$DC_SLOT/rev.git")" "$DC_C2" "the pin itself is untouched"
 
@@ -5516,7 +5517,9 @@ if [ "$GIT_OK" -eq 1 ]; then
   assert_missing "$OUT" "--- diff " "no diff"
   assert_missing "$OUT" "[y/N]" "no y/N: the authentication was the answer"
   assert_missing "$OUT" "Enter open" "no review gate"
-  assert_contains "$OUT" "✓ approved $W_C1: " "the approval is confirmed as always"
+  assert_contains "$OUT" "✓ approved: ${W_C1:0:10} in $REPO_W" \
+    "the approval names the short hash, then the repo"
+  assert_missing "$OUT" "/rev.git" "and not the slot's storage path"
   assert_contains "$OUT" "commits:    1 since the pin" "the count is shown beside the words"
 
   # --commits: the size of the range, required with --words and only with
