@@ -775,7 +775,9 @@ y
 run_pinned review --file "$SUB/a/first.txt"
 assert_exit "$RC" 0 "first-ever approval of an unpinned path succeeds (regression)"
 assert_contains "$OUT" "first approval" "ceremony announces the first approval"
-assert_contains "$OUT" "pin.sha256" "ceremony names the record it wrote"
+assert_contains "$OUT" "✓ approved: sha256 $(shasum -a 256 "$SUB/a/first.txt" | cut -c1-10) of $SUB/a/first.txt" \
+  "ceremony confirms what it approved: algorithm, short digest, then the file"
+assert_missing "$OUT" "/pin.sha256" "and not the slot's storage path"
 assert_file "$FIRST_SLOT/pin.sha256" "record file exists"
 assert_eq "$(cat "$FIRST_SLOT/pin.sha256")" \
           "$(digest_of "$SUB/a/first.txt")  $SUB/a/first.txt" \
@@ -807,7 +809,7 @@ assert_missing "$OUT" "note:" "and no note repeats it"
 assert_contains "$OUT" "A copy of these bytes is kept beside" \
                 "a changing disposition gets the full explanation"
 assert_missing "$OUT" "in every lane" "which no longer talks about lanes"
-assert_contains "$OUT" "✓ approved copy kept: " "a success line names the copy it wrote"
+assert_line "$OUT" "✓ approved copy kept" "a success line says the copy was kept, without a storage path"
 assert_file "$FIRST_SLOT/approved" "--store writes the witness"
 assert_eq "$(digest_of "$FIRST_SLOT/approved")" "$(digest_of "$SUB/a/first.txt")" \
           "the witness is byte-for-byte the approved file"
@@ -3348,7 +3350,9 @@ y
 run_pinned review --file "$SUB/ig/copy.json" --ignore-json-key model --store
 assert_exit "$RC" 0 "review with a declaration AND --store succeeds"
 assert_file "$COPY_SLOT/approved" "--store keeps the approved bytes"
-assert_contains "$OUT" "✓ approved copy kept: " "the ceremony says the copy was written"
+assert_line "$OUT" "✓ approved copy kept" "the ceremony says the copy was written"
+assert_contains "$OUT" "✓ ignoring: model" "the declared key is named, without a storage path"
+assert_missing "$OUT" "/ignored.json" "and the declaration file is not"
 assert_contains "$OUT" "kept in the slot" "the ceremony states the custody consequence"
 assert_eq "$(digest_of "$COPY_SLOT/approved")" "$(awk '{print $1}' "$COPY_SLOT/pin.sha256")" \
           "the copy re-hashes to the pin beside it"

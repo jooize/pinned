@@ -6152,7 +6152,7 @@ do_approve_files() {
   local ign ign_json old_ign old_bad had_copy copy_bad cur_copy ign_note cust_from cust_to cust_val decl_changed
   local cust_changed n_lines gate_line same_bytes
   local keep store kept_ign cust_src ign_marks ign_new ign_old ign_lead imark ikey itail gr_list
-  local path_disp path_plain note_disp notes_out
+  local path_disp path_plain note_disp notes_out verdict_path
   local gk gscope gwhere gr_keys gr_pairs gr_scope gr_mixed
 
   # The ignorable policy, read ONCE for the whole ceremony: every --file in
@@ -6658,15 +6658,22 @@ EOF
         # never hold bytes the human did not see. A root-owned copy beside
         # the digest is also the one baseline nothing unprivileged can forge;
         # everything else has to prove itself at every use.
+        #
+        # The verdicts name what was approved, like a repo approval: the
+        # algorithm and a short digest, then the file, the unbounded path
+        # last. Not the slot's storage path (`pinned slot` prints it): a
+        # 64-character digest plus the encoded slot path made one line that
+        # always wrapped.
+        untrusted_var verdict_path "$path" ""
         if [ "$store" -eq 1 ]; then
           write_slot_copy "$slot" approved "$fro"
-          printf '%s✓ approved %s%s%s%s:%s %s\n' "$C_GRN$C_B" "$C_OFF$C_CYN" "$new_digest" "$C_OFF" \
-            "$C_GRN$C_B" "$C_OFF" "$(show_slot "$slot")/pin.$file_algo"
-          printf '%s✓ approved copy kept:%s %s\n' "$C_GRN$C_B" "$C_OFF" "$(show_slot "$slot")/approved"
+          printf '%s✓ approved:%s %s%s%s %s%s%s %sof%s %s\n' "$C_GRN$C_B" "$C_OFF" "$C_DIM" "$file_algo" "$C_OFF" \
+            "$C_CYN" "${new_digest:0:10}" "$C_OFF" "$C_DIM" "$C_OFF" "$verdict_path"
+          printf '%s✓ approved copy kept%s\n' "$C_GRN$C_B" "$C_OFF"
         else
           rm -f "$slot/approved"
-          printf '%s✓ approved %s%s%s%s:%s %s\n' "$C_GRN$C_B" "$C_OFF$C_CYN" "$new_digest" "$C_OFF" \
-            "$C_GRN$C_B" "$C_OFF" "$(show_slot "$slot")/pin.$file_algo"
+          printf '%s✓ approved:%s %s%s%s %s%s%s %sof%s %s\n' "$C_GRN$C_B" "$C_OFF" "$C_DIM" "$file_algo" "$C_OFF" \
+            "$C_CYN" "${new_digest:0:10}" "$C_OFF" "$C_DIM" "$C_OFF" "$verdict_path"
           # Losing custody is a state change worth naming after the fact too:
           # a consumer reading through the slot stops being served here.
           if [ "$had_copy" -eq 1 ]; then
@@ -6681,8 +6688,8 @@ EOF
         clear_ignore_decl "$slot"
         if [ -n "$ign_json" ]; then
           write_note "$slot" ignored.json "$ign_json"
-          print_verdict_to "$C_GRN$C_B" ignoring \
-            "$C_YEL$(ign_display "$ign_json")$C_OFF" "$(show_slot "$slot")/ignored.json"
+          printf '%s✓ ignoring:%s %s%s%s\n' "$C_GRN$C_B" "$C_OFF" \
+            "$C_YEL" "$(ign_display "$ign_json")" "$C_OFF"
         fi
         log_action approve-file "$path" "$new_digest"
         recorded=$((recorded + 1))
