@@ -403,7 +403,7 @@ usage: pinned <action> [args]
                                  shows it; reads the two files and nothing else
   list [--repos|--files] [--stale] [--under <dir>] [--format text|json]
                                  your pins and their live state
-  slot <path>                    print the slot directory for a path
+  slot [--] <path>               print the slot directory for a path
   setup [--yes]                  (sudo) provision sudoers digest pin; self-install
   --version                      print the release version
   --help, -h                     this text (also after an action: pinned slot --help)
@@ -9049,7 +9049,16 @@ do_slot() {
   # verify keys its slot with -- one code path, so a repo and a file can
   # never encode differently -- which also inherits its refusal of a `..`
   # tail below a missing directory.
+  #
+  # An operand that starts with - is refused as an unknown option, as every
+  # other verb does, so a mistyped flag never becomes a path that silently
+  # gets a slot. A path that really starts with - comes after `--`.
+  local dashdash=0
+  if [ "${1-}" = "--" ]; then dashdash=1; shift; fi
   [ $# -eq 1 ] || { echo "slot takes one path" >&2; usage; }
+  if [ "$dashdash" -eq 0 ]; then
+    case "$1" in -?*) say_err "unknown slot option: " "$1"; usage ;; esac
+  fi
   local path tier
   # The tier verify would key the slot under, so `sudo pinned slot ...`
   # still answers for the human, not for root.

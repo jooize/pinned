@@ -1214,10 +1214,14 @@ is not visible from a listing, which never asks about a live path;
 .B status
 reports that one.
 .TP
-.B slot \fIpath\fP
+.B slot \fR[\fB\-\-\fR]\fP \fIpath\fP
 Print the slot directory for any path \(em repo or file, existing or
 not; a name resolver for consumer symlinks and lane payloads, never an
 existence answer.
+An operand that starts with
+.B \-
+is refused as an unknown option; a path that starts with one comes after
+.BR \-\- .
 .TP
 .B \-\-version
 Print the release version as

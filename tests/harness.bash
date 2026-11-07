@@ -4868,13 +4868,25 @@ for argv in "--help" "-h" "slot --help" "verify -h" "review --help"; do
   fi
 done
 
-# A path that starts with - is a path: slot names its slot, no tool error.
+# An operand that starts with - is an unknown option, never a path: a
+# mistyped flag must not silently get a slot.
 ANS=""
-( cd "$FIX" && "$STUB" slot -x-missing >"$OUT" 2>"$ERRF" ); RC=$?
-if [ "$RC" -eq 0 ] && grep -q -- '-x-missing$' "$OUT" && [ ! -s "$ERRF" ]; then
-  ok "slot of a missing path starting with - names its slot"
+RC=0
+( cd "$FIX" && "$STUB" slot -x-missing >"$OUT" 2>"$ERRF" ) || RC=$?
+if [ "$RC" -eq 1 ] && [ ! -s "$OUT" ] && grep -q 'unknown slot option' "$ERRF"; then
+  ok "slot refuses an operand starting with - as an unknown option"
 else
-  fail "slot of a missing path starting with - names its slot" "rc=$RC out=$(head -c 200 "$OUT") err=$(head -c 200 "$ERRF")"
+  fail "slot refuses an operand starting with - as an unknown option" "rc=$RC out=$(head -c 200 "$OUT") err=$(head -c 200 "$ERRF")"
+fi
+
+# After --, a path that starts with - is a path: slot names its slot, no
+# tool error (readlink, basename and dirname get -- too).
+RC=0
+( cd "$FIX" && "$STUB" slot -- -x-missing >"$OUT" 2>"$ERRF" ) || RC=$?
+if [ "$RC" -eq 0 ] && grep -q -- '-x-missing$' "$OUT" && [ ! -s "$ERRF" ]; then
+  ok "slot -- PATH names the slot of a path starting with -"
+else
+  fail "slot -- PATH names the slot of a path starting with -" "rc=$RC out=$(head -c 200 "$OUT") err=$(head -c 200 "$ERRF")"
 fi
 
 # ---------------------------------------------------------------------------
