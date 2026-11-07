@@ -379,8 +379,8 @@ bootstrap in that case.${C_OFF}
 EOF
 }
 
-usage() {
-  cat >&2 <<EOF
+usage_text() {
+  cat <<EOF
 usage: pinned <action> [args]
 
   review <repo>... [options]     (sudo) review the diff since the last pin, write pin
@@ -406,12 +406,15 @@ usage: pinned <action> [args]
   slot <path>                    print the slot directory for a path
   setup [--yes]                  (sudo) provision sudoers digest pin; self-install
   --version                      print the release version
+  --help, -h                     this text (also after an action: pinned slot --help)
 
 full options, exit codes, and the contract: man pinned
 approval history: log show --predicate 'eventMessage CONTAINS "pinned:"'
 EOF
-  exit 1
 }
+
+# Asked for: stdout, exit 0. Misused: stderr, exit 1.
+usage() { usage_text >&2; exit 1; }
 
 [ $# -ge 1 ] || usage
 action="$1"
@@ -422,6 +425,14 @@ shift
 if [ "$action" = "--version" ]; then
   printf 'pinned %s\n' "$PINNED_VERSION"
   exit 0
+fi
+
+# Help, as the action or right after one (`pinned slot --help`), is served
+# here for the same reason: before a verb can read --help as a path or start
+# a ceremony.
+case "$action" in -h|--help) usage_text; exit 0 ;; esac
+if [ $# -ge 1 ]; then
+  case "$1" in -h|--help) usage_text; exit 0 ;; esac
 fi
 
 # ---- shared verification (locked-family pattern) ---------------------------
@@ -3385,12 +3396,12 @@ hash_file() {
 canon_path() {
   local p="$1" d b tail=""
   if [ -e "$p" ]; then
-    readlink -f "$p"
+    readlink -f -- "$p"
     return
   fi
   d="$p"
   while :; do
-    b="$(basename "$d")"; d="$(dirname "$d")"
+    b="$(basename -- "$d")"; d="$(dirname -- "$d")"
     case "$b" in
       ..) error "cannot resolve a .. below a missing directory: " "$p"; return 1 ;;
       .)  : ;;
@@ -3400,7 +3411,7 @@ canon_path() {
     # exist, so this terminates.
     [ -e "$d" ] && break
   done
-  d="$(readlink -f "$d" 2>/dev/null)" \
+  d="$(readlink -f -- "$d" 2>/dev/null)" \
     || { error "cannot resolve: " "$p"; return 1; }
   printf '%s/%s\n' "${d%/}" "$tail"
 }

@@ -7,6 +7,8 @@ pinned \- review-and-pin trust gate for git repositories and files
 .RI [ args ]
 .br
 .B pinned \-\-version
+.br
+.B pinned \-\-help
 .SH DESCRIPTION
 .B pinned
 keeps root-owned approval records behind a human gate.
@@ -1223,6 +1225,13 @@ Print the release version as
 and exit 0.
 The version is bumped in the release commit its tag points at, so a
 checkout between releases reports the release it descends from.
+.TP
+.BR \-\-help ", " \-h
+Print the usage on standard output and exit 0.
+Accepted as the action or right after one
+.RB ( "pinned slot \-\-help" ),
+before any verb reads its arguments, so it never starts a ceremony.
+A call with no action prints the same usage on standard error and exits 1.
 .SS Installation
 .TP
 .B setup [\-\-yes]

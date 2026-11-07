@@ -4853,6 +4853,30 @@ run_pinned
 assert_exit "$RC" 1 "no argv is usage"
 assert_contains "$OUT" "--version" "usage lists the flag"
 
+# Help that was asked for goes to stdout and exits 0, as the action or
+# right after one; it is served before a verb could read --help as a path
+# (slot printed basename and dirname errors, then a slot for the cwd).
+ERRF="$FIX/help.err"
+for argv in "--help" "-h" "slot --help" "verify -h" "review --help"; do
+  ANS=""
+  # shellcheck disable=SC2086  -- argv is split on purpose
+  run_pinned_split $argv
+  if [ "$RC" -eq 0 ] && grep -q '^usage: pinned <action>' "$OUT" && [ ! -s "$ERRF" ]; then
+    ok "pinned $argv: usage on stdout, nothing on stderr, exit 0"
+  else
+    fail "pinned $argv: usage on stdout, nothing on stderr, exit 0" "rc=$RC stderr=$(head -c 200 "$ERRF")"
+  fi
+done
+
+# A path that starts with - is a path: slot names its slot, no tool error.
+ANS=""
+( cd "$FIX" && "$STUB" slot -x-missing >"$OUT" 2>"$ERRF" ); RC=$?
+if [ "$RC" -eq 0 ] && grep -q -- '-x-missing$' "$OUT" && [ ! -s "$ERRF" ]; then
+  ok "slot of a missing path starting with - names its slot"
+else
+  fail "slot of a missing path starting with - names its slot" "rc=$RC out=$(head -c 200 "$OUT") err=$(head -c 200 "$ERRF")"
+fi
+
 # ---------------------------------------------------------------------------
 say "S19: respelled paths (the case-only rename repair)"
 # ---------------------------------------------------------------------------
@@ -5414,11 +5438,11 @@ say "S22: shell completions (present, installed, parse, cover every action)"
 # Static files, so the checks are static too. The harness builds nothing, so
 # the module's install lines stand in for the build: both files exist, both
 # are installed at the shells' vendor paths, each parses under its own shell,
-# and each offers exactly the actions usage() lists -- a verb added to the
+# and each offers exactly the actions usage_text() lists -- a verb added to the
 # script without its completion fails here.
 COMP="$(dirname "$HERE")/completions"
 MOD="$(dirname "$HERE")/nix/module.nix"
-USAGE_ACTIONS="$(sed -n '/^usage() {$/,/^}$/p' "$SRC" | sed -n '/^usage: /,/^EOF$/p' \
+USAGE_ACTIONS="$(sed -n '/^usage_text() {$/,/^}$/p' "$SRC" | sed -n '/^usage: /,/^EOF$/p' \
   | sed -n 's/^  \([a-z][a-z]*\) .*/\1/p' | LC_ALL=C sort -u | tr '\n' ' ')"
 assert_file "$COMP/pinned.fish" "the fish completion exists"
 assert_file "$COMP/_pinned" "the zsh completion exists"
